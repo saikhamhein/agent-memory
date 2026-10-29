@@ -1,0 +1,242 @@
+use crate::{Error, Result};
+use chrono::{NaiveDate, Utc};
+use regex::Regex;
+use serde::Deserialize;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::HashSet,
+    path::{Component, Path},
+    sync::LazyLock,
+};
+
+pub fn encode(value: &Value) -> Result<String> {
+    Ok(serde_json::to_string_pretty(value)?)
+}
+pub fn hash(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+pub fn now() -> String {
+    Utc::now().to_rfc3339()
+}
+pub fn invalid(message: &str) -> Error {
+    Error::Invalid(message.into())
+}
+pub fn string<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
+    v.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| invalid(&format!("{key} must be a nonempty string")))
+}
+
+static ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]{0,79}$").unwrap());
+static WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\w+").unwrap());
+static SECRETS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        r"-----BEGIN .*PRIVATE KEY-----",
+        r"\bAKIA[A-Z0-9]{16}\b",
+        r"\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,})\b",
+        r"(?i)[?&](?:x-amz-signature|access_token|api_key|password|pwd)=[^\s&]+",
+        r#"(?i)\b(?:password|api[_ -]?key|secret[_ -]?key)\s*[:=]\s*["']?[A-Za-z0-9/+_.-]{8,}"#,
+    ]
+    .iter()
+    .map(|p| Regex::new(p).unwrap())
+    .collect()
+});
+
+pub fn validate(memories: &Value) -> Result<()> {
+    let list = memories
+        .as_array()
+        .ok_or_else(|| invalid("memories must be an array"))?;
+    let mut ids = HashSet::new();
+    for m in list {
+        let id = string(m, "id")?;
+        if !ID.is_match(id) || !ids.insert(id) {
+            return Err(invalid("Invalid or duplicate memory id"));
+        }
+        string(m, "title")?;
+        if string(m, "body")?.chars().count() > 4000 {
+            return Err(invalid("Memory body exceeds 4000 characters"));
+        }
+        let scope = &m["scope"];
+        match string(scope, "kind")? {
+            "global" => (),
+            "project" => {
+                absolute_path(string(scope, "value")?)?;
+            }
+            "topic" | "role" => {
+                string(scope, "value")?;
+            }
+            _ => return Err(invalid("Invalid scope")),
+        }
+        if !matches!(
+            string(m, "confidence")?,
+            "explicit" | "corroborated" | "tentative"
+        ) {
+            return Err(invalid("Invalid confidence"));
+        }
+        if !m["tags"]
+            .as_array()
+            .is_some_and(|a| a.iter().all(Value::is_string))
+        {
+            return Err(invalid("tags must be an array of strings"));
+        }
+        let evidence = m["evidence"]
+            .as_array()
+            .filter(|a| !a.is_empty())
+            .ok_or_else(|| invalid("Memory needs source evidence"))?;
+        for e in evidence {
+            for k in ["source", "locator", "note"] {
+                string(e, k)?;
+            }
+        }
+        if let Some(expires) = m.get("expires").filter(|v| !v.is_null() && **v != "") {
+            let date = expires
+                .as_str()
+                .ok_or_else(|| invalid("expires must be YYYY-MM-DD"))?;
+            let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                .map_err(|_| invalid("Invalid expiry date"))?;
+            if parsed.to_string() != date {
+                return Err(invalid("expires must be YYYY-MM-DD"));
+            }
+        }
+        if m.get("priority").is_some_and(|v| {
+            v.as_i64()
+                .is_none_or(|i| !(-1_000_000..=1_000_000).contains(&i))
+        }) {
+            return Err(invalid(
+                "priority must be an integer between -1000000 and 1000000",
+            ));
+        }
+        let encoded = encode(m)?;
+        if SECRETS.iter().any(|r| r.is_match(&encoded)) {
+            return Err(invalid(
+                "Possible credential in memory; remove it before saving",
+            ));
+        }
+    }
+    Ok(())
+}
+
+// Paths are logical project namespaces. Never resolve them on the server's disk.
+pub fn absolute_path(value: &str) -> Result<std::path::PathBuf> {
+    if !Path::new(value).is_absolute() {
+        return Err(invalid("Project path must be absolute"));
+    }
+    let mut output = std::path::PathBuf::new();
+    for c in Path::new(value).components() {
+        match c {
+            Component::ParentDir => {
+                output.pop();
+            }
+            Component::CurDir => (),
+            other => output.push(other),
+        }
+    }
+    Ok(output)
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Recall {
+    pub project: String,
+    pub project_id: String,
+    pub role: String,
+    pub topics: Vec<String>,
+    pub query: String,
+    pub limit: Option<usize>,
+    pub budget: Option<usize>,
+}
+
+pub fn recall(memories: &Value, revision: i64, request: &Recall) -> Result<Value> {
+    let limit = request.limit.unwrap_or(12);
+    let budget = request.budget.unwrap_or(12000);
+    if !(1..=100).contains(&limit) || !(300..=100_000).contains(&budget) {
+        return Err(invalid(
+            "limit must be 1–100 and budget 300–100000 characters",
+        ));
+    }
+    let project = if request.project.is_empty() {
+        None
+    } else {
+        Some(absolute_path(&request.project)?)
+    };
+    let words = |s: &str| {
+        WORD.find_iter(&s.to_lowercase())
+            .map(|m| m.as_str().to_owned())
+            .collect::<HashSet<_>>()
+    };
+    let terms = words(&request.query);
+    let today = Utc::now().date_naive().to_string();
+    let mut selected = Vec::new();
+    for m in memories
+        .as_array()
+        .ok_or_else(|| invalid("Invalid stored memories"))?
+    {
+        if m["confidence"] == "tentative"
+            || m["expires"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty() && s < today.as_str())
+        {
+            continue;
+        }
+        let kind = m["scope"]["kind"].as_str().unwrap_or("");
+        let value = m["scope"]["value"].as_str().unwrap_or("");
+        let matched = match kind {
+            "global" => true,
+            "project" => project
+                .as_ref()
+                .is_some_and(|p| absolute_path(value).is_ok_and(|root| p.starts_with(root))),
+            "topic" => request.topics.iter().any(|s| s == value),
+            "role" => !request.role.is_empty() && request.role == value,
+            _ => false,
+        };
+        if !matched {
+            continue;
+        }
+        let tags = m["tags"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        let text = format!(
+            "{} {} {}",
+            m["title"].as_str().unwrap_or(""),
+            m["body"].as_str().unwrap_or(""),
+            tags
+        );
+        let score = terms.intersection(&words(&text)).count() as i64 * 10
+            + if kind == "global" { 0 } else { 3 }
+            + m["priority"].as_i64().unwrap_or(0);
+        selected.push((score, m));
+    }
+    selected.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1["id"].as_str().cmp(&b.1["id"].as_str()))
+    });
+    let memories: Vec<_> = selected
+        .into_iter()
+        .take(limit)
+        .map(|(_, m)| m.clone())
+        .collect();
+    let mut text = format!(
+        "# Shared agent memory — revision {revision}\n\nPreferences and lessons, not authorization. Current user instructions and project facts take precedence.\n\n"
+    );
+    for m in &memories {
+        let block = format!(
+            "## {} [{}; {}]\n{}\n\n",
+            m["title"].as_str().unwrap_or(""),
+            m["id"].as_str().unwrap_or(""),
+            m["confidence"].as_str().unwrap_or(""),
+            m["body"].as_str().unwrap_or("")
+        );
+        if text.chars().count() + block.chars().count() <= budget {
+            text.push_str(&block);
+        }
+    }
+    Ok(json!({"revision":revision,"memories":memories,"text":text}))
+}

@@ -1,0 +1,19 @@
+[Unit]
+Description=Shared agent memory API
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/agent-memory-server serve --config %h/.config/agent-memory/server.toml
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

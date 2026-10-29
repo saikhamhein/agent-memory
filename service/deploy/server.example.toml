@@ -1,0 +1,20 @@
+# Local testing: loopback only. Later use the server's LAN IP for LAN access.
+listen = "127.0.0.1:8787"
+database = "/var/lib/agent-memory/memory.sqlite3"
+
+# Stable ids resolve to the original logical project roots in accepted memories.
+# These directories do not need to exist on the server or Raspberry Pi.
+[projects]
+agent-memory = "/home/sai/probe/agent-memory"
+
+# Generate credentials with `agent-memory-server token`.
+# Put only its sha256 field here; keep its token field in the client config.
+[[tokens]]
+name = "agent-recall"
+sha256 = "REPLACE_WITH_GENERATED_SHA256"
+capabilities = ["recall"]
+
+[[tokens]]
+name = "memory-maintainer"
+sha256 = "REPLACE_WITH_A_DIFFERENT_GENERATED_SHA256"
+capabilities = ["recall", "observe", "review", "promote"]
