@@ -1,7 +1,9 @@
 import concurrent.futures
 import importlib.util
 import json
+import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -69,6 +71,78 @@ class MemoryTests(unittest.TestCase):
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             list(pool.map(save, range(32)))
         self.assertEqual(32, self.db.execute('SELECT COUNT(*) FROM observations').fetchone()[0])
+
+    def test_readonly_commands_without_filesystem_write_access(self):
+        proposal = self.proposal()
+        memory.promote(self.db, proposal)
+        self.db.close()
+        database = self.root / 'memory.sqlite3'
+        before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns)
+                  for p in self.root.iterdir() if p.is_file()}
+        database.chmod(0o444)
+        self.root.chmod(0o555)
+        try:
+            if os.access(self.root, os.W_OK) or os.access(database, os.W_OK):
+                self.skipTest('This user can override filesystem permissions')
+            command = [sys.executable, str(Path(memory.__file__)), '--root', str(self.root)]
+            for args in (['recall', '--json'], ['status'], ['diff', str(proposal)],
+                         ['validate', str(proposal)]):
+                with self.subTest(command=args[0]):
+                    result = subprocess.run(command + args, capture_output=True, text=True, timeout=5)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    if args[0] == 'recall':
+                        self.assertEqual({'revision': 1, 'memories': [item()]}, json.loads(result.stdout))
+            after = {p.name: (p.read_bytes(), p.stat().st_mtime_ns)
+                     for p in self.root.iterdir() if p.is_file()}
+            self.assertEqual(before, after)
+        finally:
+            self.root.chmod(0o700)
+            database.chmod(0o600)
+
+    def test_readonly_connection_rejects_writes_and_sees_new_commits(self):
+        reader = memory.connect(self.root, readonly=True)
+        try:
+            with self.assertRaises(sqlite3.OperationalError):
+                reader.execute("UPDATE state SET value=0 WHERE key='active'")
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                self.assertEqual((0, []), memory.active(reader))
+            finally:
+                self.db.rollback()
+            memory.promote(self.db, self.proposal())
+            self.assertEqual((1, [item()]), memory.active(reader))
+        finally:
+            reader.close()
+
+    def test_readonly_commands_do_not_create_missing_store(self):
+        root = self.root / 'missing'
+        for command in ('recall', 'status'):
+            result = subprocess.run([sys.executable, str(Path(memory.__file__)),
+                                     '--root', str(root), command], capture_output=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertFalse(root.exists())
+
+    def test_wal_migration_preserves_store(self):
+        self.db.execute('PRAGMA journal_mode=WAL')
+        memory.promote(self.db, self.proposal())
+        before = list(self.db.iterdump())
+        self.db.close()
+        result = subprocess.run([sys.executable, str(Path(memory.__file__)),
+                                 '--root', str(self.root), 'init'], capture_output=True, text=True)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.db = memory.connect(self.root, readonly=True)
+        self.assertEqual('delete', self.db.execute('PRAGMA journal_mode').fetchone()[0])
+        self.assertEqual(before, list(self.db.iterdump()))
+
+    def test_readonly_uri_escapes_path(self):
+        root = self.root / 'store ?#%'
+        writer = memory.connect(root)
+        writer.close()
+        reader = memory.connect(root, readonly=True)
+        try:
+            self.assertEqual((0, []), memory.active(reader))
+        finally:
+            reader.close()
 
     def test_rollback_preserves_history_and_rejects_wrong_head(self):
         memory.promote(self.db, self.proposal())
