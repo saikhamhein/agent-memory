@@ -1,0 +1,34 @@
+[Unit]
+Description=Shared agent memory API
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=agent-memory
+Group=agent-memory
+StateDirectory=agent-memory
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/agent-memory
+ExecStart=/usr/local/bin/agent-memory-server serve --config /etc/agent-memory/server.toml
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

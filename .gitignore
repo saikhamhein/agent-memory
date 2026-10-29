@@ -7,3 +7,6 @@ __pycache__/
 /review/
 /adapter-install-plan.json
 /installation-status.json
+/service/target/
+/service/.venv-mcp/
+/runtime/

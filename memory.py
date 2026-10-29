@@ -27,11 +27,21 @@ def digest(value):
     return hashlib.sha256(encode(value).encode()).hexdigest()
 
 
-def connect(root):
+def connect(root, *, readonly=False):
+    if readonly:
+        # Do not initialize the store or acquire a write transaction for lookups.
+        # Keep normal SQLite locking: this is a live store, not an immutable file.
+        db = sqlite3.connect((root / 'memory.sqlite3').resolve().as_uri() + '?mode=ro',
+                             uri=True, timeout=30, isolation_level=None)
+        db.row_factory = sqlite3.Row
+        return db
     root.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(root / 'memory.sqlite3', timeout=30, isolation_level=None)
     db.row_factory = sqlite3.Row
-    db.execute('PRAGMA journal_mode=WAL')
+    # WAL readers may need to create -wal/-shm files in the store directory.
+    # Rollback journaling supports readers with no filesystem write access.
+    # SQLite also safely checkpoints existing WAL stores during this conversion.
+    db.execute('PRAGMA journal_mode=DELETE')
     db.executescript('''
         CREATE TABLE IF NOT EXISTS revisions (
             id INTEGER PRIMARY KEY, parent INTEGER, created TEXT NOT NULL,
@@ -202,6 +212,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=ROOT)
     sub = parser.add_subparsers(dest='command', required=True)
+    sub.add_parser('init', help='Initialize a store or migrate its journal mode for read-only access')
     sub.add_parser('status')
     ob = sub.add_parser('observe'); ob.add_argument('file', type=Path)
     sub.add_parser('dream')
@@ -216,9 +227,9 @@ def main():
     rb = sub.add_parser('rollback'); rb.add_argument('revision', type=int)
     rb.add_argument('--expected', type=int, required=True); rb.add_argument('--reason', required=True)
     args = parser.parse_args()
-    db = connect(args.root)
+    db = connect(args.root, readonly=args.command in ('recall', 'status', 'diff', 'validate', 'export'))
     n, memories = active(db)
-    if args.command == 'status':
+    if args.command in ('init', 'status'):
         print(encode({'revision': n, 'memories': len(memories), 'store': str(args.root),
                       'observations': db.execute('SELECT COUNT(*) FROM observations').fetchone()[0],
                       'dreams': db.execute('SELECT COUNT(*) FROM dreams').fetchone()[0]}))
