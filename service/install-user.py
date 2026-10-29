@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -27,6 +28,27 @@ def private_file(path, text):
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, 'w') as output:
         output.write(text)
+
+
+def migrate_database(binary, database):
+    # Old Python stores use WAL. Migrate before a long-lived service connection
+    # prevents the Python CLI from switching to rollback journaling.
+    with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as db:
+        journal = db.execute('PRAGMA journal_mode').fetchone()[0]
+    db.close()
+    if journal == 'delete':
+        return
+    active = subprocess.run(['systemctl', '--user', 'is-active', '--quiet',
+                             'agent-memory.service'], capture_output=True).returncode == 0
+    if active:
+        subprocess.run(['systemctl', '--user', 'stop', 'agent-memory.service'], check=True)
+    try:
+        subprocess.run([str(binary), 'init', '--database', str(database)], check=True)
+    finally:
+        # Restore the old service even if migration fails. The installer stops
+        # on failure; on success its final restart picks up the new binary.
+        if active:
+            subprocess.run(['systemctl', '--user', 'start', 'agent-memory.service'], check=True)
 
 
 def main():
@@ -71,6 +93,7 @@ def main():
             parser.error('Existing config points to a different database; no changes installed')
     # Validate before replacing a running binary or its unit.
     subprocess.run([str(binary), 'check', '--config', str(server)], check=True)
+    migrate_database(binary, database)
     atomic_copy(binary, bin_dir / 'agent-memory-server', 0o755)
     atomic_copy(source / 'client.py', bin_dir / 'agent-memory-client', 0o755)
     atomic_copy(source / 'deploy/agent-memory.user.service', unit_dir / 'agent-memory.service', 0o644)
