@@ -156,7 +156,10 @@ async fn recall(State(app): State<App>, Json(mut request): Json<Recall>) -> Resp
     .await
     .into_response()
 }
-async fn observe(State(app): State<App>, Json(memory): Json<Value>) -> impl IntoResponse {
+async fn observe(
+    State(app): State<App>,
+    Json(model::Document(memory)): Json<model::Document>,
+) -> impl IntoResponse {
     app.run(move |s| s.observe(memory)).await
 }
 async fn dream(State(app): State<App>) -> impl IntoResponse {
@@ -165,16 +168,28 @@ async fn dream(State(app): State<App>) -> impl IntoResponse {
 async fn get_dream(State(app): State<App>, Path(id): Path<String>) -> impl IntoResponse {
     app.run(move |s| s.get_dream(&id)).await
 }
-async fn validate(State(app): State<App>, Json(proposal): Json<Value>) -> impl IntoResponse {
+async fn validate(
+    State(app): State<App>,
+    Json(model::Document(proposal)): Json<model::Document>,
+) -> impl IntoResponse {
     app.run(move |s| { s.check_proposal(&proposal)?; Ok(json!({"valid":true,"note":"Schema validation does not establish truth or approve promotion."})) }).await
 }
-async fn diff(State(app): State<App>, Json(proposal): Json<Value>) -> impl IntoResponse {
+async fn diff(
+    State(app): State<App>,
+    Json(model::Document(proposal)): Json<model::Document>,
+) -> impl IntoResponse {
     app.run(move |s| s.diff(&proposal)).await
 }
-async fn promote(State(app): State<App>, Json(proposal): Json<Value>) -> impl IntoResponse {
+async fn promote(
+    State(app): State<App>,
+    Json(model::Document(proposal)): Json<model::Document>,
+) -> impl IntoResponse {
     app.run(move |s| s.promote(proposal)).await
 }
-async fn rollback(State(app): State<App>, Json(request): Json<Value>) -> impl IntoResponse {
+async fn rollback(
+    State(app): State<App>,
+    Json(model::Document(request)): Json<model::Document>,
+) -> impl IntoResponse {
     app.run(move |s| s.rollback(request)).await
 }
 async fn export(State(app): State<App>) -> impl IntoResponse {

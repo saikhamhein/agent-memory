@@ -51,7 +51,9 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             memory = {'id': 'fixture', 'title': 'Fixture', 'body': 'Check existing context.',
                 'scope': {'kind': 'global'}, 'confidence': 'explicit', 'tags': [],
                 'evidence': [{'source': 'test', 'locator': 'mcp:1', 'note': 'Fixture only',
-                    'numbers': [18446744073709551617, -(2**130), 1e-7, 1e20, -0.0]}]}
+                    'numbers': [18446744073709551617, -(2**130), 1e-7, 1e20, -0.0],
+                    'opaque': {'$serde_json::private::Number': '123'},
+                    'nested': [{'$serde_json::private::Number': 'metadata', 'other': True}]}]}
             observed = await session.call_tool('memory_observe', {'memory': memory})
             self.assertFalse(observed.isError)
             dream = await session.call_tool('memory_dream', {})

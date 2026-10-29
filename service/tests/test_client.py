@@ -71,7 +71,9 @@ class ClientTests(unittest.TestCase):
         candidate = {'id': 'example', 'title': 'Example', 'body': 'Check existing evidence.',
             'scope': {'kind': 'global'}, 'confidence': 'explicit', 'tags': ['evidence'],
             'evidence': [{'source': 'test', 'locator': 'fixture:1', 'note': 'Fixture only',
-                'numbers': [18446744073709551617, -(2**130), 1e-7, 1e20, -0.0]}]}
+                'numbers': [18446744073709551617, -(2**130), 1e-7, 1e20, -0.0],
+                'opaque': {'$serde_json::private::Number': '123'},
+                'nested': [{'$serde_json::private::Number': 'metadata', 'other': True}]}]}
         file = self.root / 'candidate.json'
         file.write_text(json.dumps(candidate))
         denied = self.client('observe', file, role='reader', success=False)

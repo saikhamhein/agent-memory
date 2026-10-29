@@ -345,6 +345,7 @@ fn scope_expiry_budget_and_credentials() {
 fn restart_backup_and_python_compatibility() {
     let (tmp, mut store) = fixture();
     let mut saved = memory("saved");
+    saved["evidence"][0]["opaque"] = json!({"$serde_json::private::Number":"123"});
     saved["evidence"][0]["numbers"] =
         serde_json::from_str("[18446744073709551617, -18446744073709551617, 1e-07, 1e+20, -0.0]")
             .unwrap();
@@ -372,6 +373,7 @@ root=Path(sys.argv[2])
 db=memory.connect(root)
 n, items=memory.active(db)
 assert n == 1 and items[0]['id'] == 'saved'
+assert items[0]['evidence'][0]['opaque'] == {'$serde_json::private::Number': '123'}
 assert items[0]['evidence'][0]['numbers'] == [18446744073709551617, -18446744073709551617, 1e-7, 1e20, -0.0]
 assert db.execute('SELECT sha256 FROM revisions WHERE id=1').fetchone()[0] == memory.digest(items)
 path=memory.new_dream(db, root)
@@ -432,6 +434,31 @@ print(json.dumps({'value': values, 'encoded': memory.encode(values)}, ensure_asc
     );
     let overflowing: Value = serde_json::from_str("[1e999]").unwrap();
     assert!(model::encode(&overflowing).is_err());
+}
+
+#[test]
+fn document_decoder_preserves_reserved_keys_and_bounds_nesting() {
+    for text in [
+        r#"{"$serde_json::private::Number":"123"}"#,
+        r#"{"$serde_json::private::Number":"ordinary metadata","extra":true}"#,
+        r#"[{"$serde_json::private::RawValue":{"$serde_json::private::Number":null}}]"#,
+    ] {
+        let decoded = model::decode(text).unwrap();
+        // Independent typed decoders in Python verify ordinary objects survive.
+        let encoded = model::encode(&decoded).unwrap();
+        let check = std::process::Command::new("python3")
+            .args([
+                "-c",
+                "import json,sys; assert json.loads(sys.argv[1]) == json.loads(sys.argv[2])",
+                text,
+                &encoded,
+            ])
+            .status()
+            .unwrap();
+        assert!(check.success());
+    }
+    assert!(model::decode(&format!("{}0{}", "[".repeat(130), "]".repeat(130))).is_err());
+    assert!(model::decode("[1,]").is_err());
 }
 
 #[test]

@@ -5,10 +5,60 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     path::{Component, Path},
     sync::LazyLock,
 };
+
+/// JSON document decoder shared by HTTP input and stored evidence. Decode raw
+/// JSON tokens by their actual kind: Value's arbitrary-precision visitor treats
+/// an ordinary object named "$serde_json::private::Number" as a number.
+pub struct Document(pub Value);
+
+impl<'de> Deserialize<'de> for Document {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        decode_raw(&raw, 0)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+pub fn decode(text: &str) -> Result<Value> {
+    Ok(serde_json::from_str::<Document>(text)?.0)
+}
+
+fn decode_raw(raw: &serde_json::value::RawValue, depth: usize) -> serde_json::Result<Value> {
+    if depth >= 128 {
+        return Err(serde::de::Error::custom("JSON nesting exceeds 128 levels"));
+    }
+    let text = raw.get().trim_start();
+    match text.as_bytes()[0] {
+        b'{' => {
+            let fields: BTreeMap<String, &serde_json::value::RawValue> =
+                serde_json::from_str(text)?;
+            fields
+                .into_iter()
+                .map(|(k, v)| Ok((k, decode_raw(v, depth + 1)?)))
+                .collect::<serde_json::Result<serde_json::Map<_, _>>>()
+                .map(Value::Object)
+        }
+        b'[' => {
+            let items: Vec<&serde_json::value::RawValue> = serde_json::from_str(text)?;
+            items
+                .into_iter()
+                .map(|v| decode_raw(v, depth + 1))
+                .collect::<serde_json::Result<Vec<_>>>()
+                .map(Value::Array)
+        }
+        b'"' => serde_json::from_str(text).map(Value::String),
+        b't' | b'f' => serde_json::from_str(text).map(Value::Bool),
+        b'n' => Ok(Value::Null),
+        _ => serde_json::from_str(text).map(Value::Number),
+    }
+}
 
 pub fn encode(value: &Value) -> Result<String> {
     // Match memory.encode(): sorted keys, two-space indentation, UTF-8 strings,

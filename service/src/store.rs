@@ -1,6 +1,6 @@
 use crate::{
     Error, Result,
-    model::{encode, hash, invalid, now, string, validate},
+    model::{decode, encode, hash, invalid, now, string, validate},
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde_json::{Value, json};
@@ -14,7 +14,7 @@ fn active(db: &Connection) -> Result<(i64, Value)> {
         [],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    Ok((revision, serde_json::from_str(&body)?))
+    Ok((revision, decode(&body)?))
 }
 
 impl Store {
@@ -85,7 +85,7 @@ impl Store {
         {
             let mut stmt = tx.prepare("SELECT input FROM dreams WHERE promoted IS NOT NULL")?;
             for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
-                let input: Value = serde_json::from_str(&row?)?;
+                let input = decode(&row?)?;
                 if let Some(observations) = input["observations"].as_array() {
                     for o in observations {
                         if let Some(id) = o["id"].as_str() {
@@ -108,7 +108,7 @@ impl Store {
             })? {
                 let (id, created, body) = row?;
                 if !consumed.contains(&id) {
-                    observations.push(json!({"id":id,"created":created,"body":serde_json::from_str::<Value>(&body)?}));
+                    observations.push(json!({"id":id,"created":created,"body":decode(&body)?}));
                 }
             }
         }
@@ -139,9 +139,9 @@ impl Store {
             )
             .optional()?
             .ok_or(Error::NotFound)?;
-        let input: Value = serde_json::from_str(&row.1)?;
+        let input = decode(&row.1)?;
         let proposal = match row.3 {
-            Some(body) => serde_json::from_str(&body)?,
+            Some(body) => decode(&body)?,
             None => initial_proposal(id, row.0, input["memories"].clone()),
         };
         Ok(json!({"input":input,"proposal":proposal,"promoted":row.2}))
@@ -304,5 +304,5 @@ fn check_proposal(db: &Connection, proposal: &Value) -> Result<Value> {
     if proposal["base_revision"] != row.0 {
         return Err(invalid("Altered base revision"));
     }
-    Ok(json!({"input":serde_json::from_str::<Value>(&row.1)?,"promoted":row.2}))
+    Ok(json!({"input":decode(&row.1)?,"promoted":row.2}))
 }
