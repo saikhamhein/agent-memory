@@ -2,17 +2,25 @@
 
 One local source of accepted collaboration preferences for Codex, Claude Code, DeepSeek Harness and other agents that can read local files. Python 3.9+ and SQLite; no model API, cloud upload, embeddings or background service is required. The agent performs semantic consolidation. The CLI handles storage and revision safety.
 
+This PC uses `/home/sai/probe/agent-memory` as an independent temporary store, activated at the user's request on 2026-10-28. No sync-back is configured. The original other-machine database was absent from this checkout. Local revision 2 contains 26 memories following a dream across all available local session logs. See `AGENTS.md` and `sources/full-dream-coverage-2026-10-28.json` for installation state and review limits. The database and generated artifacts are ignored by Git, so a clone alone does not carry accepted memories.
+
 ## Daily use
 
+An optional native Rust HTTP service, systemd units and stdio MCP adapter are available in [service/README.md](service/README.md). They use this same SQLite schema and add authenticated API/tool access, backup support, and a later Raspberry Pi migration path. The MCP adapter lets a desktop host call the API without agent shell network access. The original local CLI remains available.
+
+Initialize a new store with `python3 memory.py init`. For an existing WAL-mode store, run this once with write access to migrate it to rollback journaling; accepted revisions and evidence are preserved. Rollback journaling lets agents read without creating SQLite sidecar files. Short reads and writes can briefly wait for one another, with a 30-second lock timeout.
+
+`recall`, `status`, `diff`, `validate`, and `export` open the database read-only and never initialize a missing store. Export still requires write access to its output directory. Recording, dreaming, promotion, rollback, and initialization require database write access.
+
 ```sh
-python3 /home/sai/Projects/agent-memory/memory.py recall --project "$PWD" --query "current task" --limit 12 --budget 12000
+python3 /home/sai/probe/agent-memory/memory.py recall --project "$PWD" --query "current task" --limit 12 --budget 12000
 ```
 
-Use a canonical project root for other clones/worktrees of the same repository. Add relevant `--topic hardware`, `--topic documentation`, `--topic ui`, `--topic burmese`, `--topic media`, or `--role coordinator`. Topic and role memories are opt-in so irrelevant advice does not fill the context. Global memories always qualify; a keyword score orders qualifying memories. The budget is **characters**, not tokens; long entries are omitted whole. JSON output includes provenance and is not budget-limited.
+Use a canonical project root for other clones/worktrees of the same repository. Add relevant `--topic hardware`, `--topic machine-learning`, `--topic documentation`, `--topic software-development`, `--topic robotics`, `--topic ui`, or `--topic media`. Role filters such as `--role coordinator` can be used when that role has accepted memories. Topic and role memories are opt-in so irrelevant advice does not fill the context. Global memories always qualify; a keyword score orders qualifying memories. The budget is **characters**, not tokens; long entries are omitted whole. JSON output includes provenance and is not budget-limited.
 
 Codex loads a small pointer through its user-level `AGENTS.md`; that asks the agent to call recall. This is instruction-based retrieval, not a modification of Codex's internal memory database or guaranteed mechanical injection. Claude Code and DeepSeek use equivalent pointers. Fresh sessions are needed to discover changed global instructions. Existing sessions can be asked to reload them. A restricted agent may need read permission for this directory and write permission only when recording or dreaming.
 
-For ChatGPT or Claude web without filesystem access, use the exported `PROFILE.md` as project context or a context attachment. That is a snapshot; replace it after a new accepted revision. Do not upload the evidence database or private raw logs just to share the profile. A future authenticated MCP adapter could expose scoped recall/capture to compatible clients, but no network service or cloud integration is installed here.
+For ChatGPT or Claude web without filesystem access, use the exported `PROFILE.md` as project context or a context attachment. That is a snapshot; replace it after a new accepted revision. Do not upload the evidence database or private raw logs just to share the profile. A local authenticated HTTP service and Codex stdio MCP adapter are installed on this PC; see [service/README.md](service/README.md). Existing global agent instructions still use the local CLI. No cloud integration is installed.
 
 ## Layout and authority
 
@@ -58,7 +66,7 @@ Dreaming is on demand. Ask an agent to “run dream-memory over new sessions and
 
 `python3 memory.py status` shows the active revision. Restore old content as a new revision with `python3 memory.py rollback N --expected CURRENT --reason "why"`; this preserves audit history and rejects a stale expected head. Run export afterward. Tests: `python3 -m unittest -v test_memory.py`.
 
-Relocate the entire store together, update the small adapters, and use `memory.py --root /new/location COMMAND`. Source locators refer to the original machine and may need mapping. Do not merge live SQLite files through a file-sync service; use one writer host or transfer a quiescent backup/export with explicit conflict resolution. This setup is single-machine persistence, not cross-device synchronization or a disaster-recovery service.
+Relocate the entire store together, update the small adapters, and use `memory.py --root /new/location COMMAND`. Source locators refer to the original machine and may need mapping. Do not merge live SQLite files through a file-sync service; use one authoritative host or transfer a quiescent backup/export with explicit conflict resolution. API clients can share the service's store once network access is configured; no cross-device database synchronization is implemented. The current service listens only on this PC's loopback interface.
 
 ## Design basis
 
