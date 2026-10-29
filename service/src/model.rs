@@ -11,7 +11,82 @@ use std::{
 };
 
 pub fn encode(value: &Value) -> Result<String> {
-    Ok(serde_json::to_string_pretty(value)?)
+    // Match memory.encode(): sorted keys, two-space indentation, UTF-8 strings,
+    // unbounded integers, and Python's finite binary64 float representation.
+    // serde_json's arbitrary_precision feature keeps integers lossless while
+    // parsing HTTP requests and existing Python-created database records.
+    let mut normalized = value.clone();
+    normalize_numbers(&mut normalized)?;
+    Ok(serde_json::to_string_pretty(&normalized)?)
+}
+
+fn normalize_numbers(value: &mut Value) -> Result<()> {
+    match value {
+        Value::Number(number) => {
+            let raw = number.to_string();
+            if raw.contains(['.', 'e', 'E']) {
+                let float: f64 = raw
+                    .parse()
+                    .map_err(|_| invalid("Invalid numeric metadata"))?;
+                let shortest = serde_json::Number::from_f64(float)
+                    .ok_or_else(|| {
+                        invalid("Numeric metadata must be finite binary64 or an integer")
+                    })?
+                    .to_string();
+                *number = python_float(&shortest).parse()?;
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                normalize_numbers(item)?;
+            }
+        }
+        Value::Object(fields) => {
+            for item in fields.values_mut() {
+                normalize_numbers(item)?;
+            }
+        }
+        _ => (),
+    }
+    Ok(())
+}
+
+fn python_float(shortest: &str) -> String {
+    // The shortest round-trip digits come from serde_json's float formatter.
+    // Python uses fixed notation for exponents -4..15, and otherwise includes
+    // an explicit exponent sign and at least two exponent digits.
+    let (sign, unsigned) = shortest
+        .strip_prefix('-')
+        .map_or(("", shortest), |s| ("-", s));
+    let (mantissa, exponent) = unsigned.split_once('e').map_or((unsigned, 0), |(m, e)| {
+        (m, e.parse::<i32>().expect("finite float exponent"))
+    });
+    let point = mantissa.find('.').unwrap_or(mantissa.len()) as i32;
+    let all_digits = mantissa.replace('.', "");
+    let digits = all_digits.trim_start_matches('0');
+    if digits.is_empty() {
+        return format!("{sign}0.0");
+    }
+    let leading = (all_digits.len() - digits.len()) as i32;
+    let exponent = exponent + point - leading - 1;
+    let digits = digits.trim_end_matches('0');
+    if !(-4..16).contains(&exponent) {
+        let tail = if digits.len() > 1 {
+            format!(".{}", &digits[1..])
+        } else {
+            String::new()
+        };
+        format!("{sign}{}{tail}e{exponent:+03}", &digits[..1])
+    } else if exponent < 0 {
+        format!("{sign}0.{}{digits}", "0".repeat((-exponent - 1) as usize))
+    } else {
+        let point = exponent as usize + 1;
+        if point >= digits.len() {
+            format!("{sign}{digits}{}.0", "0".repeat(point - digits.len()))
+        } else {
+            format!("{sign}{}.{}", &digits[..point], &digits[point..])
+        }
+    }
 }
 pub fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))

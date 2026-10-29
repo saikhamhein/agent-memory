@@ -2,7 +2,7 @@
 
 A native Rust HTTP service for the existing agent memory database. It runs on this Linux PC under systemd; the same source and database can later move to a 64-bit Raspberry Pi. SQLite is bundled into the build. The server has no Python, model API, embedding, or external database dependency. The optional client and user installer use Python 3; the installer uses Python 3.11+ when updating an existing installation.
 
-The service retains accepted revisions, observation evidence, immutable dream inputs, review requirements, and stale-promotion protection. It uses the Python tool's existing schema, so no memory re-import or rewrite is needed. JSON objects preserve additional evidence fields. Dates are evaluated in UTC on the server. Project roots are logical namespaces rather than paths resolved on the server's filesystem.
+The service retains accepted revisions, observation evidence, immutable dream inputs, review requirements, and stale-promotion protection. It uses the Python tool's existing schema, so no memory re-import or rewrite is needed. JSON objects preserve additional evidence fields, including integers larger than 64 bits. Decimal/exponent values use Python-compatible finite binary64 semantics and serialization for revision hashes; non-finite values are rejected. Dates are evaluated in UTC on the server. Project roots are logical namespaces rather than paths resolved on the server's filesystem.
 
 ## Build and test
 
@@ -14,13 +14,14 @@ cargo clippy --locked --manifest-path service/Cargo.toml --all-targets -- -D war
 cargo build --release --locked --manifest-path service/Cargo.toml
 python3 -m unittest -v test_memory.py
 python3 -m unittest -v service/tests/test_client.py
+python3 -m unittest -v service/tests/test_install.py
 ```
 
 Cargo.lock pins the dependency set. SQLite's C source is built with the binary; an SQLite development package is unnecessary. The integration tests use Python 3 to check database and digest compatibility with the existing tool.
 
 ## Run on this machine
 
-The installer uses the existing database in place. It preserves configuration and credentials on upgrades, replaces the binary atomically, validates the user unit, and enables/restarts the service:
+The installer uses the existing database in place. It preserves configuration and credentials on upgrades, replaces the binary atomically, validates the user unit, and enables/restarts the service. Older WAL databases are migrated to rollback journaling before installation proceeds. A running memory service is briefly stopped for that migration and restored afterward, including on migration failure; other database users must release their connections or the migration fails without replacing the installed binary:
 
 ```sh
 python3 service/install-user.py --database "$PWD/memory.sqlite3"

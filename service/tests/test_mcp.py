@@ -50,7 +50,8 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(tools['memory_diff'].annotations.readOnlyHint)
             memory = {'id': 'fixture', 'title': 'Fixture', 'body': 'Check existing context.',
                 'scope': {'kind': 'global'}, 'confidence': 'explicit', 'tags': [],
-                'evidence': [{'source': 'test', 'locator': 'mcp:1', 'note': 'Fixture only'}]}
+                'evidence': [{'source': 'test', 'locator': 'mcp:1', 'note': 'Fixture only',
+                    'numbers': [18446744073709551617, -(2**130), 1e-7, 1e20, -0.0]}]}
             observed = await session.call_tool('memory_observe', {'memory': memory})
             self.assertFalse(observed.isError)
             dream = await session.call_tool('memory_dream', {})

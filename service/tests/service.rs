@@ -344,14 +344,18 @@ fn scope_expiry_budget_and_credentials() {
 #[test]
 fn restart_backup_and_python_compatibility() {
     let (tmp, mut store) = fixture();
+    let mut saved = memory("saved");
+    saved["evidence"][0]["numbers"] =
+        serde_json::from_str("[18446744073709551617, -18446744073709551617, 1e-07, 1e+20, -0.0]")
+            .unwrap();
     let dream = store.dream().unwrap();
     store
-        .promote(reviewed(&dream, json!([memory("saved")])))
+        .promote(reviewed(&dream, json!([saved.clone()])))
         .unwrap();
     drop(store);
     let path = tmp.path().join("memory.sqlite3");
     let store = Store::open(&path).unwrap();
-    assert_eq!(store.active().unwrap(), (1, json!([memory("saved")])));
+    assert_eq!(store.active().unwrap(), (1, json!([saved.clone()])));
     let backup = tmp.path().join("backup.sqlite3");
     Store::backup(&path, &backup).unwrap();
     assert!(Store::backup(&path, &backup).is_err());
@@ -368,6 +372,7 @@ root=Path(sys.argv[2])
 db=memory.connect(root)
 n, items=memory.active(db)
 assert n == 1 and items[0]['id'] == 'saved'
+assert items[0]['evidence'][0]['numbers'] == [18446744073709551617, -18446744073709551617, 1e-7, 1e20, -0.0]
 assert db.execute('SELECT sha256 FROM revisions WHERE id=1').fetchone()[0] == memory.digest(items)
 path=memory.new_dream(db, root)
 p=json.loads(path.read_text())
@@ -390,7 +395,43 @@ db.close()
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(store.active().unwrap(), (2, json!([memory("saved")])));
+    assert_eq!(store.active().unwrap(), (2, json!([saved])));
+}
+
+#[test]
+fn numeric_encoding_matches_python() {
+    // Differential coverage across binary64 exponents, signed zero, subnormals,
+    // formatting boundaries, integers larger than u64/i128 and nested values.
+    let script = r#"
+import json, math, random, struct, sys
+sys.path.insert(0, sys.argv[1])
+import memory
+rng = random.Random(812)
+values = [0.0, -0.0, 1e-7, 1e-5, 1e-4, 1e15, 1e16, 1e20, 1e23,
+          5e-324, 1.7976931348623157e308, 18446744073709551617, -(2**130),
+          {'nested': [1.2345678901234567, '\u0001 မြန်မာ 😀', {}, []]}]
+for _ in range(5000):
+    number = struct.unpack('!d', rng.getrandbits(64).to_bytes(8, 'big'))[0]
+    if math.isfinite(number):
+        values.append(number)
+print(json.dumps({'value': values, 'encoded': memory.encode(values)}, ensure_ascii=False))
+"#;
+    let output = std::process::Command::new("python3")
+        .args(["-c", script, concat!(env!("CARGO_MANIFEST_DIR"), "/..")])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let data: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        model::encode(&data["value"]).unwrap(),
+        data["encoded"].as_str().unwrap()
+    );
+    let overflowing: Value = serde_json::from_str("[1e999]").unwrap();
+    assert!(model::encode(&overflowing).is_err());
 }
 
 #[test]
