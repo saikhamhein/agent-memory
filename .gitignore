@@ -11,3 +11,4 @@ __pycache__/
 /service/.venv-mcp/
 /runtime/
 /recall-log.jsonl
+/graphify-out/
