@@ -31,7 +31,7 @@ The user has given standing authorization (2026-10-29, 2026-11-01) for memory-st
    - Expire or delete stale facts. Keep evidence for every retained rule.
    - Resolve contradictions with dated direct evidence, and record each in `conflicts` as `{"status": "resolved", …}` with the reasoning.
    - When a rule existed but didn't trigger, fix its wording or trigger.
-   - Keep `pinned` for the core rules. All pinned bodies together must stay within 6,000 characters.
+   - Keep `pinned` for the core rules. Together, pinned memories (heading plus body) must stay within 4,000 characters.
 5. **Diff.** Call `memory_dream_get(dream_id, diff=true)` and check every added, removed and changed memory against its evidence.
 6. **Adopt.** Call `memory_dream_adopt(dream_id, summary, coverage, conflicts, reviewed=true)`.
    - `reviewed` records your evidence review. It isn't user approval.
@@ -44,7 +44,7 @@ The user has given standing authorization (2026-10-29, 2026-11-01) for memory-st
    - Revision before → after.
    - Each memory added, changed or removed, one line each with its evidence date.
    - Observations consumed.
-   - Pinned characters out of 6,000 (`memory_status`).
+   - Pinned characters out of 4,000 (`memory_status`).
    - Coverage gaps.
 
 To undo a change, write an old version back: `memory_versions(created_by="dream:<id>")`, `memory_read("memver_…")`, then `memory_write(..., expected_sha256=…)`. The agent does the synthesis; the service supplies isolation, versions and conflict checks. Don't schedule recurring work or paid model jobs unless asked.
