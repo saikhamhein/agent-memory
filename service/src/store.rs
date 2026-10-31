@@ -478,7 +478,7 @@ impl Store {
             live,
             mirror_stale: false,
         };
-        store.sync_mirror(true);
+        store.sync_mirror();
         Ok(store)
     }
 
@@ -486,13 +486,14 @@ impl Store {
         mirror::dir(&self.mnt).display().to_string()
     }
 
-    /// Writes the mirror (only when it differs from the store if `if_stale`).
+    /// Rewrites the mirror unless it already matches the store. Rebuilding the
+    /// same revision (a crash or a new renderer) briefly removes that generation.
     /// A failure never undoes the commit; it marks the mirror stale.
-    fn sync_mirror(&mut self, if_stale: bool) {
+    fn sync_mirror(&mut self) {
         let result = (|| -> Result<()> {
             let (revision, rows, memories) = self.live_rows()?;
             let index = recall::index_md(&memories, revision, &self.mirror_dir());
-            if !(if_stale && mirror::is_current(&self.mnt, &self.live, revision, &index)) {
+            if !mirror::is_current(&self.mnt, &self.live, revision, &index) {
                 mirror::write(&self.mnt, &self.live, revision, &rows, &index)?;
             }
             Ok(())
@@ -701,7 +702,7 @@ impl Store {
 
     fn written(&mut self, live: bool) {
         if live {
-            self.sync_mirror(false);
+            self.sync_mirror();
         }
     }
 
@@ -993,7 +994,7 @@ impl Store {
             [&dream.output, &at],
         )?;
         tx.commit()?;
-        self.sync_mirror(false);
+        self.sync_mirror();
         self.dream(id, false)
     }
 
