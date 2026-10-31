@@ -47,6 +47,12 @@ fn content_with(title: &str, body: &str, extra: Value) -> String {
     }
     format!("---\n{meta}\n---\n{body}")
 }
+/// Pinned cost of a memory (design §3.1, `model::block_len`): the characters of the block recall prints for it,
+/// `### {title} [{path}]\n{body}\n\n`, with the body's trailing whitespace trimmed. Written out here on purpose.
+fn block_len(title: &str, path: &str, body: &str) -> usize {
+    format!("### {title} [{path}]\n{}\n\n", body.trim_end()).chars().count()
+}
+
 fn content(title: &str, body: &str) -> String {
     content_with(title, body, json!({}))
 }
@@ -383,7 +389,7 @@ async fn status_shape_and_counters() {
     let s = fx.status().await;
     assert_eq!(s["revision"], 2, "revision is the live store's version count");
     assert_eq!(s["memories"], 2);
-    assert_eq!(s["pinned_chars"], "twelve chars".chars().count());
+    assert_eq!(s["pinned_chars"], block_len("Pinned rule", "/global/a.md", "twelve chars"));
     assert_eq!(s["observations_pending"], 1);
     assert_eq!(s["dreams_running"], 1);
 }
@@ -609,7 +615,15 @@ async fn error_mapping_conflicts() {
     // pinned_budget_exceeded: `paths` = every pinned path the store would hold after the rejected write (architect ruling).
     // 4,000 characters fit exactly, one more does not, and nothing is written.
     let fx2 = Fx::new();
-    let four_k = "p".repeat(4000);
+    // The budget counts rendered blocks, heading included: exactly 4,000 is accepted, 4,001 is refused.
+    let overhead = block_len("Core", "/global/core.md", "");
+    let refused = fx2.call("POST", url, "admin", json!({
+        "path": "/global/core.md",
+        "content": content_with("Core", &"p".repeat(4001 - overhead), json!({"pinned": true}))
+    })).await;
+    assert_conflict(&refused, "pinned_budget_exceeded", Some(&["/global/core.md"]));
+    assert_eq!(fx2.ok("GET", url, Value::Null).await["data"], json!([]), "nothing written");
+    let four_k = "p".repeat(4000 - overhead);
     fx2.create("live", "/global/core.md", &content_with("Core", &four_k, json!({"pinned": true}))).await;
     let over = fx2.call("POST", url, "admin", json!({
         "path": "/global/more.md", "content": content_with("More", "q", json!({"pinned": true}))
