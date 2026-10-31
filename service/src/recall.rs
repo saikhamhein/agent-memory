@@ -9,7 +9,7 @@ use crate::model::{Kind, Memory, block_len};
 use chrono::Utc;
 use regex::Regex;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::BTreeSet,
     path::{Component, Path, PathBuf},
     sync::LazyLock,
 };
@@ -164,52 +164,28 @@ fn start(memories: &[&Memory], revision: i64, mirror_dir: &str, request: &Reques
     }
 }
 
-/// How many index lines fit in `room` characters together with the lines that
-/// name the rest, and whether the rest collapses into one line. Listing stops at
-/// the first line that doesn't fit.
+/// How many index lines fit in `room` characters beside the one collapse line,
+/// stopping at the first that doesn't, and whether the rest stays collapsed
+/// (its per-directory count lines don't fit in what is left).
 fn listed(index: &[&Memory], lines: &[String], room: usize, mirror_dir: &str) -> (usize, bool) {
     let len = |s: &str| s.chars().count();
-    // Count lines for index[k..], kept up to date as k grows.
-    let mut per_dir: HashMap<&str, usize> = HashMap::new();
-    for m in index {
-        *per_dir.entry(dir(m)).or_default() += 1;
-    }
-    let mut counts: usize = per_dir.iter().map(|(d, n)| len(&count_line(d, *n))).sum();
-    let mut used = 0;
-    let mut k = 0;
-    while k < index.len() {
-        let d = dir(index[k]);
-        let n = per_dir[d];
-        let after =
-            counts - len(&count_line(d, n)) + if n > 1 { len(&count_line(d, n - 1)) } else { 0 };
-        if used + len(&lines[k]) + after > room {
-            break;
-        }
-        used += len(&lines[k]);
-        counts = after;
-        per_dir.insert(d, n - 1);
-        k += 1;
-    }
-    if used + counts <= room {
-        return (k, false);
-    }
-    // Even the count lines don't fit: list what fits beside the one collapse line.
     let mut used = 0;
     let mut k = 0;
     while k < index.len() {
         let rest = index.len() - k - 1;
-        let tail = if rest > 0 {
+        let collapse = if rest > 0 {
             len(&collapse_line(rest, mirror_dir))
         } else {
             0
         };
-        if used + len(&lines[k]) + tail > room {
+        if used + len(&lines[k]) + collapse > room {
             break;
         }
         used += len(&lines[k]);
         k += 1;
     }
-    (k, k < index.len())
+    let collapsed = k < index.len() && used + len(&count_lines(&index[k..])) > room;
+    (k, collapsed)
 }
 
 /// One count line per directory, in order of first appearance.
