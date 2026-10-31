@@ -11,6 +11,7 @@ use std::{
     collections::BTreeMap,
     fs,
     os::unix::io::AsRawFd,
+    path::Path,
     sync::atomic::{AtomicBool, Ordering},
     thread,
 };
@@ -119,8 +120,8 @@ fn assert_mirror(ts: &TempStore) {
         "mnt/shared-agent-memory must be a symlink"
     );
     assert_eq!(
-        fs::read_link(&link).unwrap().file_name().unwrap().to_str(),
-        Some(revision.to_string().as_str()),
+        generation_revision(&fs::read_link(&link).unwrap()),
+        revision,
         "the symlink must point at .generations/<revision>"
     );
     let generations: Vec<_> = fs::read_dir(ts.mnt.join(".generations"))
@@ -128,7 +129,10 @@ fn assert_mirror(ts: &TempStore) {
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     assert!(
-        generations.len() <= 2 && generations.contains(&revision.to_string()),
+        generations.len() <= 2
+            && generations
+                .iter()
+                .any(|g| generation_revision(Path::new(g)) == revision),
         "keep only the current and previous generation, found {generations:?}"
     );
     let mut top: Vec<_> = fs::read_dir(&ts.mnt)
@@ -1691,17 +1695,22 @@ fn mirror_tracks_live() {
     assert_eq!(status_u64(&ts, "memories"), 3);
 }
 
+/// The revision a generation directory stands for: its name starts with the revision
+/// (design: `.generations/<revision>`); a suffix, such as a unique build id, is allowed.
+fn generation_revision(dir: &Path) -> i64 {
+    let name = dir.file_name().unwrap().to_str().unwrap();
+    let digits: String = name.chars().take_while(char::is_ascii_digit).collect();
+    digits
+        .parse()
+        .unwrap_or_else(|_| panic!("generation directory {dir:?} does not start with a revision"))
+}
+
 /// The generation behind an open directory descriptor, from /proc.
 fn generation_of(dir: &fs::File) -> i64 {
     let target = fs::read_link(format!("/proc/self/fd/{}", dir.as_raw_fd())).unwrap();
-    let name = target
-        .file_name()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .replace(" (deleted)", "");
-    name.parse()
-        .unwrap_or_else(|_| panic!("unexpected generation directory {target:?}"))
+    generation_revision(Path::new(
+        &target.to_str().unwrap().replace(" (deleted)", ""),
+    ))
 }
 
 #[test]
@@ -1751,14 +1760,7 @@ fn mirror_swap_atomic() {
                     }
                     // Only a generation older than the previous one may be retired.
                     _ => {
-                        let now: i64 = fs::read_link(&link)
-                            .unwrap()
-                            .file_name()
-                            .unwrap()
-                            .to_str()
-                            .unwrap()
-                            .parse()
-                            .unwrap();
+                        let now = generation_revision(&fs::read_link(&link).unwrap());
                         assert!(
                             now >= generation + 2,
                             "generation {generation} was incomplete while still current ({now})"
