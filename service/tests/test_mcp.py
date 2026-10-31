@@ -102,7 +102,8 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(tools[name].annotations.readOnlyHint, name)
             for name in ('memory_delete', 'memory_redact', 'memory_dream_adopt'):
                 self.assertTrue(tools[name].annotations.destructiveHint, name)
-            for name in MAINTENANCE_TOOLS - READ_TOOLS:
+            self.assertTrue(tools['memory_dream_get'].annotations.readOnlyHint)  # it only GETs dreams
+            for name in MAINTENANCE_TOOLS - READ_TOOLS - {'memory_dream_get'}:
                 self.assertFalse(tools[name].annotations.readOnlyHint, name)
             unknown = await session.call_tool('memory_promote', {})
             self.assertTrue(unknown.isError)
