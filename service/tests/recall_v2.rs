@@ -229,6 +229,17 @@ fn block(i: &Item) -> String {
     format!("### {} [{}]\n{}", i.title, i.path, i.body)
 }
 
+/// `model::block_len`: the chars of `### {title} [{path}]\n{body}\n\n`, the cost every budget counts.
+fn block_len(i: &Item) -> usize {
+    block(i).chars().count() + 2
+}
+
+/// A body that makes the block of a memory with this title and path exactly `n` characters.
+fn body_for_block(n: usize, title: &str, path: &str) -> String {
+    let overhead = format!("### {title} [{path}]\n").chars().count() + 2;
+    "b".repeat(n - overhead)
+}
+
 /// The start view above `## Index`, without the revision line.
 fn above_index(text: &str) -> &str {
     let head = text.split("\n## Index\n").next().unwrap();
@@ -347,6 +358,18 @@ fn assert_accounted(store: &Store, project: &str, text: &str) {
                 "count lines next to the collapse line"
             );
             assert_eq!(n, rest.len(), "collapse line counts the wrong number");
+            // as many lines are listed as fit beside the collapse line, so the next one does not
+            // (the count in the collapse line may lose one digit when a line is listed)
+            if let Some(next) = rest.first() {
+                let line = format!("- {} — {}\n", next.path, next.title)
+                    .chars()
+                    .count();
+                assert!(
+                    text.chars().count() + line - 1 > START_MAX,
+                    "index stops early: {} characters, the next line has {line}",
+                    text.chars().count()
+                );
+            }
         }
         None => {
             // one line per directory, in the order each directory first appears among the unlisted
@@ -578,27 +601,46 @@ fn title_of(n: usize, tag: &str) -> String {
     format!("{tag} {}", "t".repeat(n - tag.len() - 1))
 }
 
-#[test]
-fn start_within_hook_cap() {
-    // pinned bodies at exactly the 4,000-character budget, maximal project and requested memories
-    let mirror = format!("/srv/{}/mnt/shared-agent-memory", "m".repeat(100));
+/// Pinned blocks totalling exactly 4,000 characters (the pinned budget), as 4 large memories
+/// or as 60 tiny ones with long-ish titles; `tiny` selects the second shape.
+fn hook_cap_store(tiny: bool) -> Store {
     let mut s = Store::new();
-    for i in 0..4 {
-        s.add(
-            &format!("/global/core-{i}.md"),
-            &title_of(120, &format!("Core rule {i}")),
-            &format!("{i}{}", "c".repeat(999)),
-            json!({"pinned": true, "priority": 10 - i}),
-        );
+    if tiny {
+        // 60 blocks of 66 characters, 40 of them stretched by one title character
+        for i in 0..60 {
+            let title = title_of(if i < 40 { 39 } else { 38 }, &format!("Pin {i:02}"));
+            s.add(
+                &format!("/global/pin-{i:02}.md"),
+                &title,
+                "x",
+                json!({"pinned": true, "priority": 100 - i}),
+            );
+        }
+    } else {
+        for i in 0..4 {
+            let (title, path) = (
+                title_of(120, &format!("Core rule {i}")),
+                format!("/global/core-{i}.md"),
+            );
+            let body = body_for_block(1000, &title, &path);
+            s.add(
+                &path,
+                &title,
+                &body,
+                json!({"pinned": true, "priority": 10 - i}),
+            );
+        }
     }
+    // project memories filling START_BODY_BUDGET: 3 blocks of 990 characters
     for i in 0..3 {
-        s.add(
-            &format!("/projects/work/app/proj-{i}.md"),
-            &title_of(120, &format!("Project rule {i}")),
-            &format!("{i}{}", "p".repeat(988)),
-            json!({"priority": 9 - i}),
+        let (title, path) = (
+            title_of(120, &format!("Project rule {i}")),
+            format!("/projects/work/app/proj-{i}.md"),
         );
+        let body = body_for_block(990, &title, &path);
+        s.add(&path, &title, &body, json!({"priority": 9 - i}));
     }
+    // a requested memory that no longer fits
     s.add(
         "/topics/hardware/bench.md",
         &title_of(120, "Bench"),
@@ -606,79 +648,236 @@ fn start_within_hook_cap() {
         json!({}),
     );
     s.extras(5000);
-    let pinned: Vec<&Item> = s.items.iter().filter(|i| i.pinned).collect();
-    assert_eq!(
-        pinned.iter().map(|i| i.body.chars().count()).sum::<usize>(),
-        4000
-    );
-    for (project, topics) in [
-        ("/work/app", &["hardware"][..]),
-        ("/work/app/sub", &[][..]),
-        ("", &["hardware"][..]),
-        ("/nowhere", &[][..]),
-    ] {
-        let r = recall::recall(&s.mems, REV, &mirror, &req(project, "", topics, ""));
-        let n = r.text.chars().count();
-        assert!(
-            n <= START_MAX,
-            "start view has {n} characters (project {project:?})"
-        );
-        assert_one_newline(&r.text);
-        for i in &pinned {
-            assert!(
-                r.text.contains(&block(i)),
-                "pinned {} cut (project {project:?})",
-                i.path
-            );
-        }
-        assert_eq!(r.pinned.len(), 4);
-        if project.starts_with("/work/app") {
-            assert_eq!(
-                section(&r.text, "This project").len(),
-                3,
-                "2,967 body characters fit in 3,000"
-            );
-        }
-        let ix = index(&r.text);
-        if let Some(n) = ix.collapsed {
-            assert!(n > 0 && r.text.contains(&format!("full index: {mirror}/INDEX.md")));
-        }
-        assert!(
-            ix.collapsed.is_some() || !ix.counts.is_empty(),
-            "5,000 extra memories cannot all be listed"
-        );
-    }
+    s
+}
 
-    // index_md is the full index: pinned in full, one line for every other memory, no cap
-    let md = recall::index_md(&s.mems, REV, &mirror);
-    assert!(
-        md.chars().count() > START_MAX,
-        "index_md was cut to {} characters",
-        md.chars().count()
-    );
-    assert!(!md.contains("truncated"));
-    assert_one_newline(&md);
-    for i in &pinned {
-        assert!(md.contains(&block(i)));
+#[test]
+fn start_within_hook_cap() {
+    // a mirror path of 130 characters makes the header and the collapse line long
+    let mirror = format!("/srv/{}/mnt/shared-agent-memory", "m".repeat(100));
+    for tiny in [false, true] {
+        let s = hook_cap_store(tiny);
+        let pinned: Vec<&Item> = s.items.iter().filter(|i| i.pinned).collect();
+        assert_eq!(pinned.len(), if tiny { 60 } else { 4 });
+        assert_eq!(
+            pinned.iter().map(|i| block_len(i)).sum::<usize>(),
+            4000,
+            "pinned blocks must total the pinned budget"
+        );
+        for (project, topics) in [
+            ("/work/app", &["hardware"][..]),
+            ("/work/app/sub", &[][..]),
+            ("", &["hardware"][..]),
+            ("/nowhere", &[][..]),
+        ] {
+            let r = recall::recall(&s.mems, REV, &mirror, &req(project, "", topics, ""));
+            let n = r.text.chars().count();
+            assert!(
+                n <= START_MAX,
+                "start view has {n} characters (project {project:?}, tiny {tiny})"
+            );
+            assert_one_newline(&r.text);
+            for i in &pinned {
+                assert!(
+                    r.text.contains(&block(i)),
+                    "pinned {} cut (project {project:?}, tiny {tiny})",
+                    i.path
+                );
+            }
+            assert_eq!(r.pinned.len(), pinned.len());
+            if project.starts_with("/work/app") {
+                assert_eq!(
+                    section(&r.text, "This project").len(),
+                    3,
+                    "3 x 990 fit in 3,000"
+                );
+            }
+            let ix = index(&r.text);
+            if let Some(n) = ix.collapsed {
+                assert!(n > 0 && r.text.contains(&format!("full index: {mirror}/INDEX.md")));
+            }
+            assert!(
+                ix.collapsed.is_some() || !ix.counts.is_empty(),
+                "5,000 extra memories cannot all be listed"
+            );
+            // whatever is listed is the start of the index order, and the counts are exact
+            let want: Vec<&Item> = s.in_scope(project);
+            let full = set(headings(&r.text));
+            let mut order: Vec<&Item> = want
+                .into_iter()
+                .filter(|i| !full.contains(&i.path))
+                .collect();
+            order.sort_by_key(|i| (index_rank(i), i.sort_key()));
+            let k = ix.listed.len();
+            assert_eq!(
+                ix.listed,
+                order[..k]
+                    .iter()
+                    .map(|i| i.path.clone())
+                    .collect::<Vec<_>>()
+            );
+            let counted: usize =
+                ix.collapsed.unwrap_or(0) + ix.counts.iter().map(|(_, n)| n).sum::<usize>();
+            assert_eq!(k + counted, order.len(), "memories are dropped or invented");
+        }
+
+        // index_md is the full index, with no cap and no count lines
+        let md = recall::index_md(&s.mems, REV, &mirror);
+        assert!(
+            md.chars().count() > START_MAX,
+            "index_md was cut to {} characters",
+            md.chars().count()
+        );
+        assert!(!md.contains("truncated"));
+        assert_index_md(&s, &md);
     }
-    let ix = index(&md);
+}
+
+/// INDEX.md (architect ruling, doc PR 12): the header, `## Always apply` with the pinned
+/// *global* memories in full, then `## Index` with one line for every other live memory:
+/// global, then every project's (pinned project memories included), topics, roles; each group
+/// by priority then slug. No cap, no count lines.
+fn assert_index_md(store: &Store, md: &str) {
+    assert_one_newline(md);
+    let pinned_global: Vec<&Item> = {
+        let mut p: Vec<&Item> = store
+            .items
+            .iter()
+            .filter(|i| i.live() && i.pinned && i.path.starts_with("/global/"))
+            .collect();
+        p.sort_by_key(|i| i.sort_key());
+        p
+    };
+    for i in &pinned_global {
+        assert!(md.contains(&block(i)), "pinned {} not in full", i.path);
+    }
+    assert_eq!(
+        section(md, "Always apply"),
+        pinned_global
+            .iter()
+            .map(|i| i.path.clone())
+            .collect::<Vec<_>>(),
+        "Always apply holds the pinned global memories, in priority order"
+    );
+    assert_eq!(
+        headings(md).len(),
+        pinned_global.len(),
+        "no other memory in full"
+    );
+    let mut rest: Vec<&Item> = store
+        .items
+        .iter()
+        .filter(|i| i.live() && !pinned_global.iter().any(|p| p.path == i.path))
+        .collect();
+    let rank = |i: &Item| match i.path.split('/').nth(1).unwrap() {
+        "global" => 0,
+        "projects" => 1,
+        "topics" => 2,
+        _ => 3,
+    };
+    rest.sort_by_key(|i| (rank(i), i.sort_key()));
+    let ix = index(md);
     assert!(
         ix.counts.is_empty() && ix.collapsed.is_none(),
         "index_md has no count lines"
     );
-    let want: BTreeSet<String> = s
-        .in_scope("")
-        .iter()
-        .filter(|i| !i.pinned)
-        .map(|i| i.path.clone())
-        .collect();
     assert_eq!(
-        set(ix.listed.iter().cloned()),
-        want,
-        "one line for every other memory"
+        ix.listed,
+        rest.iter().map(|i| i.path.clone()).collect::<Vec<_>>(),
+        "one line for every other memory, in index order"
     );
-    assert_eq!(ix.listed.len(), want.len());
-    assert!(!md.contains("/projects/"), "index_md has no project");
+    for i in &rest {
+        assert!(
+            md.contains(&format!("- {} — {}\n", i.path, i.title)),
+            "index line of {}",
+            i.path
+        );
+    }
+}
+
+#[test]
+fn budget_equal_to_remaining_fits() {
+    // start: two blocks of exactly 1,500 fill START_BODY_BUDGET (<=), a third does not fit
+    let mut s = Store::new();
+    for i in 0..3 {
+        let (title, path) = (
+            format!("Edge note {i}"),
+            format!("/projects/work/app/e-{i}.md"),
+        );
+        let body = body_for_block(1500, &title, &path);
+        s.add(&path, &title, &body, json!({"priority": 5 - i}));
+    }
+    let r = s.start("/work/app", "", &[]);
+    assert_eq!(
+        section(&r.text, "This project"),
+        ["/projects/work/app/e-0.md", "/projects/work/app/e-1.md"]
+    );
+    // task: four blocks of exactly 1,500 fill TASK_BODY_BUDGET, the fifth moves to More matches
+    let mut t = Store::new();
+    for i in 0..5 {
+        let (title, path) = (format!("Zebra edge {i}"), format!("/global/zebra-{i}.md"));
+        let body = body_for_block(1500, &title, &path);
+        t.add(&path, &title, &body, json!({"priority": 9 - i}));
+    }
+    for i in 0..10 {
+        t.add(
+            &format!("/global/filler-{i}.md"),
+            &format!("Filler note {i}"),
+            "Plain filler.",
+            json!({}),
+        );
+    }
+    let (shown, listed, _) = task_parts(&t.task("zebra").text);
+    assert_eq!(shown.len(), 4);
+    assert_eq!(listed, ["/global/zebra-4.md"]);
+}
+
+#[test]
+fn budgets_count_the_heading() {
+    // start view: two bodies of 1,480 fit in 3,000 (2,960) but their blocks (~1,530 each) do not
+    let mut s = Store::new();
+    for i in 0..2 {
+        s.add(
+            &format!("/projects/work/app/h-{i}.md"),
+            &format!("Heading note {i}"),
+            &"h".repeat(1480),
+            json!({"priority": 5 - i}),
+        );
+    }
+    let r = s.start("/work/app", "", &[]);
+    assert_eq!(
+        section(&r.text, "This project"),
+        ["/projects/work/app/h-0.md"]
+    );
+    assert!(
+        index(&r.text)
+            .listed
+            .contains(&"/projects/work/app/h-1.md".to_string())
+    );
+    assert_accounted(&s, "/work/app", &r.text);
+
+    // task view: five bodies of 1,170 (5,850) fit in 6,000 but their blocks (~1,210 each) do not
+    let mut t = Store::new();
+    for i in 0..5 {
+        t.add(
+            &format!("/global/zebra-{i}.md"),
+            &format!("Zebra rule {i}"),
+            &"z".repeat(1170),
+            json!({"priority": 10 - i}),
+        );
+    }
+    for i in 0..10 {
+        t.add(
+            &format!("/global/filler-{i}.md"),
+            &format!("Filler note {i}"),
+            "Plain filler.",
+            json!({}),
+        );
+    }
+    let (shown, listed, remainder) = task_parts(&t.task("zebra").text);
+    assert_eq!(shown.len(), 4);
+    assert_eq!(listed, ["/global/zebra-4.md"]);
+    assert_eq!(remainder, None);
 }
 
 // ---------------------------------------------------------------- 4. project_and_requested_in_full
@@ -766,13 +965,7 @@ fn project_and_requested_in_full() {
             .collect::<Vec<_>>(),
         "2 x 1400 fit in 3000, the 3rd does not"
     );
-    assert!(
-        shown
-            .iter()
-            .map(|p| o.item(p).body.chars().count())
-            .sum::<usize>()
-            <= START_BODY_BUDGET
-    );
+    assert!(shown.iter().map(|p| block_len(o.item(p))).sum::<usize>() <= START_BODY_BUDGET);
     assert!(
         section(&r.text, "Requested").is_empty(),
         "800 more characters do not fit in the 200 left"
@@ -1180,7 +1373,7 @@ fn task_bounded() {
             .collect::<Vec<_>>(),
         "equal scores sort by priority"
     );
-    let body_chars: usize = shown.iter().map(|p| s.item(p).body.chars().count()).sum();
+    let body_chars: usize = shown.iter().map(|p| block_len(s.item(p))).sum();
     assert!(
         body_chars <= TASK_BODY_BUDGET,
         "{body_chars} body characters"
@@ -1352,9 +1545,16 @@ fn golden_texts() {
 }
 
 #[test]
-fn index_md_is_the_start_view_without_a_project() {
+fn index_md_is_the_full_index() {
     let s = Store::fixture();
-    let idx = recall::index_md(&s.mems, REV, MIRROR);
-    assert_eq!(idx, s.start("", "", &[]).text);
-    assert_eq!(idx, golden("start_none.txt"));
+    let md = recall::index_md(&s.mems, REV, MIRROR);
+    assert_index_md(&s, &md);
+    assert_eq!(md, golden("index_md.txt"));
+    // it is not the no-project start view: it lists every project's memories
+    let start = s.start("", "", &[]).text;
+    assert_ne!(md, start);
+    assert_eq!(start, golden("start_none.txt"));
+    assert!(!start.contains("/projects/") && md.contains("/projects/"));
+    // the pinned project memory is a line in the index, not in full
+    assert!(md.contains("- /projects/home/sai/Projects/agent-memory/run-tests-before-merge.md — "));
 }
