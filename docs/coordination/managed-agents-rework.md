@@ -28,7 +28,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 | Engineer R (recall) | `local_6158a6a3-f625-44c2-9401-7a559884a564` | building |
 | Test engineer R | `local_88b6d74f-ee66-441e-a12a-cb3df7e5719c` | tests → `rework/tests-r` |
 | Engineer H (HTTP API) | `local_a320fa63-05c9-4d9a-9f6a-ebad5ce08624` | building |
-| Test engineer H | `local_7a6bae6a-f710-4da7-a17d-ba7c2ff467f9` | tests → `rework/tests-h` |
+| Test engineer H | `local_7a6bae6a-f710-4da7-a17d-ba7c2ff467f9` | 21 tests: `rework/tests-h` @ `fc956f7`, fail to compile on d9e51c7 as intended; 9 spec questions with architect |
 | Engineer M (migration + install) | `local_15a0c48f-71c2-43fe-8db3-cc45fdea948c` | building |
 | Test engineer M | `local_9adf3c05-b247-4bd0-97bb-f64f1214b6aa` | tests → `rework/tests-m` |
 | Engineer C (clients, hook, docs) | `local_111adbc3-3795-4a66-881a-f9190f3f09ac` | building |
