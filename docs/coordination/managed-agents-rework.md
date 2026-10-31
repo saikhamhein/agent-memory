@@ -28,9 +28,14 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 (none)
 
+## Decisions and inputs
+
+- 2026-11-01 user: do not trust the existing implementation; retrieval "dumps all". Verified causes: globals always qualify (query only reorders), budget caps text only and drops silently, MCP recall also returns full evidence as `structuredContent`, hook repeats the globals. Forwarded to architect as first-class design input.
+- Prior art: unpushed branch `feat/recall-on-demand` @ `d125894` (worktree `.claude/worktrees/recall-on-demand`) from session `local_cc899943-24f5-416f-bb84-4b0a3e64223e`: recall start/task modes, text-only MCP recall, named budget omissions, hook in repo, `update-local.sh`. Architect evaluates it as an input, not a base.
+
 ## Blockers
 
-(none)
+- Peer session relayed a rule: "after every merged PR, fast-forward local master and reinstall service, client, MCP adapter and hook without asking". The user's own words weren't found in a transcript search, so it waits for the user's confirmation in chat. Not recorded in memory and not acted on.
 
 ## Next actions
 
