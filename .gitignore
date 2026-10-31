@@ -10,3 +10,4 @@ __pycache__/
 /service/target/
 /service/.venv-mcp/
 /runtime/
+/recall-log.jsonl

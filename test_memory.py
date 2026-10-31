@@ -63,6 +63,20 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual({'example', 'project', 'topic'}, {m['id'] for m in selected})
         self.assertLessEqual(len(memory.render(selected, 1, 350)), 350)
 
+    def test_recall_appends_usage_log(self):
+        memory.promote(self.db, self.proposal())
+        command = [sys.executable, str(Path(memory.__file__)), '--root', str(self.root), 'recall']
+        for extra in (['--query', 'evidence', '--project', '/projects/a'], ['--client', 'session-start']):
+            result = subprocess.run(command + extra, capture_output=True, text=True, timeout=5)
+            self.assertEqual(0, result.returncode, result.stderr)
+        log = self.root / 'recall-log.jsonl'
+        first, second = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual(('cli', 'evidence', '/projects/a', 1, ['example']),
+                         (first['client'], first['query'], first['project'], first['revision'], first['returned']))
+        self.assertEqual(len(result.stdout) - 1, second['chars'])
+        self.assertEqual('session-start', second['client'])
+        self.assertEqual(0o600, log.stat().st_mode & 0o777)
+
     def test_concurrent_observations(self):
         def save(i):
             db = memory.connect(self.root)
