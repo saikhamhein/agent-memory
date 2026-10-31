@@ -1,0 +1,11 @@
+# Memories matching "raspberry usb power" — revision 42
+
+### Raspberry Pi 5 USB ports share one power switch [/topics/hardware/raspberry-pi-usb-power.md]
+On a Raspberry Pi 5 the USB ports cannot be power-cycled one at a time; switching power affects all of them together. Plan device resets around a powered hub with per-port switching instead.
+
+How to apply: when the user corrects this, the agent updates the memory the same day.
+
+### Some SSD enclosures need UAS disabled [/topics/hardware/ssd-enclosure-quirks.md]
+A few USB SSD enclosures drop off the bus under load with UAS enabled. Add a usb-storage quirk for the enclosure's vendor and product id and confirm the disk stays mounted through a long copy.
+
+How to apply: the agent follows this in every session; this memory outranks habit.
