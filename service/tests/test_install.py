@@ -1,4 +1,5 @@
 """Installer migration tests with real SQLite/binary and simulated service controls."""
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -138,18 +139,18 @@ def v1_database(path, revisions):
 
 
 def dump(path):
-    with sqlite3.connect(path) as db:
+    with contextlib.closing(sqlite3.connect(path)) as db:
         text = list(db.iterdump())
     return text
 
 
 def legacy_rows(path):
-    with sqlite3.connect(path) as db:
+    with contextlib.closing(sqlite3.connect(path)) as db:
         return [db.execute(f'SELECT * FROM {table} ORDER BY {key}').fetchall() for table, key in LEGACY_TABLES]
 
 
 def user_version(path):
-    with sqlite3.connect(path) as db:
+    with contextlib.closing(sqlite3.connect(path)) as db:
         return db.execute('PRAGMA user_version').fetchone()[0]
 
 
@@ -345,7 +346,7 @@ class InstallMigrationGuardTests(unittest.TestCase):
             path = Path(name)
             self.assertTrue(str(path).startswith(str(self.box.runtime) + '/'), path)
             try:
-                with sqlite3.connect(path) as db:
+                with contextlib.closing(sqlite3.connect(path)) as db:
                     ok = db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
                 if ok and dump(path) == original:
                     backups.append(path)
@@ -355,7 +356,7 @@ class InstallMigrationGuardTests(unittest.TestCase):
         # Then migrated, installed, restarted and verified.
         self.assertEqual(user_version(self.box.database), 2)
         self.assertEqual(legacy_rows(self.box.database), original_rows)
-        with sqlite3.connect(self.box.database) as db:
+        with contextlib.closing(sqlite3.connect(self.box.database)) as db:
             content = db.execute("SELECT content FROM memories WHERE path='/global/keep-it-simple.md'").fetchone()[0]
         self.assertIn('"pinned": true', content)
         self.assertTrue(any(e.startswith(('systemctl --user restart', 'systemctl --user start')) for e in events[migrate:]))
