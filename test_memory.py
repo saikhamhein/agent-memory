@@ -36,15 +36,21 @@ class StubTests(unittest.TestCase):
                     '--limit', '12', '--budget', '12000']
         result = self.run_stub(*old_line)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('Zebrafish tanks need weekly water changes.', result.stdout)
-        self.assertEqual(result.stdout, self.run_client('recall', *old_line[1:]).stdout)
-        self.assertNotIn('Remove what is not needed.', result.stdout)  # a task query, not the start view
+        # Loader lines always pass --query, so the stub prints the start view, one blank line, then the task view.
+        start = self.run_client('recall', '--project', old_line[2], '--limit', '12', '--budget', '12000').stdout
+        task = self.run_client('recall', *old_line[1:]).stdout
+        self.assertEqual(result.stdout, start + '\n' + task)
+        self.assertIn('Always apply', result.stdout)
+        self.assertIn('Remove what is not needed.', result.stdout)  # the pinned core reaches Codex and DeepSeek
+        self.assertIn('Zebrafish tanks need weekly water changes.', task)
+        self.assertEqual([e['view'] for e in self.server.recall_entries()], ['start', 'task'] * 2)
 
     def test_old_global_root_flag_is_ignored(self):
         root = self.server.root / 'old-root'
         result = self.run_stub('--root', str(root), 'recall', '--query', 'zebrafish husbandry', '--limit', '12')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, self.run_client('recall', '--query', 'zebrafish husbandry').stdout)
+        self.assertEqual(result.stdout, self.run_client('recall').stdout + '\n' +
+                         self.run_client('recall', '--query', 'zebrafish husbandry').stdout)
         self.assertFalse(root.exists())
 
     def test_start_view_and_client_label(self):
@@ -54,8 +60,9 @@ class StubTests(unittest.TestCase):
         self.assertIn('Remove what is not needed.', result.stdout)
         self.assertEqual(result.stdout, self.run_client('recall', '--client', 'session-start', '--project', '/home/sai/x').stdout)
         self.assertEqual([e['client'] for e in self.server.recall_entries()], ['session-start', 'session-start'])
-        self.assertEqual(self.run_stub('recall', '--query', 'kubernetes ingress yaml').stdout,
-                         'No memory matches "kubernetes ingress yaml".\n')
+        unrelated = self.run_stub('recall', '--query', 'kubernetes ingress yaml').stdout
+        self.assertTrue(unrelated.startswith('# Shared agent memory — revision'))  # start view, then the task view
+        self.assertTrue(unrelated.endswith('\n\nNo memory matches "kubernetes ingress yaml".\n'))
 
     def test_other_commands_name_the_client_and_exit_2(self):
         candidate = self.server.root / 'candidate.json'

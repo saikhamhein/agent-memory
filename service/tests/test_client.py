@@ -242,7 +242,8 @@ class HookTests(unittest.TestCase):
         self.assertEqual(line['chars'], 0)
 
     def test_fails_open(self):
-        bare = {**self.env, 'HOME': str(self.server.root / 'empty')}
+        bare = {k: v for k, v in self.env.items() if not k.startswith('AGENT_MEMORY')}
+        bare['HOME'] = str(self.server.root / 'empty')
         for result in (self.run_hook(stdin='not json'), self.run_hook(stdin=''),
                        self.run_hook(cwd=self.server.root / 'missing'),
                        self.run_hook(env=bare)):
