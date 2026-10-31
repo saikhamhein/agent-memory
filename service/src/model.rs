@@ -172,7 +172,7 @@ pub fn absolute_path(value: &str) -> Result<std::path::PathBuf> {
     Ok(output)
 }
 
-/// Characters of pinned bodies per store, so the core rules always fit in recall.
+/// Pinned `block_len` per store, so the core rules always fit in recall.
 pub const PINNED_BUDGET: usize = 4_000;
 /// Largest stored content, in bytes.
 pub const MAX_CONTENT: usize = 102_400;
@@ -217,6 +217,14 @@ pub struct Memory {
     pub scope: Scope,
     pub meta: Value,
     pub body: String,
+}
+
+/// What a memory costs in recall: the `chars()` of `### {title} [{path}]\n{body}\n\n`,
+/// with the body's trailing whitespace trimmed. Pinned and body budgets count this.
+pub fn block_len(m: &Memory) -> usize {
+    format!("### {} [{}]\n{}\n\n", m.title(), m.path, m.body.trim_end())
+        .chars()
+        .count()
 }
 
 impl Memory {

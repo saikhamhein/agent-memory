@@ -1,5 +1,4 @@
-//! Placeholder with the frozen §4.1 signatures so the store and mirror build
-//! before workstream R lands. R replaces this file wholesale.
+// Placeholder from WS-A; WS-R replaces this file wholesale.
 
 use crate::model::Memory;
 

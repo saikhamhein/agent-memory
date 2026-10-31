@@ -1,5 +1,5 @@
-//! Placeholder so the crate builds on the v2 store before workstream H lands:
-//! only /healthz and /v1/status remain. H replaces this file wholesale.
+// Placeholder from WS-A; WS-H replaces this file wholesale.
+// Only /healthz and /v1/status remain until then.
 
 use crate::{
     Error, Result,

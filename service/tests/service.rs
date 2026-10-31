@@ -2,29 +2,33 @@
 mod common;
 
 use agent_memory_server::{model, store::Store};
-use common::{TempStore, content};
+use common::{TempStore, content, make_writable};
 use serde_json::{Value, json};
 
 #[test]
 fn backup_restores_store_and_refuses_overwrite() {
     let mut t = TempStore::new();
-    let raw = content(
-        "Saved",
-        "Body မြန်မာ",
-        json!({"evidence": [{"source": "s", "locator": "l", "note": "n",
-        "numbers": serde_json::from_str::<Value>("[18446744073709551617, 1e-07, -0.0]").unwrap()}]}),
-    );
-    t.create("live", "/global/saved.md", &raw, "token:test")
+    let numbers: Value = serde_json::from_str("[18446744073709551617, 1e-07, -0.0]").unwrap();
+    let meta =
+        json!({"evidence": [{"source": "s", "locator": "l", "note": "n", "numbers": numbers}]});
+    let raw = content("Saved", "Body မြန်မာ", &meta);
+    t.store
+        .create("live", "/global/saved.md", &raw, "token:test")
         .unwrap();
-    let backup = t.dir.path().join("backup.sqlite3");
+    let backup = t.path().join("backup.sqlite3");
     Store::backup(&t.db, &backup).unwrap();
     assert!(Store::backup(&t.db, &backup).is_err());
-    let copy = Store::open(&backup, &t.dir.path().join("backup-mnt")).unwrap();
+    let mnt = t.path().join("backup-mnt");
+    let copy = Store::open(&backup, &mnt).unwrap();
     assert_eq!(
         copy.list("live", "/").unwrap(),
-        t.list("live", "/").unwrap()
+        t.store.list("live", "/").unwrap()
     );
-    assert_eq!(copy.live_memories().unwrap(), t.live_memories().unwrap());
+    assert_eq!(
+        copy.live_memories().unwrap(),
+        t.store.live_memories().unwrap()
+    );
+    make_writable(&mnt);
 }
 
 #[test]

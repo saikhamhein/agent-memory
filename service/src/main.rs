@@ -1,7 +1,9 @@
-use agent_memory_server::{api, config::Config, model::hash, store::Store};
+// Placeholder from WS-A; WS-M replaces this file wholesale.
+// It keeps init, serve, backup and check on the v2 store until then.
+
+use agent_memory_server::{api, config::Config, store::Store};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(version, about = "Shared agent memory HTTP service")]
@@ -28,8 +30,6 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Generate an API token and the SHA256 value to place in server configuration.
-    Token,
     /// Validate configuration and database access without listening.
     Check {
         #[arg(long)]
@@ -37,7 +37,7 @@ enum Command {
     },
 }
 
-/// Placeholder until workstream M adds `config.mount`: `<database dir>/mnt`.
+/// `<database dir>/mnt` until H adds `config.mount`.
 fn mount(database: &std::path::Path) -> PathBuf {
     database.with_file_name("mnt")
 }
@@ -52,13 +52,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Backup { database, output } => {
             Store::backup(&database, &output)?;
             println!("Backup complete: {}", output.display());
-        }
-        Command::Token => {
-            let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-            println!(
-                "{}",
-                serde_json::json!({"token":token,"sha256":hash(token.as_bytes())})
-            );
         }
         Command::Check { config } => {
             let config = Config::load(&config)?;

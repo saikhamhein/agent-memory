@@ -1,6 +1,6 @@
 use crate::{
     Error, Result, mirror,
-    model::{self, Memory, PINNED_BUDGET, decode, encode, hash, invalid, now, string},
+    model::{self, Memory, PINNED_BUDGET, block_len, decode, encode, hash, invalid, now, string},
     recall,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
@@ -134,33 +134,34 @@ fn check_free(db: &Connection, store_id: &str, path: &str, id: &str) -> Result<(
     Ok(())
 }
 
-/// Total characters of the store's pinned bodies, and their paths.
-fn pinned(db: &Connection, store_id: &str) -> Result<(usize, Vec<String>)> {
+/// The store's pinned `block_len` total.
+fn pinned(db: &Connection, store_id: &str) -> Result<usize> {
     let mut stmt = db.prepare(
         "SELECT path,content FROM memories WHERE store_id=?1 AND instr(content,'\"pinned\"')>0 ORDER BY path",
     )?;
     let mut total = 0;
-    let mut paths = Vec::new();
     for row in stmt.query_map([store_id], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
     })? {
         let (path, content) = row?;
         let memory = model::parse(&path, &content)?;
         if memory.pinned() {
-            total += memory.body.chars().count();
-            paths.push(path);
+            total += block_len(&memory);
         }
     }
-    Ok((total, paths))
+    Ok(total)
 }
 
-/// `pinned_budget_exceeded` when the store's pinned bodies exceed the budget.
-fn check_pinned(db: &Connection, store_id: &str) -> Result<()> {
-    let (total, paths) = pinned(db, store_id)?;
+/// `pinned_budget_exceeded`, naming the written `paths`, when the store's
+/// pinned memories exceed the budget.
+fn check_pinned(db: &Connection, store_id: &str, paths: Vec<String>) -> Result<()> {
+    let total = pinned(db, store_id)?;
     if total > PINNED_BUDGET {
         return Err(Error::conflict(
             "pinned_budget_exceeded",
-            &format!("Pinned bodies would total {total} characters; the budget is {PINNED_BUDGET}"),
+            &format!(
+                "Pinned memories would total {total} characters; the budget is {PINNED_BUDGET}"
+            ),
             paths,
         ));
     }
@@ -534,7 +535,7 @@ impl Store {
             "store_id": self.live,
             "revision": revision(&self.db, &self.live)?,
             "memories": count("SELECT COUNT(*) FROM memories WHERE store_id=?1")?,
-            "pinned_chars": pinned(&self.db, &self.live)?.0,
+            "pinned_chars": pinned(&self.db, &self.live)?,
             "observations_pending": pending_observations(&self.db)?.len(),
             "dreams_running": running,
             "mirror_dir": self.mirror_dir(),
@@ -625,7 +626,7 @@ impl Store {
         let id = new_id("mem");
         insert_memory(&tx, &store_id, &id, path, content, actor)?;
         if memory.pinned() {
-            check_pinned(&tx, &store_id)?;
+            check_pinned(&tx, &store_id, vec![path.into()])?;
         }
         tx.commit()?;
         self.written(live);
@@ -668,7 +669,7 @@ impl Store {
         }
         modify_memory(&tx, &store_id, id, new_path, new_content, actor)?;
         if memory.pinned() {
-            check_pinned(&tx, &store_id)?;
+            check_pinned(&tx, &store_id, vec![new_path.into()])?;
         }
         tx.commit()?;
         self.written(live);
@@ -974,7 +975,13 @@ impl Store {
         for (id, path, content, _) in &added {
             insert_memory(&tx, &self.live, id, path, content, &actor)?;
         }
-        check_pinned(&tx, &self.live)?;
+        let pins = added
+            .iter()
+            .chain(&changed)
+            .filter(|r| model::parse(&r.1, &r.2).is_ok_and(|m| m.pinned()))
+            .map(|r| r.1.clone())
+            .collect();
+        check_pinned(&tx, &self.live, pins)?;
         let paths = |rows: &[Row]| rows.iter().map(|r| r.1.clone()).collect::<Vec<_>>();
         let adoption = json!({
             "summary": summary,
