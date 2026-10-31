@@ -2,7 +2,7 @@
 
 One local source of accepted collaboration preferences for Codex, Claude Code, DeepSeek Harness and other agents that can read local files. Python 3.9+ and SQLite; no model API, cloud upload, embeddings or background service is required. The agent performs semantic consolidation. The CLI handles storage and revision safety.
 
-This PC uses `/home/sai/probe/agent-memory` as an independent temporary store, activated at the user's request on 2026-10-28. No sync-back is configured. The original other-machine database was absent from this checkout. Local revision 2 contains 26 memories following a dream across all available local session logs. See `AGENTS.md` and `sources/full-dream-coverage-2026-10-28.json` for installation state and review limits. The database and generated artifacts are ignored by Git, so a clone alone does not carry accepted memories.
+This machine uses `/home/sai/Projects/agent-memory`. The database and generated artifacts are ignored by Git; pulling code does not transfer memories from another machine. See `AGENTS.md` for the local handoff.
 
 ## Daily use
 
@@ -13,14 +13,14 @@ Initialize a new store with `python3 memory.py init`. For an existing WAL-mode s
 `recall`, `status`, `diff`, `validate`, and `export` open the database read-only and never initialize a missing store. Export still requires write access to its output directory. Recording, dreaming, promotion, rollback, and initialization require database write access.
 
 ```sh
-python3 /home/sai/probe/agent-memory/memory.py recall --project "$PWD" --query "current task" --limit 12 --budget 12000
+python3 /home/sai/Projects/agent-memory/memory.py recall --project "$PWD" --query "current task" --limit 12 --budget 12000
 ```
 
 Use a canonical project root for other clones/worktrees of the same repository. Add relevant `--topic hardware`, `--topic machine-learning`, `--topic documentation`, `--topic software-development`, `--topic robotics`, `--topic ui`, or `--topic media`. Role filters such as `--role coordinator` can be used when that role has accepted memories. Topic and role memories are opt-in so irrelevant advice does not fill the context. Global memories always qualify; a keyword score orders qualifying memories. The budget is **characters**, not tokens; long entries are omitted whole. JSON output includes provenance and is not budget-limited.
 
 Codex loads a small pointer through its user-level `AGENTS.md`; that asks the agent to call recall. This is instruction-based retrieval, not a modification of Codex's internal memory database or guaranteed mechanical injection. Claude Code and DeepSeek use equivalent pointers. Fresh sessions are needed to discover changed global instructions. Existing sessions can be asked to reload them. A restricted agent may need read permission for this directory and write permission only when recording or dreaming.
 
-For ChatGPT or Claude web without filesystem access, use the exported `PROFILE.md` as project context or a context attachment. That is a snapshot; replace it after a new accepted revision. Do not upload the evidence database or private raw logs just to share the profile. A local authenticated HTTP service and Codex stdio MCP adapter are installed on this PC; see [service/README.md](service/README.md). Existing global agent instructions still use the local CLI. No cloud integration is installed.
+For ChatGPT or Claude web without filesystem access, use the exported `PROFILE.md` as project context or a context attachment. That is a snapshot; replace it after a new accepted revision. Do not upload the evidence database or private raw logs just to share the profile. A local authenticated HTTP service and Codex stdio MCP adapter are installed on this PC; see [service/README.md](service/README.md). Codex and Claude Code startup instructions prefer the MCP tools with local CLI fallback; DeepSeek uses the local CLI against the same store. No cloud integration is installed.
 
 ## Layout and authority
 
@@ -60,7 +60,7 @@ Scope kinds: `global`, `project` (absolute canonical root in `value`), `topic`, 
 4. `python3 memory.py diff PATH` and `validate PATH`. Review the diff against source evidence. Add honest `coverage` and `summary`, then set `reviewed: true`. This flag records the agent's evidence review; it does not fabricate user approval.
 5. When the memory update is authorized, `python3 memory.py promote PATH`, then `python3 memory.py export`. A stale base revision is rejected. Start a new dream and reconcile if another agent promoted first. Observations arriving after the snapshot remain pending for the next dream.
 
-Dreaming is on demand. Ask an agent to “run dream-memory over new sessions and report the memory diff.” No automatic recurring job, paid model run, or claim of background learning has been set up. A later scheduled dream should use the same candidate/review/promotion process and keep unchanged runs quiet.
+Dreaming runs on demand: ask an agent to “run dream-memory over new sessions and report the memory diff.” A daily scheduled dream (`daily-memory-dream`, set 2026-10-29) runs the same candidate/review/promotion process and stays quiet on days with nothing new. No paid model run or background learning is set up.
 
 ## Recovery, verification and portability
 
