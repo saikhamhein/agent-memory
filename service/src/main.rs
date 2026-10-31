@@ -62,7 +62,8 @@ async fn main() -> anyhow::Result<()> {
             dry_run,
             pins,
         } => {
-            let report = migrate::migrate(&database, &database.with_file_name("mnt"), &pins, dry_run)?;
+            let report =
+                migrate::migrate(&database, &database.with_file_name("mnt"), &pins, dry_run)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Command::Backup { database, output } => {
