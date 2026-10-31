@@ -103,8 +103,8 @@ fn replays_history() {
         assert!(row.id.starts_with("mem_") && row.id.len() == 36, "{}", row.id);
         assert!(row.version_id.starts_with("memver_") && row.version_id.len() == 39);
     }
-    // Revision of the live store = max(seq) of its versions; revision 0 (empty) made no version.
-    assert_eq!(versions(&conn).len(), 7);
+    // 3 (first a) + 2 (b) + 1 (new a); b is unchanged at r4. Revision 0 (empty) made no version.
+    assert_eq!(versions(&conn).len(), 6);
 }
 
 /// The deleted version's path is not specified (it may be kept or nulled); take whatever was stored.
