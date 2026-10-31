@@ -23,6 +23,16 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 | Role | Session | Status |
 | --- | --- | --- |
 | Architect | `local_b602e858-1cf0-40c9-a15d-c78a09d3e1e3` (architect) | PR 6 rev 3 merged @ c9b48a3; reviews workstream PRs |
+| Engineer A (store + mirror) | `local_f7b57f17-4e91-4996-ba3b-3fddbd222144` | building, branch from `rework/managed-agents-v2` |
+| Test engineer A | `local_c79accd0-cf18-4ce5-9f59-86e28b10f1a7` | tests → `rework/tests-a` |
+| Engineer R (recall) | `local_6158a6a3-f625-44c2-9401-7a559884a564` | building |
+| Test engineer R | `local_88b6d74f-ee66-441e-a12a-cb3df7e5719c` | tests → `rework/tests-r` |
+| Engineer H (HTTP API) | `local_a320fa63-05c9-4d9a-9f6a-ebad5ce08624` | building |
+| Test engineer H | `local_7a6bae6a-f710-4da7-a17d-ba7c2ff467f9` | tests → `rework/tests-h` |
+| Engineer M (migration + install) | `local_15a0c48f-71c2-43fe-8db3-cc45fdea948c` | building |
+| Test engineer M | `local_9adf3c05-b247-4bd0-97bb-f64f1214b6aa` | tests → `rework/tests-m` |
+| Engineer C (clients, hook, docs) | `local_111adbc3-3795-4a66-881a-f9190f3f09ac` | building |
+| Test engineer C | `local_51c2d84e-6cc7-487f-9294-8ccccdbd4e05` | tests → `rework/tests-c` |
 
 ## Merged
 
@@ -40,9 +50,9 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Blockers
 
-- Starting sessions needs a user turn (the app refuses starts on peer-message turns).
 - Proposed card `task_8b1e5f32`: text-only MCP recall quick win on master.
 
 ## Next actions
 
-- Staff workstreams A (store + mirror), R (recall), H (HTTP API), M (migration + install), C (clients, hook, docs): test engineer + engineer each, PRs to `rework/managed-agents-v2`, merge order A → R → H → M → C.
+- On each architect-approved PR (number + head SHA): read the diff, check it's current with `rework/managed-agents-v2` and mergeable, run combined tests, merge with `--match-head-commit` in order A → R → H → M → C, tell later workstreams to merge the integration head. No reinstall: these merges don't touch master.
+- Then: combined check, `migrate --dry-run --pin keep-it-simple` on a copy of a fresh live backup, fresh-eyes review + triage, then cutover with the user's go.
