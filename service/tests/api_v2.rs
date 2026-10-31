@@ -177,9 +177,23 @@ fn assert_conflict(result: &(StatusCode, Value), kind: &str, paths: Option<&[&st
     assert_eq!(*code, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["type"], kind, "{body}");
     assert!(body["error"].as_str().is_some_and(|s| !s.is_empty()), "{body}");
-    if let Some(paths) = paths {
+    // §4.1: every 409 carries `paths` except store_archived.
+    if kind == "store_archived" {
+        assert!(body.get("paths").is_none(), "{body}");
+    } else if let Some(paths) = paths {
         assert_eq!(body["paths"], json!(paths), "{body}");
+    } else {
+        assert!(body["paths"].as_array().is_some_and(|p| !p.is_empty()), "{body}");
     }
+}
+
+/// §4.1: every 400 has type `invalid`, 404 has type `not_found`; the message names the reason.
+fn assert_invalid(result: &(StatusCode, Value), reason: &str) {
+    let (code, body) = result;
+    assert_eq!(*code, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["type"], "invalid", "{body}");
+    let message = body["error"].as_str().unwrap_or_default();
+    assert!(!message.is_empty() && message.contains(reason), "{body}");
 }
 
 fn versions_of(list: &Value) -> Vec<Value> {
@@ -443,7 +457,7 @@ async fn versions_and_redact() {
     // The head of a live memory cannot be redacted (§3.2).
     let head_id = versions[0]["id"].as_str().unwrap();
     let refused = fx.call("POST", &format!("/v1/memory_stores/live/memory_versions/{head_id}/redact"), "admin", json!({})).await;
-    assert_eq!(refused.0, StatusCode::CONFLICT, "ASSUMPTION: head redaction is 409; {}", refused.1);
+    assert_invalid(&refused, "");
     // An older version can: its fields are nulled, its history stays.
     let redacted = fx.ok("POST", &format!("/v1/memory_stores/live/memory_versions/{old_id}/redact"), json!({})).await;
     assert_eq!(redacted["id"], old_id);
@@ -522,6 +536,9 @@ async fn preconditions_over_http() {
     assert_eq!(fx.call("GET", &format!("{url}/{id}"), "admin", Value::Null).await.0, StatusCode::NOT_FOUND);
     let history = versions_of(&fx.ok("GET", &format!("/v1/memory_stores/live/memory_versions?memory_id={id}"), Value::Null).await);
     assert_eq!(history[0]["operation"], "deleted");
+    assert_eq!(history[0]["path"], "/topics/misc/a.md", "a deleted version keeps the last path");
+    let tomb = fx.ok("GET", &format!("/v1/memory_stores/live/memory_versions/{}", history[0]["id"].as_str().unwrap()), Value::Null).await;
+    assert!(tomb["content"].is_null() && tomb["content_sha256"].is_null(), "{tomb}");
     assert!(history.len() >= 5);
     // Deleting twice is a 404, not a second tombstone.
     assert_eq!(fx.call("DELETE", &format!("{url}/{id}"), "admin", Value::Null).await.0, StatusCode::NOT_FOUND);
@@ -585,20 +602,20 @@ async fn error_mapping_conflicts() {
     })).await;
     assert_conflict(&stale, "precondition_failed", Some(&["/global/a.md"]));
 
-    // pinned_budget_exceeded: 6,000 characters fit exactly, one more does not, and nothing is written.
+    // pinned_budget_exceeded: 4,000 characters fit exactly, one more does not, and nothing is written.
     let fx2 = Fx::new();
-    let six_k = "p".repeat(6000);
-    fx2.create("live", "/global/core.md", &content_with("Core", &six_k, json!({"pinned": true}))).await;
+    let four_k = "p".repeat(4000);
+    fx2.create("live", "/global/core.md", &content_with("Core", &four_k, json!({"pinned": true}))).await;
     let over = fx2.call("POST", url, "admin", json!({
         "path": "/global/more.md", "content": content_with("More", "q", json!({"pinned": true}))
     })).await;
-    assert_conflict(&over, "pinned_budget_exceeded", None);
+    assert_conflict(&over, "pinned_budget_exceeded", Some(&["/global/more.md"]));
     let grow = fx2.call("POST", url, "admin", json!({
         "path": "/projects/p/more.md", "content": content_with("More", "q", json!({"pinned": true}))
     })).await;
-    assert_conflict(&grow, "pinned_budget_exceeded", None);
+    assert_conflict(&grow, "pinned_budget_exceeded", Some(&["/projects/p/more.md"]));
     assert_eq!(fx2.ok("GET", url, Value::Null).await["data"].as_array().unwrap().len(), 1);
-    assert_eq!(fx2.status().await["pinned_chars"], 6000);
+    assert_eq!(fx2.status().await["pinned_chars"], 4000);
     // Unpinned memories are not limited by the pinned budget.
     fx2.create("live", "/global/free.md", &content("Free", &"u".repeat(7000))).await;
 }
@@ -693,8 +710,7 @@ async fn error_mapping_store_full() {
     assert_eq!(fx.status().await["memories"], 10_000);
     let (code, body) = fx.call("POST", "/v1/memory_stores/live/memories", "admin",
         json!({"path": "/global/one-too-many.md", "content": content("Extra", "extra body")})).await;
-    assert_eq!(code, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["type"], "store_full", "{body}");
+    assert_invalid(&(code, body), "store_full");
     assert_eq!(fx.status().await["memories"], 10_000);
     // Deleting one frees a slot.
     fx.ok("DELETE", &format!("/v1/memory_stores/live/memories/mem_{:032x}", 0), Value::Null).await;
@@ -727,11 +743,10 @@ async fn error_mapping_bad_requests() {
     for (name, body) in bad_creates {
         let (code, response) = fx.call("POST", url, "admin", body).await;
         assert_eq!(code, StatusCode::BAD_REQUEST, "{name}: {response}");
-        assert!(response["error"].as_str().is_some_and(|s| !s.is_empty()), "{name}: {response}");
+        assert_invalid(&(code, response), "");
     }
     // Malformed JSON.
-    let (code, _) = call_bytes(&fx.app, "POST", url, Some("admin"), b"{not json".to_vec()).await;
-    assert_eq!(code, StatusCode::BAD_REQUEST);
+    assert_invalid(&call_bytes(&fx.app, "POST", url, Some("admin"), b"{not json".to_vec()).await, "");
     // Updates: bad content, bad path, empty update, malformed precondition.
     for (name, body) in [
         ("bad content", json!({"content": "no frontmatter"})),
@@ -741,6 +756,7 @@ async fn error_mapping_bad_requests() {
     ] {
         let (code, response) = fx.call("POST", &format!("{url}/{id}"), "admin", body).await;
         assert_eq!(code, StatusCode::BAD_REQUEST, "{name}: {response}");
+        assert_invalid(&(code, response), "");
     }
     // Dream start: 101 sessions and duplicate locators.
     let session = |n: usize| json!({"source": "claude", "locator": format!("/s/{n}.jsonl")});
@@ -764,11 +780,18 @@ async fn error_mapping_bad_requests() {
         }
         let (code, response) = fx.call("POST", &format!("/v1/dreams/{d_id}/adopt"), "admin", body).await;
         assert_eq!(code, StatusCode::BAD_REQUEST, "{name}: {response}");
+        assert_invalid(&(code, response), "");
     }
     assert_eq!(fx.ok("GET", &format!("/v1/dreams/{d_id}"), Value::Null).await["status"], "running");
     // Cancelling a completed dream is a 400 (§3.5).
     assert_eq!(fx.adopt("admin", d_id).await.0, StatusCode::OK);
-    assert_eq!(fx.call("POST", &format!("/v1/dreams/{d_id}/cancel"), "admin", json!({})).await.0, StatusCode::BAD_REQUEST);
+    assert_invalid(&fx.call("POST", &format!("/v1/dreams/{d_id}/cancel"), "admin", json!({})).await, "");
+    // Adopting a dream that is no longer running is a 400 as well.
+    assert_invalid(&fx.adopt("admin", d_id).await, "");
+    let c = fx.dream().await;
+    let c_id = c["id"].as_str().unwrap();
+    fx.ok("POST", &format!("/v1/dreams/{c_id}/cancel"), json!({})).await;
+    assert_invalid(&fx.adopt("admin", c_id).await, "");
     // Observations validate like memories.
     for body in [json!({"path": "/global/../o.md", "content": good}), json!({"path": "/global/o.md", "content": "plain"}), json!({})] {
         assert_eq!(fx.call("POST", "/v1/observations", "admin", body).await.0, StatusCode::BAD_REQUEST);
@@ -805,6 +828,7 @@ async fn error_mapping_not_found() {
     for (method, path, body) in cases {
         let (code, response) = fx.call(method, &path, "admin", body).await;
         assert_eq!(code, StatusCode::NOT_FOUND, "{method} {path}: {response}");
+        assert_eq!(response["type"], "not_found", "{method} {path}: {response}");
         assert!(response["error"].as_str().is_some(), "{method} {path}: {response}");
     }
     // A memory of the live store is not found in a dream's output store under another id, and vice versa.
@@ -942,7 +966,7 @@ async fn recall_endpoint() {
     assert_eq!(task["view"], "task");
     assert_eq!(task["returned"], json!(["/topics/hardware/usb.md"]));
     let (_, none) = fx.call("POST", "/v1/recall", "reader", json!({"query": "kubernetes ingress yaml"})).await;
-    assert_eq!(none["text"], "No memory matches \"kubernetes ingress yaml\".");
+    assert!(none["text"].as_str().unwrap().starts_with("No memory matches \"kubernetes ingress yaml\"."));
     assert_eq!(none["returned"], json!([]));
 }
 
@@ -963,6 +987,7 @@ async fn recall_request_validation() {
     ] {
         let (code, response) = fx.call("POST", "/v1/recall", "reader", body).await;
         assert_eq!(code, StatusCode::BAD_REQUEST, "{name}: {response}");
+        assert_invalid(&(code, response), "");
     }
     // Rejected requests are not logged.
     assert!(!fx.tmp.path().join("recall-log.jsonl").exists());
@@ -1060,10 +1085,14 @@ async fn http_dream_workflow() {
     let with = fx.ok("GET", &format!("/v1/dreams/{d_id}?diff=true"), Value::Null).await;
     let diff = &with["diff"];
     assert_eq!((diff["added"].as_array().unwrap().len(), diff["changed"].as_array().unwrap().len(), diff["removed"].as_array().unwrap().len()), (1, 1, 1), "{diff}");
-    // ASSUMPTION: diff elements are not frozen; each names its memory path.
-    assert!(diff["added"].to_string().contains("/topics/animals/quokka.md"));
-    assert!(diff["changed"].to_string().contains("/global/a.md"));
-    assert!(diff["removed"].to_string().contains("/global/gone.md"));
+    // Frozen shapes (design §4.1): added/removed {memory_id, path, content}; changed {memory_id, before, after}.
+    assert_eq!(diff["added"][0], json!({"memory_id": added["id"], "path": "/topics/animals/quokka.md", "content": new_text}));
+    assert_eq!(diff["removed"][0], json!({"memory_id": gone, "path": "/global/gone.md", "content": content("Gone", "to be removed")}));
+    assert_eq!(diff["changed"][0], json!({
+        "memory_id": a_id,
+        "before": {"path": "/global/a.md", "content": content("Alpha", "alpha body")},
+        "after": {"path": "/global/a.md", "content": content("Alpha revised", "alpha body revised")},
+    }));
 
     // The task recall cannot find it before adopt, and does after.
     let find = || async { fx.call("POST", "/v1/recall", "reader", json!({"query": "quokkas"})).await.1 };
@@ -1073,6 +1102,11 @@ async fn http_dream_workflow() {
     assert_eq!(adopted.1["status"], "completed");
     assert!(adopted.1["ended_at"].as_str().is_some());
     assert_eq!(adopted.1["adoption"]["summary"], "Test adoption");
+    assert_eq!(adopted.1["adoption"]["coverage"], "Fixtures only");
+    assert_eq!(adopted.1["adoption"]["conflicts"], json!([]));
+    assert_eq!(adopted.1["adoption"]["added"], json!(["/topics/animals/quokka.md"]));
+    assert_eq!(adopted.1["adoption"]["changed"], json!(["/global/a.md"]));
+    assert_eq!(adopted.1["adoption"]["removed"], json!(["/global/gone.md"]));
     let found = find().await;
     assert_eq!(found["returned"], json!(["/topics/animals/quokka.md"]));
     assert!(found["text"].as_str().unwrap().contains("A quokka memory added by the dream."));
@@ -1162,9 +1196,8 @@ async fn body_limits_and_413() {
     let too_big = exact(102_401);
     assert_eq!(too_big.len(), 102_401);
     let (code, body) = fx.call("POST", "/v1/memory_stores/live/memories", "admin", json!({"path": "/global/bigger.md", "content": too_big})).await;
-    assert_eq!(code, StatusCode::BAD_REQUEST, "{body}");
-    let (code, _) = fx.call("POST", &format!("/v1/memory_stores/live/memories/{id}"), "admin", json!({"content": too_big})).await;
-    assert_eq!(code, StatusCode::BAD_REQUEST);
+    assert_invalid(&(code, body), "");
+    assert_invalid(&fx.call("POST", &format!("/v1/memory_stores/live/memories/{id}"), "admin", json!({"content": too_big})).await, "");
     let three_mib = content("Huge", &"h".repeat(3 * 1024 * 1024));
     let (code, _) = fx.call("POST", "/v1/memory_stores/live/memories", "admin", json!({"path": "/global/huge.md", "content": three_mib})).await;
     assert_eq!(code, StatusCode::BAD_REQUEST, "a 3 MiB body is under the body limit");
