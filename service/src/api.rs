@@ -9,7 +9,7 @@ use axum::{
     Json, RequestExt, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, Extension, MatchedPath, Path, Query, Request, State},
-    http::{Method, StatusCode},
+    http::{Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -60,8 +60,8 @@ pub struct App {
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        let (code, body) = match self {
-            Self::Invalid(s) => (StatusCode::BAD_REQUEST, json!({"error":s})),
+        match self {
+            Self::Invalid(s) => error(StatusCode::BAD_REQUEST, &s),
             Self::Conflict {
                 kind,
                 message,
@@ -71,23 +71,51 @@ impl IntoResponse for Error {
                 if !paths.is_empty() {
                     body["paths"] = json!(paths);
                 }
-                (StatusCode::CONFLICT, body)
+                (StatusCode::CONFLICT, Json(body)).into_response()
             }
-            Self::NotFound => (StatusCode::NOT_FOUND, json!({"error":"Not found"})),
+            Self::NotFound => error(StatusCode::NOT_FOUND, "Not found"),
             Self::Internal(e) => {
                 eprintln!("Database operation failed: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    json!({"error":"Internal storage error"}),
-                )
+                error(StatusCode::INTERNAL_SERVER_ERROR, "Internal storage error")
             }
-        };
-        (code, Json(body)).into_response()
+        }
     }
 }
 
+/// Every error body is `{error, type}`; apart from 409, the type follows from the status.
+fn error(code: StatusCode, message: &str) -> Response {
+    let kind = match code {
+        StatusCode::UNAUTHORIZED => "unauthorized",
+        StatusCode::FORBIDDEN => "forbidden",
+        StatusCode::NOT_FOUND => "not_found",
+        StatusCode::PAYLOAD_TOO_LARGE => "too_large",
+        StatusCode::SERVICE_UNAVAILABLE => "busy",
+        c if c.is_client_error() => "invalid",
+        _ => "internal",
+    };
+    (code, Json(json!({"error":message,"type":kind}))).into_response()
+}
+
+/// Gives axum's own plain-text rejections (unknown route, bad query, 413) the same JSON shape.
+async fn typed_errors(response: Response) -> Response {
+    let code = response.status();
+    let is_json = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|v| v == "application/json");
+    if is_json || !(code.is_client_error() || code.is_server_error()) {
+        return response;
+    }
+    let text = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap_or_default();
+    let text = String::from_utf8_lossy(&text);
+    let reason = code.canonical_reason().unwrap_or("Error");
+    error(code, if text.is_empty() { reason } else { &text })
+}
+
 fn deny(code: StatusCode, message: &str) -> Reject {
-    reject((code, Json(json!({"error":message}))))
+    reject(error(code, message))
 }
 
 /// Bodies are read as bytes so that every malformed or unknown field is a 400, not axum's 422.
@@ -156,6 +184,7 @@ pub fn router(config: Config, store: Store) -> Router {
         .route_layer(middleware::from_fn_with_state(app.clone(), authorize))
         .route("/healthz", get(|| async { Json(json!({"status":"ok"})) }))
         .layer(DefaultBodyLimit::max(4 * 1024 * 1024))
+        .layer(middleware::map_response(typed_errors))
         .with_state(app)
 }
 
