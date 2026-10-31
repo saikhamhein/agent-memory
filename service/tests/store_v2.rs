@@ -36,6 +36,26 @@ fn seeded(path: &str, body: &str) -> String {
         body,
     )
 }
+fn slug_of(path: &str) -> &str {
+    path.rsplit('/').next().unwrap().trim_end_matches(".md")
+}
+fn sorted(mut paths: Vec<String>) -> Vec<String> {
+    paths.sort();
+    paths
+}
+/// `model::block_len` (design §3.1): the `chars()` count of
+/// `### {title} [{path}]\n{body}\n\n` with the body's trailing whitespace trimmed.
+/// This is what the pinned budget counts. Titles here are the slug.
+fn block_len(title: &str, path: &str, body: &str) -> usize {
+    format!("### {title} [{path}]\n{}\n\n", body.trim_end())
+        .chars()
+        .count()
+}
+/// A body made of `ch` that makes the memory at `path` cost exactly `cost`.
+fn body_costing(path: &str, cost: usize, ch: &str) -> String {
+    let title = slug_of(path);
+    ch.repeat(cost - block_len(title, path, ""))
+}
 fn get(ts: &TempStore, id: &str) -> Value {
     ts.store.get(&ts.live(), id).unwrap()
 }
@@ -259,6 +279,8 @@ fn path_rules() {
         format!("/global/{}.md", "a".repeat(80)),
         "/global/0-9-a.md".into(),
         "/projects/home/sai/.hidden-dir/v1.2_x/e.md".into(),
+        format!("/topics/{}/x.md", "a".repeat(255)),
+        format!("/projects/{}/x.md", "a".repeat(255)),
     ] {
         model::validate_path(&path).unwrap_or_else(|e| panic!("{path}: {e:?}"));
     }
@@ -272,6 +294,14 @@ fn path_rules() {
         ("/global/a.md/".into(), "trailing slash"),
         ("global/a.md".into(), "not absolute"),
         (deep(21), "21 segments"),
+        (
+            format!("/topics/{}/x.md", "a".repeat(256)),
+            "256-byte segment (NAME_MAX)",
+        ),
+        (
+            format!("/projects/{}/x.md", "a".repeat(256)),
+            "256-byte project segment",
+        ),
         (bytes_1024.replace("/slug.md", "/slugs.md"), "1,025 bytes"),
         ("/topics/café/a.md".into(), "non-ASCII segment"),
         ("/global/မြန်မာ.md".into(), "non-ASCII slug"),
@@ -308,6 +338,13 @@ fn path_rules() {
         "rejected paths wrote nothing"
     );
     assert_eq!(status_u64(&ts, "revision"), 4);
+    // A 255-byte segment is a legal file name, so it also reaches the mirror.
+    let long = format!("/topics/{}/x.md", "a".repeat(255));
+    ts.store
+        .create(&live, &long, &seeded(&long, "body"), ACTOR)
+        .unwrap();
+    assert!(ts.link().join(long.trim_start_matches('/')).exists());
+    assert_eq!(ts.store.status().unwrap()["mirror_stale"], false);
 }
 
 // ---- 3. content ----------------------------------------------------------
@@ -851,32 +888,41 @@ fn pinned_budget() {
     let mut ts = TempStore::new();
     let live = ts.live();
     let make = |ts: &mut TempStore, path: &str, body: &str| {
-        let title = path.rsplit('/').next().unwrap().trim_end_matches(".md");
         ts.store
-            .create(&live, path, &content(title, body, &pinned()), ACTOR)
+            .create(&live, path, &content(slug_of(path), body, &pinned()), ACTOR)
     };
-    // The budget counts characters, not bytes: 2,500 Burmese letters are 7,500 bytes.
-    let burmese = "မ".repeat(2500);
-    let p1 = make(&mut ts, "/global/p1.md", &burmese).unwrap();
-    let p2 = make(&mut ts, "/global/p2.md", &"b".repeat(1500)).unwrap();
+    let (g1, g2, g3) = (
+        "/global/p1.md",
+        "/global/p2.md",
+        "/projects/home/sai/x/p3.md",
+    );
+    // The budget counts rendered blocks in characters, not bytes: a block of 2,500
+    // characters made of Burmese letters is more than 7,000 bytes.
+    let burmese = body_costing(g1, 2500, "မ");
+    assert!(burmese.len() > 6000);
+    let p1 = make(&mut ts, g1, &burmese).unwrap();
+    let p2 = make(&mut ts, g2, &body_costing(g2, 1500, "b")).unwrap();
     assert_eq!(status_u64(&ts, "pinned_chars") as usize, PINNED_BUDGET);
     let revision = status_u64(&ts, "revision");
 
-    // One more character is refused and nothing is written.
-    conflict(
-        make(&mut ts, "/global/p3.md", "c"),
-        "pinned_budget_exceeded",
+    // 4,001 is refused and nothing is written. The 409 lists every pinned path,
+    // including the new one.
+    let mut all = vec![g1, g2, g3];
+    all.sort();
+    assert_eq!(
+        sorted(conflict(make(&mut ts, g3, "c"), "pinned_budget_exceeded")),
+        all
     );
     conflict(
-        make(&mut ts, "/projects/home/sai/x/p3.md", "c"),
+        make(&mut ts, "/global/p3.md", "c"),
         "pinned_budget_exceeded",
     );
     assert_eq!(status_u64(&ts, "revision"), revision);
     assert_eq!(status_u64(&ts, "memories"), 2);
     assert!(!ts.link().join("global/p3.md").exists());
-    // Growing a pinned memory past the budget is refused too.
-    let grown = content("p2", &"b".repeat(1501), &pinned());
-    conflict(
+    // Growing a pinned memory by one character is refused too.
+    let grown = content("p2", &body_costing(g2, 1501, "b"), &pinned());
+    let on_update = conflict(
         ts.store.update(
             &live,
             &id(&p2),
@@ -887,13 +933,28 @@ fn pinned_budget() {
         ),
         "pinned_budget_exceeded",
     );
+    assert_eq!(sorted(on_update), [g1, g2]);
     assert_eq!(status_u64(&ts, "revision"), revision);
+    // Trailing whitespace in the body is not counted.
+    let padded = content("p2", &(body_costing(g2, 1500, "b") + "\n \n\n"), &pinned());
+    let p2 = ts
+        .store
+        .update(
+            &live,
+            &id(&p2),
+            Some(&padded),
+            None,
+            Some(str_of(&p2, "content_sha256")),
+            ACTOR,
+        )
+        .unwrap();
+    assert_eq!(status_u64(&ts, "pinned_chars") as usize, PINNED_BUDGET);
 
     // Unpinned memories are not counted, however large.
     seed(&mut ts.store, "/global/big.md", &"u".repeat(20_000));
     assert_eq!(status_u64(&ts, "pinned_chars") as usize, PINNED_BUDGET);
     // Shrinking or unpinning frees budget.
-    let shrunk = content("p2", &"b".repeat(1000), &pinned());
+    let shrunk = content("p2", &body_costing(g2, 1000, "b"), &pinned());
     ts.store
         .update(
             &live,
@@ -905,19 +966,53 @@ fn pinned_budget() {
         )
         .unwrap();
     assert_eq!(status_u64(&ts, "pinned_chars") as usize, 3500);
-    make(&mut ts, "/projects/home/sai/x/p3.md", &"c".repeat(500)).unwrap();
+    make(&mut ts, g3, &body_costing(g3, 500, "c")).unwrap();
     assert_eq!(status_u64(&ts, "pinned_chars") as usize, PINNED_BUDGET);
     ts.store
         .update(
             &live,
             &id(&p1),
-            Some(&seeded("/global/p1.md", "plain")),
+            Some(&seeded(g1, "plain")),
             None,
             None,
             ACTOR,
         )
         .unwrap();
     assert_eq!(status_u64(&ts, "pinned_chars") as usize, 1500);
+}
+
+#[test]
+fn pinned_budget_counts_headings() {
+    // Many tiny pinned memories: the `### title [path]` heading is what costs, so
+    // counting bodies alone would admit about 4,000 of them.
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let path = |i: usize| format!("/global/t{i:03}.md");
+    let title =
+        |i: usize| format!("tiny pinned memory {i:03} with a deliberately long heading title");
+    let cost = block_len(&title(0), &path(0), "x");
+    let fit = PINNED_BUDGET / cost;
+    assert!(
+        (20..200).contains(&fit),
+        "fixture is meant to be tiny: {fit}"
+    );
+    for i in 0..fit {
+        ts.store
+            .create(&live, &path(i), &content(&title(i), "x", &pinned()), ACTOR)
+            .unwrap_or_else(|e| panic!("pinned memory {i} of {fit}: {e:?}"));
+    }
+    assert_eq!(status_u64(&ts, "pinned_chars") as usize, fit * cost);
+    let paths = conflict(
+        ts.store.create(
+            &live,
+            &path(fit),
+            &content(&title(fit), "x", &pinned()),
+            ACTOR,
+        ),
+        "pinned_budget_exceeded",
+    );
+    assert_eq!(paths.len(), fit + 1);
+    assert_eq!(status_u64(&ts, "memories") as usize, fit);
 }
 
 // ---- 10-11. dreams: start and isolation -----------------------------------
@@ -1431,17 +1526,22 @@ fn adopt_gates_and_observations() {
     seed(&mut ts.store, "/global/base.md", "base");
     let dream = start(&mut ts, json!([]));
     let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
-    let pin = |title: &str, n: usize| content(title, &"p".repeat(n), &pinned());
+    let pin = |path: &str| content(slug_of(path), &body_costing(path, 2500, "p"), &pinned());
     ts.store
         .create(
             &out,
             "/global/dream-pin.md",
-            &pin("dream-pin", 2500),
+            &pin("/global/dream-pin.md"),
             "dream:agent",
         )
         .unwrap();
     ts.store
-        .create(&live, "/global/live-pin.md", &pin("live-pin", 2500), ACTOR)
+        .create(
+            &live,
+            "/global/live-pin.md",
+            &pin("/global/live-pin.md"),
+            ACTOR,
+        )
         .unwrap();
     let revision = status_u64(&ts, "revision");
     conflict(adopt(&mut ts, &did), "pinned_budget_exceeded");
