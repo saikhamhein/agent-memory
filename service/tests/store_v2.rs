@@ -279,6 +279,8 @@ fn path_rules() {
         format!("/global/{}.md", "a".repeat(80)),
         "/global/0-9-a.md".into(),
         "/projects/home/sai/.hidden-dir/v1.2_x/e.md".into(),
+        format!("/topics/{}/x.md", "a".repeat(255)),
+        format!("/projects/{}/x.md", "a".repeat(255)),
     ] {
         model::validate_path(&path).unwrap_or_else(|e| panic!("{path}: {e:?}"));
     }
@@ -292,6 +294,14 @@ fn path_rules() {
         ("/global/a.md/".into(), "trailing slash"),
         ("global/a.md".into(), "not absolute"),
         (deep(21), "21 segments"),
+        (
+            format!("/topics/{}/x.md", "a".repeat(256)),
+            "256-byte segment (NAME_MAX)",
+        ),
+        (
+            format!("/projects/{}/x.md", "a".repeat(256)),
+            "256-byte project segment",
+        ),
         (bytes_1024.replace("/slug.md", "/slugs.md"), "1,025 bytes"),
         ("/topics/café/a.md".into(), "non-ASCII segment"),
         ("/global/မြန်မာ.md".into(), "non-ASCII slug"),
@@ -328,6 +338,13 @@ fn path_rules() {
         "rejected paths wrote nothing"
     );
     assert_eq!(status_u64(&ts, "revision"), 4);
+    // A 255-byte segment is a legal file name, so it also reaches the mirror.
+    let long = format!("/topics/{}/x.md", "a".repeat(255));
+    ts.store
+        .create(&live, &long, &seeded(&long, "body"), ACTOR)
+        .unwrap();
+    assert!(ts.link().join(long.trim_start_matches('/')).exists());
+    assert_eq!(ts.store.status().unwrap()["mirror_stale"], false);
 }
 
 // ---- 3. content ----------------------------------------------------------
@@ -971,7 +988,9 @@ fn pinned_budget_counts_headings() {
     let mut ts = TempStore::new();
     let live = ts.live();
     let path = |i: usize| format!("/global/t{i:03}.md");
-    let cost = block_len("t000", &path(0), "x");
+    let title =
+        |i: usize| format!("tiny pinned memory {i:03} with a deliberately long heading title");
+    let cost = block_len(&title(0), &path(0), "x");
     let fit = PINNED_BUDGET / cost;
     assert!(
         (20..200).contains(&fit),
@@ -979,12 +998,7 @@ fn pinned_budget_counts_headings() {
     );
     for i in 0..fit {
         ts.store
-            .create(
-                &live,
-                &path(i),
-                &content(&format!("t{i:03}"), "x", &pinned()),
-                ACTOR,
-            )
+            .create(&live, &path(i), &content(&title(i), "x", &pinned()), ACTOR)
             .unwrap_or_else(|e| panic!("pinned memory {i} of {fit}: {e:?}"));
     }
     assert_eq!(status_u64(&ts, "pinned_chars") as usize, fit * cost);
@@ -992,7 +1006,7 @@ fn pinned_budget_counts_headings() {
         ts.store.create(
             &live,
             &path(fit),
-            &content(&format!("t{fit:03}"), "x", &pinned()),
+            &content(&title(fit), "x", &pinned()),
             ACTOR,
         ),
         "pinned_budget_exceeded",
