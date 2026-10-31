@@ -4,7 +4,8 @@
 use agent_memory_server::{
     Result,
     model::{
-        PINNED_BUDGET, decode, encode, hash, invalid, now, parse, parse_legacy, render_legacy,
+        PINNED_BUDGET, block_len, decode, encode, hash, invalid, now, parse, parse_legacy,
+        render_legacy,
     },
     store::Store,
 };
@@ -208,7 +209,7 @@ fn replay(tx: &Transaction, pins: &[String], dry_run: bool) -> Result<Value> {
             Ok(memory) => {
                 let pinned = memory.meta.get("pinned") == Some(&Value::Bool(true));
                 if pinned {
-                    pinned_chars += memory.body.chars().count();
+                    pinned_chars += block_len(&memory);
                 }
                 memories.push(
                     json!({"slug":slug,"path":head.path,"versions":head.versions,"pinned":pinned}),
@@ -228,7 +229,7 @@ fn replay(tx: &Transaction, pins: &[String], dry_run: bool) -> Result<Value> {
     }
     if pinned_chars > PINNED_BUDGET {
         return Err(invalid(&format!(
-            "pinned_budget_exceeded: pinned bodies total {pinned_chars} characters, over {PINNED_BUDGET}"
+            "pinned_budget_exceeded: pinned memories total {pinned_chars} characters, over {PINNED_BUDGET}"
         )));
     }
     if dump(tx)? != legacy {
