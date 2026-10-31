@@ -5,19 +5,21 @@
 //! non-empty query is the task view: only memories that match it. Anything
 //! over a bound is listed, never dropped.
 
-use crate::model::{Kind, Memory};
+use crate::model::{Kind, Memory, block_len};
 use chrono::Utc;
 use regex::Regex;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     path::{Component, Path, PathBuf},
     sync::LazyLock,
 };
 
-/// Body characters shared by "This project" and "Requested", and by the task view.
-pub const BODY_BUDGET: usize = 6000;
-/// Characters of listed index lines in the start view.
-pub const INDEX_BUDGET: usize = 8000;
+/// Characters of the whole start view, under Claude Code's 10,000-character hook cap.
+pub const START_MAX: usize = 9500;
+/// `block_len` shared by "This project" and "Requested" in the start view.
+pub const START_BODY_BUDGET: usize = 3000;
+/// `block_len` of the memories the task view shows in full.
+pub const TASK_BODY_BUDGET: usize = 6000;
 /// Memories shown in full by the task view.
 pub const SEARCH_RESULTS: usize = 5;
 /// "More matches" lines in the task view.
@@ -53,12 +55,7 @@ pub struct Recalled {
 }
 
 pub fn recall(memories: &[Memory], revision: i64, mirror_dir: &str, request: &Request) -> Recalled {
-    let today = Utc::now().date_naive().to_string();
-    let project = project_root(&request.project);
-    let in_scope = |m: &&Memory| {
-        !excluded(m, &today) && (m.scope.kind != Kind::Project || applies(m, project.as_deref()))
-    };
-    let memories: Vec<&Memory> = memories.iter().filter(in_scope).collect();
+    let memories = in_scope(memories, &request.project);
     if request.query.trim().is_empty() {
         start(&memories, revision, mirror_dir, request)
     } else {
@@ -66,18 +63,42 @@ pub fn recall(memories: &[Memory], revision: i64, mirror_dir: &str, request: &Re
     }
 }
 
-/// The start view with no project, written to the mirror as INDEX.md.
+/// INDEX.md in the mirror: the pinned global memories in full, then one line
+/// for every other memory (every project's included), with no cap.
 pub fn index_md(memories: &[Memory], revision: i64, mirror_dir: &str) -> String {
-    let request = Request {
-        project: String::new(),
-        role: String::new(),
-        topics: Vec::new(),
-        query: String::new(),
-    };
-    recall(memories, revision, mirror_dir, &request).text
+    let today = Utc::now().date_naive().to_string();
+    let live: Vec<&Memory> = memories.iter().filter(|m| !excluded(m, &today)).collect();
+    let core = |m: &&&Memory| m.scope.kind == Kind::Global && is_pinned(m);
+    let mut text = header(revision, mirror_dir);
+    let pinned = sorted(live.iter().filter(core));
+    if !pinned.is_empty() {
+        text.push_str("## Always apply\n");
+        text.extend(pinned.iter().map(|m| full(m)));
+    }
+    let index: Vec<&Memory> = [Kind::Global, Kind::Project, Kind::Topic, Kind::Role]
+        .into_iter()
+        .flat_map(|kind| sorted(live.iter().filter(|m| m.scope.kind == kind && !core(m))))
+        .collect();
+    if !index.is_empty() {
+        text.push_str("## Index\n");
+        text.extend(index.iter().map(|m| line(m)));
+    }
+    text.trim_end().to_owned() + "\n"
 }
 
-/// `memories` are in scope: not excluded, and only this project's.
+/// Neither excluded nor another project's.
+fn in_scope<'a>(memories: &'a [Memory], project: &str) -> Vec<&'a Memory> {
+    let today = Utc::now().date_naive().to_string();
+    let project = project_root(project);
+    memories
+        .iter()
+        .filter(|m| {
+            !excluded(m, &today)
+                && (m.scope.kind != Kind::Project || applies(m, project.as_deref()))
+        })
+        .collect()
+}
+
 fn start(memories: &[&Memory], revision: i64, mirror_dir: &str, request: &Request) -> Recalled {
     let pinned = sorted(memories.iter().filter(|m| is_pinned(m)));
     let unpinned = || memories.iter().filter(|m| !is_pinned(m));
@@ -90,17 +111,15 @@ fn start(memories: &[&Memory], revision: i64, mirror_dir: &str, request: &Reques
 
     let mut used = 0;
     let mut fits = |m: &Memory| {
-        let n = body(m).chars().count();
-        let ok = used + n <= BODY_BUDGET;
+        let n = block_len(m);
+        let ok = used + n <= START_BODY_BUDGET;
         used += if ok { n } else { 0 };
         ok
     };
     let project: Vec<_> = project.into_iter().filter(|m| fits(m)).collect();
     let requested: Vec<_> = requested.into_iter().filter(|m| fits(m)).collect();
 
-    let mut text = format!(
-        "# Shared agent memory — revision {revision}\n\n{HEADER}\nRead-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with memory_read, when its index line applies; search with memory_recall(query=...).\n\n"
-    );
+    let mut text = header(revision, mirror_dir);
     let mut returned = Vec::new();
     for (heading, section) in [
         ("Always apply", &pinned),
@@ -126,30 +145,15 @@ fn start(memories: &[&Memory], revision: i64, mirror_dir: &str, request: &Reques
         .collect();
     if !index.is_empty() {
         text.push_str("## Index\n");
-        let mut used = 0;
-        let mut listed = 0;
-        for m in &index {
-            let line = format!("- {} — {}\n", m.path, title(m));
-            used += line.chars().count();
-            if used > INDEX_BUDGET {
-                break;
-            }
-            text.push_str(&line);
-            listed += 1;
-        }
-        // Name what the budget left out, one line per directory.
-        let mut dirs: Vec<(&str, usize)> = Vec::new();
-        for m in &index[listed..] {
-            let dir = &m.path[..=m.path.rfind('/').unwrap_or(0)];
-            match dirs.iter_mut().find(|(d, _)| *d == dir) {
-                Some((_, n)) => *n += 1,
-                None => dirs.push((dir, 1)),
-            }
-        }
-        for (dir, n) in dirs {
-            text.push_str(&format!(
-                "- {dir} — {n} more not listed; search or list the directory\n"
-            ));
+        let lines: Vec<String> = index.iter().map(|m| line(m)).collect();
+        let room = START_MAX.saturating_sub(text.chars().count());
+        let (listed, collapsed) = listed(&index, &lines, room, mirror_dir);
+        text.extend(lines[..listed].iter().map(String::as_str));
+        let rest = &index[listed..];
+        if collapsed {
+            text.push_str(&collapse_line(rest.len(), mirror_dir));
+        } else {
+            text.push_str(&count_lines(rest));
         }
     }
     Recalled {
@@ -158,6 +162,79 @@ fn start(memories: &[&Memory], revision: i64, mirror_dir: &str, request: &Reques
         returned,
         text: text.trim_end().to_owned() + "\n",
     }
+}
+
+/// How many index lines fit in `room` characters together with the lines that
+/// name the rest, and whether the rest collapses into one line. Listing stops at
+/// the first line that doesn't fit.
+fn listed(index: &[&Memory], lines: &[String], room: usize, mirror_dir: &str) -> (usize, bool) {
+    let len = |s: &str| s.chars().count();
+    // Count lines for index[k..], kept up to date as k grows.
+    let mut per_dir: HashMap<&str, usize> = HashMap::new();
+    for m in index {
+        *per_dir.entry(dir(m)).or_default() += 1;
+    }
+    let mut counts: usize = per_dir.iter().map(|(d, n)| len(&count_line(d, *n))).sum();
+    let mut used = 0;
+    let mut k = 0;
+    while k < index.len() {
+        let d = dir(index[k]);
+        let n = per_dir[d];
+        let after =
+            counts - len(&count_line(d, n)) + if n > 1 { len(&count_line(d, n - 1)) } else { 0 };
+        if used + len(&lines[k]) + after > room {
+            break;
+        }
+        used += len(&lines[k]);
+        counts = after;
+        per_dir.insert(d, n - 1);
+        k += 1;
+    }
+    if used + counts <= room {
+        return (k, false);
+    }
+    // Even the count lines don't fit: list what fits beside the one collapse line.
+    let mut used = 0;
+    let mut k = 0;
+    while k < index.len() {
+        let rest = index.len() - k - 1;
+        let tail = if rest > 0 {
+            len(&collapse_line(rest, mirror_dir))
+        } else {
+            0
+        };
+        if used + len(&lines[k]) + tail > room {
+            break;
+        }
+        used += len(&lines[k]);
+        k += 1;
+    }
+    (k, k < index.len())
+}
+
+/// One count line per directory, in order of first appearance.
+fn count_lines(rest: &[&Memory]) -> String {
+    let mut dirs: Vec<(&str, usize)> = Vec::new();
+    for m in rest {
+        match dirs.iter_mut().find(|(d, _)| *d == dir(m)) {
+            Some((_, n)) => *n += 1,
+            None => dirs.push((dir(m), 1)),
+        }
+    }
+    dirs.iter().map(|(d, n)| count_line(d, *n)).collect()
+}
+
+fn count_line(dir: &str, n: usize) -> String {
+    format!("- {dir} — {n} more not listed; search or list the directory\n")
+}
+
+fn collapse_line(n: usize, mirror_dir: &str) -> String {
+    format!("- {n} more memories not listed; full index: {mirror_dir}/INDEX.md\n")
+}
+
+/// The parent directory, with its trailing slash.
+fn dir(m: &Memory) -> &str {
+    &m.path[..=m.path.rfind('/').unwrap_or(0)]
 }
 
 /// `memories` are in scope: not excluded, and only this project's.
@@ -201,7 +278,7 @@ fn task(memories: &[&Memory], revision: i64, query: &str) -> Recalled {
             view: "task",
             pinned: Vec::new(),
             returned: Vec::new(),
-            text: format!("No memory matches \"{query}\"."),
+            text: format!("No memory matches \"{query}\".\n"),
         };
     }
     matches.sort_by(|(a, x), (b, y)| b.cmp(a).then_with(|| order(x, y)));
@@ -211,8 +288,8 @@ fn task(memories: &[&Memory], revision: i64, query: &str) -> Recalled {
     let mut lines = Vec::new();
     let mut used = 0;
     for (rank, (_, m)) in matches.iter().enumerate() {
-        let n = body(m).chars().count();
-        if rank < SEARCH_RESULTS && used + n <= BODY_BUDGET {
+        let n = block_len(m);
+        if rank < SEARCH_RESULTS && used + n <= TASK_BODY_BUDGET {
             used += n;
             text.push_str(&full(m));
             returned.push(m.path.clone());
@@ -223,7 +300,7 @@ fn task(memories: &[&Memory], revision: i64, query: &str) -> Recalled {
     if !lines.is_empty() {
         text.push_str("## More matches\n");
         for m in lines.iter().take(MORE_MATCHES) {
-            text.push_str(&format!("- {} — {}\n", m.path, title(m)));
+            text.push_str(&line(m));
         }
         if lines.len() > MORE_MATCHES {
             text.push_str(&format!("+{} more\n", lines.len() - MORE_MATCHES));
@@ -235,6 +312,16 @@ fn task(memories: &[&Memory], revision: i64, query: &str) -> Recalled {
         returned,
         text: text.trim_end().to_owned() + "\n",
     }
+}
+
+fn header(revision: i64, mirror_dir: &str) -> String {
+    format!(
+        "# Shared agent memory — revision {revision}\n\n{HEADER}\nRead-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with memory_read, when its index line applies; search with memory_recall(query=...).\n\n"
+    )
+}
+
+fn line(m: &Memory) -> String {
+    format!("- {} — {}\n", m.path, title(m))
 }
 
 fn full(m: &Memory) -> String {
