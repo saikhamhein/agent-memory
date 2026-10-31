@@ -241,7 +241,8 @@ fn dry_run_changes_nothing() {
     for needle in ["keep-it-simple", "/global/keep-it-simple.md", "other", "/topics/hardware/other.md"] {
         assert!(ran.text().contains(needle), "report lacks {needle:?}:\n{}", ran.text());
     }
-    assert!(ran.text().contains("137"), "report shows the 137 pinned characters:\n{}", ran.text());
+    let pinned = block_len("keep-it-simple", &"မ".repeat(137)).to_string();
+    assert!(ran.text().contains(&pinned), "report shows the {pinned} pinned characters (block_len):\n{}", ran.text());
     assert_eq!(bytes(&db.db), before);
     assert!(!db.mnt().exists(), "dry run builds no mirror");
     // Still migratable afterwards.
@@ -323,9 +324,15 @@ fn pin_marks_only_the_named_memories() {
 
 #[test]
 fn pin_budget_counts_characters_not_bytes() {
-    let burmese = |n: usize| "မ".repeat(n); // 3 bytes per character
-    for (second, ok) in [(2000, true), (2001, false)] {
-        let db = v1_db(&[revision(T1, vec![mem("one", global(), &burmese(2000)), mem("two", global(), &burmese(second))])], &[], &[]);
+    // The budget is the total `block_len` of the pinned memories: exactly 4,000 passes, 4,001 aborts.
+    // Burmese is 3 bytes per character, so a byte count would reject the passing case.
+    let burmese = |n: usize| "မ".repeat(n);
+    let first = burmese(1000);
+    let fill = 4000 - block_len("one", &first) - block_len("two", "");
+    for (second, ok) in [(fill, true), (fill + 1, false)] {
+        let (a, b) = (mem("one", global(), &first), mem("two", global(), &burmese(second)));
+        assert_eq!(block_len("one", &first) + block_len("two", &burmese(second)), if ok { 4000 } else { 4001 });
+        let db = v1_db(&[revision(T1, vec![a, b])], &[], &[]);
         let before = bytes(&db.db);
         let ran = migrate(&db.db, &["--pin", "one", "--pin", "two"]);
         if ok {

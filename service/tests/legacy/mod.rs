@@ -328,3 +328,9 @@ pub fn expected_content(v1: &Value) -> String {
     }
     format!("---\n{}\n---\n{}", encode(&meta), v1["body"].as_str().unwrap())
 }
+
+/// What the pinned budget counts for one memory (design §3.1): the characters of the block recall prints for it,
+/// `### {title} [{path}]\n{body}\n\n` with the body's trailing whitespace trimmed. For a `mem()` memory in `/global/`.
+pub fn block_len(id: &str, body: &str) -> usize {
+    format!("### Title of {id} [/global/{id}.md]\n{}\n\n", body.trim_end()).chars().count()
+}
