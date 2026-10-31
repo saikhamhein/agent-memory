@@ -104,7 +104,7 @@ PRAGMA user_version = 2;
 | `/roles/<role>/<slug>.md` | on demand |
 
 Path rules:
-- Each segment matches `[A-Za-z0-9._-]+` and is not `.` or `..`.
+- Each segment matches `[A-Za-z0-9._-]+`, is not `.` or `..`, and is at most 255 bytes long. That is the filesystem's file-name limit (`NAME_MAX`); a longer segment could be committed but never mirrored.
 - A path has 2–20 segments and at most 1,024 bytes.
 - The slug matches `[a-z0-9][a-z0-9-]{0,79}` and is unique within its store. That is today's id rule, so slugs are today's ids.
 
@@ -131,7 +131,12 @@ Further rules:
 **Mirror (read-only copy):**
 - The live store is written to `<database dir>/mnt/shared-agent-memory/`. `mnt` is configurable as `mount` in `server.toml`.
 - Each memory is a file at its path holding the exact stored bytes, mode 0444, in directories with mode 0555.
-- `INDEX.md` is the **full** index for "no project": the pinned memories in full, then one line for every other memory, with no size cap (`recall::index_md`). A file tool can read it when the service is down.
+- `INDEX.md` (`recall::index_md`) is the **full** index, with no size cap and no count lines:
+  - the header;
+  - `## Always apply`: the pinned **global** memories in full;
+  - `## Index`: one line for every other memory in the store, in this order: global, then every project's memories (pinned project memories included, because they apply only inside their project), then topics, then roles. Within each group, by `priority`, then slug.
+
+  It is not the no-project start view: that view leaves out project memories and is capped. A file tool can read it when the service is down.
 - A marker file `.agent-memory-store` contains `{store_id, revision}`.
 - After each committed live write, the service writes `mnt/.generations/<revision>/` and renames a symlink over `mnt/shared-agent-memory`, then deletes the generations older than the previous one. A plain temporary directory plus rename can't replace a non-empty directory atomically; renaming a symlink can.
 - If writing the mirror fails, the commit stands and `status` reports `mirror_stale`. `Store::open` rebuilds a stale mirror.
@@ -281,7 +286,7 @@ Reads are not MCP resources either: in Claude Code those are `@`-mentions made b
      - every added path and slug must be free;
      - none of the dream's observations may have been consumed by another adopted dream;
      - the pinned budget must hold.
-   - Any failure returns 409 `adopt_conflict`, `observations_consumed` or `pinned_budget_exceeded`, with `paths`, and nothing changes.
+   - Any failure returns 409 `adopt_conflict`, `observations_consumed` or `pinned_budget_exceeded`, with `paths`, and nothing changes. For `observations_consumed`, `paths` holds the observation ids.
    - On success it applies the changes as live versions by `dream:<id>`, sets `completed`, archives the output store and rebuilds the mirror. An empty diff is valid.
 5. **Cancel (`POST /v1/dreams/{id}/cancel`, `review`).** `running` becomes `canceled` and the output store is archived. Cancelling a canceled dream is a no-op; cancelling a completed dream returns 400.
 
