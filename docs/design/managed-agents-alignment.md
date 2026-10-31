@@ -125,7 +125,7 @@ Path rules:
 Further rules:
 - The body must not be empty.
 - Content is at most 102,400 bytes and must pass the existing credential patterns.
-- **Pinned budget:** the bodies of all pinned memories in a store total at most **4,000 characters** (`model::PINNED_BUDGET`, counted as `body.chars().count()`). A write that would exceed it fails with 409 `pinned_budget_exceeded`. The core rules therefore always fit and can never be cut; curating them is the dream's job.
+- **Pinned budget:** the rendered blocks of all pinned memories in a store total at most **4,000 characters** (`model::PINNED_BUDGET`). A memory's cost is `model::block_len(m)`, the `chars()` count of `### {title} [{path}]\n{body}\n\n` with the body's trailing whitespace trimmed. That is exactly the text recall prints for it, so the heading counts and many tiny pinned memories can't exceed the bound. A write that would exceed it fails with 409 `pinned_budget_exceeded`. The core rules therefore always fit and can never be cut; curating them is the dream's job.
 - Migration writes frontmatter in today's `encode()` format.
 
 **Mirror (read-only copy):**
@@ -182,12 +182,12 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
 - **This project:** the project's unpinned memories, in full, ordered by `priority` (descending) then slug.
 - **Requested:** topic and role memories named in the request, in full, in the same order.
 - **Whole-view cap:** the start view is at most `START_MAX = 9500` characters, so it fits under Claude Code's 10,000-character cap on hook `additionalContext`. Above that cap, Claude Code keeps only a 2,000-character preview ([hooks docs](https://code.claude.com/docs/en/hooks.md), "JSON output").
-- **Body cap:** "This project" and "Requested" share `START_BODY_BUDGET = 3000` characters. A memory over the cap moves to the index as a line.
+- **Body cap:** "This project" and "Requested" share `START_BODY_BUDGET = 3000` characters of `block_len`. A memory over the cap moves to the index as a line.
 - **Index:** one line for each other memory in every scope except other projects, which never apply to this session. Order: this project's overflow, then global, then topics, then roles, each ordered by `priority` then slug.
   - Index lines fill whatever remains of `START_MAX`.
   - The rest become one `{dir} — {n} more` line per directory.
   - If those count lines don't fit either, they collapse into the single line `- {n} more memories not listed; full index: {mirror_dir}/INDEX.md`.
-  - Pinned memories (≤4,000) plus the header (≤600) plus bodies (≤3,000) leave at least 1,900 characters for index and count lines, so the bound holds at any store size.
+  - Pinned blocks (≤4,000), plus the header and section headings (≤700), plus body blocks (≤3,000), leave at least 1,800 characters. The renderer first reserves room for the single collapse line, then fills index lines and count lines into the rest, so the bound holds at any store size.
 - **Exclusions:** tentative and expired memories never appear.
 - **Size:** everything except the index is independent of how many other memories the store holds.
 
@@ -197,7 +197,7 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
 2. **Terms:** lowercase `\w+` tokens of at least 3 characters that are not in the frozen `STOPWORDS` list in `recall.rs` (about 60 common English words). With 4 or more candidates, a term found in more than half of them is also ignored (for example "memory", "agent", "user").
 3. **Match rule:** at least 1 distinct term in the title, tags or scope value, or at least 2 distinct terms in the body.
 4. **Ranking:** score = 3 × title/tag/scope hits + body hits. Ties sort by `priority`, then slug.
-5. **Output:** the top `SEARCH_RESULTS = 5` in full, within `TASK_BODY_BUDGET = 6000`. Further matches appear as `- {path} — {title}` under "More matches", at most 20 lines, then `+N more`.
+5. **Output:** the top `SEARCH_RESULTS = 5` in full, within `TASK_BODY_BUDGET = 6000` of `block_len`. Further matches appear as `- {path} — {title}` under "More matches", at most 20 lines, then `+N more`.
 6. **No match:** the output is exactly `No memory matches "{query}".\n`. Every recall text ends with exactly one newline.
 7. **Why not BM25:** its scores have no natural cut-off, so "an unrelated query returns nothing" would need a tuned threshold. The distinct-term rule with a frequency filter is deterministic and testable.
 
@@ -214,7 +214,7 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
   - `recall()` treats a non-absolute project as no project. The API rejects one with 400.
 - **Empty sections.** A section with nothing in it, `## Index` included, is left out together with its heading.
 - **Count line.** `{dir}` is the parent directory with a trailing slash. Count lines follow the order in which each directory first appears among the unlisted memories.
-- **`START_BODY_BUDGET` / `TASK_BODY_BUDGET`** count the characters of the bodies shown in full, after trimming trailing whitespace.
+- **`START_BODY_BUDGET` / `TASK_BODY_BUDGET`** count `model::block_len` of the memories shown in full, heading included.
   - Memories are tried in order (first fit). One that doesn't fit becomes an index line, and later, smaller ones are still tried.
 - **Index lines** are added while the whole text, with its count lines, stays within `START_MAX`, counted in `chars()` with newlines included.
   - Listing stops at the first line that doesn't fit, and everything from there on goes into count lines.
@@ -479,7 +479,7 @@ Shared helpers, each built once:
    - delete adds a `deleted` version and keeps the lineage;
    - redacting the head fails;
    - redacting an old version nulls its fields and keeps `created_by`.
-9. `store_full` at 10,001 memories. Pinned bodies of exactly 4,000 characters are accepted; 4,001 gives `pinned_budget_exceeded`, with nothing written.
+9. `store_full` at 10,001 memories. Pinned blocks (`block_len`) totalling exactly 4,000 characters are accepted; 4,001 gives `pinned_budget_exceeded`, with nothing written.
 10. `dream_start_freezes_and_clones`:
     - same ids, paths and hashes in the output store;
     - live store untouched;
@@ -516,7 +516,7 @@ Shared helpers, each built once:
    - the count lines add up exactly to the unlisted memories;
    - other projects never appear.
 4. `project_and_requested_in_full`: the project's memories and the requested topic and role memories appear in full; overflow beyond `START_BODY_BUDGET` becomes index lines, never silent drops.
-13. `start_within_hook_cap`: with pinned memories at exactly 4,000 characters, plus maximal project and requested memories, plus 5,000 others, the start view is at most 9,500 characters and the pinned memories are intact. `index_md` is never truncated.
+13. `start_within_hook_cap`: with pinned blocks at exactly 4,000 characters (once as a few large memories, once as 60 tiny ones with long titles and paths), plus maximal project and requested memories, plus 5,000 others, the start view is at most 9,500 characters and the pinned memories are intact. `index_md` is never truncated.
 5. `unrelated_query_returns_nothing`: `kubernetes ingress yaml` gives exactly `No memory matches "kubernetes ingress yaml".\n`
 6. `no_unrelated_bodies`: for 5 fixture queries, every returned body contains a non-stop query term in its title, tags or scope, or two in its body.
 7. `common_and_stop_words_ignored`: `the memory agent` matches nothing.
