@@ -78,9 +78,14 @@ def start(ms, rev, project="", role="", topics=()):
     k = 0
     while k < len(idx) and len(build(k + 1)) <= START_MAX: k += 1
     text = build(k)
-    if len(text) > START_MAX:  # count lines collapse into one line
-        text = "\n".join(top + ["## Index\n" + "\n".join(["- %s — %s" % (m["path"], m["meta"]["title"]) for m in idx[:k]]
-                                + ["- %d more memories not listed; full index: %s/INDEX.md" % (len(idx) - k, MIRROR)]) + "\n"])
+    if len(text) > START_MAX:  # count lines collapse into one line; list what fits beside it (doc PR 13)
+        def collapsed(k):
+            lines = ["- %s — %s" % (m["path"], m["meta"]["title"]) for m in idx[:k]]
+            lines.append("- %d more memories not listed; full index: %s/INDEX.md" % (len(idx) - k, MIRROR))
+            return "\n".join(top + ["## Index\n" + "\n".join(lines) + "\n"])
+        k = 0
+        while k < len(idx) and len(collapsed(k + 1)) <= START_MAX: k += 1
+        text = collapsed(k)
     return text
 
 

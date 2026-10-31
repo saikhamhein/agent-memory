@@ -358,6 +358,18 @@ fn assert_accounted(store: &Store, project: &str, text: &str) {
                 "count lines next to the collapse line"
             );
             assert_eq!(n, rest.len(), "collapse line counts the wrong number");
+            // as many lines are listed as fit beside the collapse line, so the next one does not
+            // (the count in the collapse line may lose one digit when a line is listed)
+            if let Some(next) = rest.first() {
+                let line = format!("- {} — {}\n", next.path, next.title)
+                    .chars()
+                    .count();
+                assert!(
+                    text.chars().count() + line - 1 > START_MAX,
+                    "index stops early: {} characters, the next line has {line}",
+                    text.chars().count()
+                );
+            }
         }
         None => {
             // one line per directory, in the order each directory first appears among the unlisted
