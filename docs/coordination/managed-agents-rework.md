@@ -22,10 +22,11 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 | Role | Session | Status |
 | --- | --- | --- |
-| Architect | `local_b602e858-1cf0-40c9-a15d-c78a09d3e1e3` (architect) | PR 6 rev 2 @ f8cd4b4: review points addressed; waiting on user ruling (§6) |
+| Architect | `local_b602e858-1cf0-40c9-a15d-c78a09d3e1e3` (architect) | PR 6 rev 3 merged @ c9b48a3; reviews workstream PRs |
 
 ## Merged
 
+- PR 6 (design rev 3, keeps the Rust service, one renderer) → master `83ff1f7`; reinstalled, service active. Integration branch `rework/managed-agents-v2` cut at `83ff1f7`.
 - PR 5 (state file + reinstall rule) → master `94f0ab4`; local setup reinstalled, service active, revision 9.
 
 ## Decisions and inputs
@@ -39,9 +40,9 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Blockers
 
-- User ruling on PR 6 §6: retire the Rust service in favour of one Python package (architect recommends yes). Workstream language depends on it.
+- Starting sessions needs a user turn (the app refuses starts on peer-message turns).
 - Proposed card `task_8b1e5f32`: text-only MCP recall quick win on master.
 
 ## Next actions
 
-- Wait for PR 6 revision; merge; reinstall; cut `rework/managed-agents-v2` from master; staff A1, A2, B, C, D (engineer + test engineer each).
+- Staff workstreams A (store + mirror), R (recall), H (HTTP API), M (migration + install), C (clients, hook, docs): test engineer + engineer each, PRs to `rework/managed-agents-v2`, merge order A → R → H → M → C.
