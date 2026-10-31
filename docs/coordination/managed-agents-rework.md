@@ -22,7 +22,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 | Role | Session | Status |
 | --- | --- | --- |
-| Architect | `local_b602e858-1cf0-40c9-a15d-c78a09d3e1e3` (architect) | PR 6 @ 48b7429: changes requested 2026-11-01 |
+| Architect | `local_b602e858-1cf0-40c9-a15d-c78a09d3e1e3` (architect) | PR 6 rev 2 @ f8cd4b4: review points addressed; waiting on user ruling (§6) |
 
 ## Merged
 
@@ -39,7 +39,8 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Blockers
 
-(none)
+- User ruling on PR 6 §6: retire the Rust service in favour of one Python package (architect recommends yes). Workstream language depends on it.
+- Proposed card `task_8b1e5f32`: text-only MCP recall quick win on master.
 
 ## Next actions
 
