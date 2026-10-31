@@ -22,11 +22,11 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 | Role | Session | Status |
 | --- | --- | --- |
-| Architect | `local_b602e858-1cf0-40c9-a15d-c78a09d3e1e3` (architect) | design started 2026-11-01 |
+| Architect | `local_b602e858-1cf0-40c9-a15d-c78a09d3e1e3` (architect) | PR 6 @ 48b7429: changes requested 2026-11-01 |
 
 ## Merged
 
-(none)
+- PR 5 (state file + reinstall rule) → master `94f0ab4`; local setup reinstalled, service active, revision 9.
 
 ## Decisions and inputs
 
@@ -34,10 +34,13 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 - Prior art: unpushed branch `feat/recall-on-demand` @ `d125894` (worktree `.claude/worktrees/recall-on-demand`) from session `local_cc899943-24f5-416f-bb84-4b0a3e64223e`: recall start/task modes, text-only MCP recall, named budget omissions, hook in repo, `update-local.sh`. Architect evaluates it as an input, not a base.
 - 2026-11-01 user confirmed: after every merged PR, fast-forward local master and reinstall without asking (rule in `AGENTS.md`; memory `agent-memory-reinstall-after-merge`, revision 9).
 
+- 2026-11-01 memory revision 10: `keep-it-simple` (global, priority 10) replaces `remove-what-is-not-needed` + `small-reusable-solutions`; it was cut from every baseline recall at priority 1. Reinstall memory removed (lives in AGENTS.md).
+- PR 6 review: (1) `start` must load only an always-load core + project + requested scopes in full, plus a one-line index of everything else; tests for core never cut and bounded output; (2) don't merge `feat/recall-on-demand` first, cut the integration branch from master; (3) KISS: one recall renderer (Rust), drop dream `instructions`, justify or cut the store list, `kind` and symlink generations; (4) writes only through the service, settled by the coordinator.
+
 ## Blockers
 
 (none)
 
 ## Next actions
 
-- Wait for the architect's design PR; review; merge; reinstall; staff workstreams from it.
+- Wait for PR 6 revision; merge; reinstall; cut `rework/managed-agents-v2` from master; staff A1, A2, B, C, D (engineer + test engineer each).
