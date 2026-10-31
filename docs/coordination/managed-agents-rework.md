@@ -30,12 +30,13 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 | Engineer H (HTTP API) | `local_a320fa63-05c9-4d9a-9f6a-ebad5ce08624` | building |
 | Test engineer H | `local_7a6bae6a-f710-4da7-a17d-ba7c2ff467f9` | `rework/tests-h` @ `0a70203`: encodes the architect rulings; fails to compile on the integration head as intended |
 | Engineer M (migration + install) | `local_15a0c48f-71c2-43fe-8db3-cc45fdea948c` | building |
-| Test engineer M | `local_9adf3c05-b247-4bd0-97bb-f64f1214b6aa` | `rework/tests-m` @ `b951816`: 13 migrate + store tests + 5 install tests, all failing on the integration head; 4 rulings asked |
+| Test engineer M | `local_9adf3c05-b247-4bd0-97bb-f64f1214b6aa` | `rework/tests-m` @ `87ec62f` (4,000 pin budget): 13 migrate + store tests + 5 install tests, all failing on the integration head; 4 rulings asked |
 | Engineer C (clients, hook, docs) | `local_111adbc3-3795-4a66-881a-f9190f3f09ac` | building |
 | Test engineer C | `local_51c2d84e-6cc7-487f-9294-8ccccdbd4e05` | 27 tests: `rework/tests-c` @ `e84b1dc` (fixed a wrong readOnly assertion), all failing on the integration head; open: stub start+task output, awaiting architect |
 
 ## Merged
 
+- PR 10 (budgets count the rendered block incl. heading, `model::block_len`; doc only) → `rework/managed-agents-v2`.
 - PR 8 (hook-cap rulings: pinned budget 4,000, START_MAX 9,500 under Claude Code's 10,000-char hook cap, error/diff shapes; doc only) → `rework/managed-agents-v2` `8c57c6b`. Leftover: §4.3 R.3 still says "within 8,000 characters"; architect to fix in the next doc PR.
 - PR 7 (recall rendering rulings, doc only) → `rework/managed-agents-v2` `d9e51c7`.
 - PR 6 (design rev 3, keeps the Rust service, one renderer) → master `83ff1f7`; reinstalled, service active. Integration branch `rework/managed-agents-v2` cut at `83ff1f7`.
@@ -53,7 +54,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Blockers
 
-- Architect session's outgoing messaging is paused by the app and needs the user to resume it there; seven rulings are undelivered. The coordinator does not relay around the pause.
+- Architect session's outgoing messaging paused again (2026-11-01, second time); rulings for H/test-H and the PR 10 notice undelivered. Needs the user to resume it there. The coordinator does not relay around the pause.
 - Proposed card `task_8b1e5f32`: text-only MCP recall quick win on master.
 
 ## Next actions
