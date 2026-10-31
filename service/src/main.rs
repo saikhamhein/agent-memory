@@ -1,6 +1,6 @@
 use agent_memory_server::{api, config::Config, model::hash, store::Store};
 use clap::{Parser, Subcommand};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use uuid::Uuid;
 
 mod migrate;
@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
             dry_run,
             pins,
         } => {
-            let report = migrate::migrate(&database, &mirror(&database, None), &pins, dry_run)?;
+            let report = migrate::migrate(&database, &database.with_file_name("mnt"), &pins, dry_run)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Command::Backup { database, output } => {
@@ -78,18 +78,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Check { config } => {
             let config = Config::load(&config)?;
-            let store = Store::open(
-                &config.database,
-                &mirror(&config.database, config.mount.as_deref()),
-            )?;
+            let store = Store::open(&config.database, &config.mount_dir())?;
             println!("{}", store.status()?);
         }
         Command::Serve { config } => {
             let config = Config::load(&config)?;
-            let store = Store::open(
-                &config.database,
-                &mirror(&config.database, config.mount.as_deref()),
-            )?;
+            let store = Store::open(&config.database, &config.mount_dir())?;
             let listener = tokio::net::TcpListener::bind(config.listen).await?;
             eprintln!(
                 "agent-memory-server {} listening on {}",
@@ -109,9 +103,4 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
-}
-
-/// The mirror directory: `mount` from server.toml, else `mnt` next to the database.
-fn mirror(database: &Path, mount: Option<&Path>) -> PathBuf {
-    mount.map_or_else(|| database.with_file_name("mnt"), Path::to_path_buf)
 }
