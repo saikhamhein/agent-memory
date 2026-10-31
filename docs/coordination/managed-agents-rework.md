@@ -23,7 +23,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 | Role | Session | Status |
 | --- | --- | --- |
 | Architect | `local_b602e858-1cf0-40c9-a15d-c78a09d3e1e3` (architect) | PR 6 rev 3 merged @ c9b48a3; reviews workstream PRs |
-| Engineer A (store + mirror) | `local_f7b57f17-4e91-4996-ba3b-3fddbd222144` | PR 11: architect approves after the block_len pinned budget + unique generation names |
+| Engineer A (store + mirror) | `local_f7b57f17-4e91-4996-ba3b-3fddbd222144` | PR 11 merged |
 | Test engineer A | `local_c79accd0-cf18-4ce5-9f59-86e28b10f1a7` | `rework/tests-a` @ `f565521`: 19 tests, 19/19 on engineer WIP, 6 mutants caught; told to adopt PR 10 block_len |
 | Engineer R (recall) | `local_6158a6a3-f625-44c2-9401-7a559884a564` | PR 9: 17/18 pass, byte-identical to test-R renderer; one test being fixed |
 | Test engineer R | `local_88b6d74f-ee66-441e-a12a-cb3df7e5719c` | `rework/tests-r` @ `30114e5`: 19 tests, PR 10 block_len adopted |
@@ -36,6 +36,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Merged
 
+- PR 11 (WS-A store core + mirror, architect-approved at 529c2d5) → `rework/managed-agents-v2` `76e85fd`. Coordinator check on the merged result: 23 Rust tests pass, clippy -D warnings and fmt clean; placeholders for recall.rs/api.rs/main.rs labelled with owners. Python suites are expected red until C.
 - PR 13 (index lines still fill beside the collapse line; doc only) → `rework/managed-agents-v2`.
 - PR 12 (INDEX.md contents, 255-byte path segments, observation ids in `observations_consumed` paths; doc only) → `rework/managed-agents-v2`.
 - PR 10 (budgets count the rendered block incl. heading, `model::block_len`; doc only) → `rework/managed-agents-v2`.
