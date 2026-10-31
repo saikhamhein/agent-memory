@@ -181,7 +181,11 @@ fn assert_conflict(result: &(StatusCode, Value), kind: &str, paths: Option<&[&st
     if kind == "store_archived" {
         assert!(body.get("paths").is_none(), "{body}");
     } else if let Some(paths) = paths {
-        assert_eq!(body["paths"], json!(paths), "{body}");
+        let mut got: Vec<_> = body["paths"].as_array().into_iter().flatten().cloned().collect();
+        got.sort_by_key(ToString::to_string);
+        let mut want: Vec<_> = paths.iter().map(|p| json!(p)).collect();
+        want.sort_by_key(ToString::to_string);
+        assert_eq!(got, want, "{body}");
     } else {
         assert!(body["paths"].as_array().is_some_and(|p| !p.is_empty()), "{body}");
     }
@@ -602,18 +606,19 @@ async fn error_mapping_conflicts() {
     })).await;
     assert_conflict(&stale, "precondition_failed", Some(&["/global/a.md"]));
 
-    // pinned_budget_exceeded: 4,000 characters fit exactly, one more does not, and nothing is written.
+    // pinned_budget_exceeded: `paths` = every pinned path the store would hold after the rejected write (architect ruling).
+    // 4,000 characters fit exactly, one more does not, and nothing is written.
     let fx2 = Fx::new();
     let four_k = "p".repeat(4000);
     fx2.create("live", "/global/core.md", &content_with("Core", &four_k, json!({"pinned": true}))).await;
     let over = fx2.call("POST", url, "admin", json!({
         "path": "/global/more.md", "content": content_with("More", "q", json!({"pinned": true}))
     })).await;
-    assert_conflict(&over, "pinned_budget_exceeded", Some(&["/global/more.md"]));
+    assert_conflict(&over, "pinned_budget_exceeded", Some(&["/global/core.md", "/global/more.md"]));
     let grow = fx2.call("POST", url, "admin", json!({
         "path": "/projects/p/more.md", "content": content_with("More", "q", json!({"pinned": true}))
     })).await;
-    assert_conflict(&grow, "pinned_budget_exceeded", Some(&["/projects/p/more.md"]));
+    assert_conflict(&grow, "pinned_budget_exceeded", Some(&["/global/core.md", "/projects/p/more.md"]));
     assert_eq!(fx2.ok("GET", url, Value::Null).await["data"].as_array().unwrap().len(), 1);
     assert_eq!(fx2.status().await["pinned_chars"], 4000);
     // Unpinned memories are not limited by the pinned budget.
