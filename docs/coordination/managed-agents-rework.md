@@ -32,7 +32,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 | Engineer M (migration + install) | `local_15a0c48f-71c2-43fe-8db3-cc45fdea948c` | building |
 | Test engineer M | `local_9adf3c05-b247-4bd0-97bb-f64f1214b6aa` | tests → `rework/tests-m` |
 | Engineer C (clients, hook, docs) | `local_111adbc3-3795-4a66-881a-f9190f3f09ac` | building |
-| Test engineer C | `local_51c2d84e-6cc7-487f-9294-8ccccdbd4e05` | 25 tests pushed: `rework/tests-c` @ `17c48e9`, all fail on d9e51c7 |
+| Test engineer C | `local_51c2d84e-6cc7-487f-9294-8ccccdbd4e05` | 27 tests: `rework/tests-c` @ `620440a`, all failing on the integration head; open: stub start+task output, awaiting architect |
 
 ## Merged
 
