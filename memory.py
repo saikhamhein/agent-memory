@@ -154,6 +154,19 @@ def retrieve(memories, project='', role='', topics=(), query='', limit=12, inclu
     return [m for _, _, m in sorted(selected, key=lambda x: (-x[0], x[1]))[:limit]]
 
 
+def log_recall(root, args, revision, selected, text):
+    # Usage evidence for audits; never fail a recall because the store directory is read-only.
+    entry = {'ts': now(), 'client': args.client, 'project': args.project, 'query': args.query,
+             'role': args.role, 'topics': args.topic, 'revision': revision,
+             'returned': [m['id'] for m in selected], 'chars': len(text)}
+    try:
+        fd = os.open(root / 'recall-log.jsonl', os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, 'a') as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+    except OSError:
+        pass
+
+
 def new_dream(db, root):
     db.execute('BEGIN IMMEDIATE')
     try:
@@ -223,6 +236,7 @@ def main():
     ret.add_argument('--topic', action='append', default=[]); ret.add_argument('--query', default='')
     ret.add_argument('--limit', type=int, default=12); ret.add_argument('--budget', type=int, default=12000)
     ret.add_argument('--json', action='store_true')
+    ret.add_argument('--client', default='cli', help='Name recorded in recall-log.jsonl')
     sub.add_parser('export')
     rb = sub.add_parser('rollback'); rb.add_argument('revision', type=int)
     rb.add_argument('--expected', type=int, required=True); rb.add_argument('--reason', required=True)
@@ -255,7 +269,9 @@ def main():
         if args.limit < 1 or args.budget < 300:
             raise ValueError('limit must be positive and budget at least 300 characters')
         selected = retrieve(memories, args.project, args.role, args.topic, args.query, args.limit)
-        print(encode({'revision': n, 'memories': selected}) if args.json else render(selected, n, args.budget))
+        text = encode({'revision': n, 'memories': selected}) if args.json else render(selected, n, args.budget)
+        print(text)
+        log_recall(args.root, args, n, selected, text)
     elif args.command == 'export':
         # Derived convenience files; the database remains authoritative.
         target = args.root / 'exports' / f'revision-{n}'

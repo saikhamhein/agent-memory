@@ -6,7 +6,7 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, Request, State},
+    extract::{DefaultBodyLimit, Extension, Path, Request, State},
     http::{Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -16,6 +16,10 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
+
+/// Name of the token that authorized the request, recorded in the recall log.
+#[derive(Clone)]
+struct Client(String);
 
 #[derive(Clone)]
 pub struct App {
@@ -92,7 +96,7 @@ pub fn router(config: Config, store: Store) -> Router {
         .with_state(app)
 }
 
-async fn authorize(State(app): State<App>, request: Request, next: Next) -> Response {
+async fn authorize(State(app): State<App>, mut request: Request, next: Next) -> Response {
     let Some(token) = request
         .headers()
         .get("authorization")
@@ -133,13 +137,20 @@ async fn authorize(State(app): State<App>, request: Request, next: Next) -> Resp
         )
             .into_response();
     }
+    request
+        .extensions_mut()
+        .insert(Client(identity.name.clone()));
     next.run(request).await
 }
 
 async fn status(State(app): State<App>) -> impl IntoResponse {
     app.run(|s| s.status()).await
 }
-async fn recall(State(app): State<App>, Json(mut request): Json<Recall>) -> Response {
+async fn recall(
+    State(app): State<App>,
+    Extension(Client(client)): Extension<Client>,
+    Json(mut request): Json<Recall>,
+) -> Response {
     if !request.project_id.is_empty() {
         if !request.project.is_empty() {
             return model::invalid("Use project_id or project, not both").into_response();
@@ -149,12 +160,45 @@ async fn recall(State(app): State<App>, Json(mut request): Json<Recall>) -> Resp
         };
         request.project = path.clone();
     }
+    let log = app.config.database.with_file_name("recall-log.jsonl");
     app.run(move |s| {
         let (revision, memories) = s.active()?;
-        model::recall(&memories, revision, &request)
+        let result = model::recall(&memories, revision, &request)?;
+        log_recall(&log, &client, &request, &result);
+        Ok(result)
     })
     .await
     .into_response()
+}
+/// Usage evidence for audits, next to the database; a failed write never fails the recall.
+fn log_recall(path: &std::path::Path, client: &str, request: &Recall, result: &Value) {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    let returned: Vec<_> = result["memories"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|m| m["id"].clone())
+        .collect();
+    let entry = json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "client": client,
+        "project": request.project,
+        "query": request.query,
+        "role": request.role,
+        "topics": request.topics,
+        "revision": result["revision"],
+        "returned": returned,
+        "chars": result["text"].as_str().map_or(0, |t| t.chars().count()),
+    });
+    let written = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .open(path)
+        .and_then(|mut f| f.write_all(format!("{entry}\n").as_bytes()));
+    if let Err(e) = written {
+        eprintln!("Recall log write failed: {e}");
+    }
 }
 async fn observe(
     State(app): State<App>,

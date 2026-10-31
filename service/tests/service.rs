@@ -290,6 +290,47 @@ async fn project_aliases_and_request_validation() {
     );
 }
 
+#[tokio::test]
+async fn recall_appends_usage_log() {
+    let (tmp, mut store) = fixture();
+    let dream = store.dream().unwrap();
+    store
+        .promote(reviewed(&dream, json!([memory("one")])))
+        .unwrap();
+    let app = api::router(config(&tmp.path().join("memory.sqlite3")), store);
+    let (_, result) = request(
+        &app,
+        "POST",
+        "/v1/recall",
+        Some("reader"),
+        json!({"project_id":"example","query":"evidence"}),
+    )
+    .await;
+    request(&app, "POST", "/v1/recall", Some("reader"), json!({"limit":0})).await;
+    let log = tmp.path().join("recall-log.jsonl");
+    let lines: Vec<Value> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1, "only successful recalls are logged");
+    let entry = &lines[0];
+    assert_eq!(entry["client"], "reader");
+    assert_eq!(entry["project"], "/projects/a");
+    assert_eq!(entry["query"], "evidence");
+    assert_eq!(entry["revision"], 1);
+    assert_eq!(entry["returned"], json!(["one"]));
+    assert_eq!(
+        entry["chars"],
+        json!(result["text"].as_str().unwrap().chars().count())
+    );
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(&log).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
 #[test]
 fn snapshots_review_gates_and_late_observations() {
     let (_tmp, mut store) = fixture();
