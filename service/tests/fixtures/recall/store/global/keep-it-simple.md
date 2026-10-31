@@ -1,22 +1,4 @@
 ---
-{
-  "confidence": "explicit",
-  "evidence": [
-    {
-      "locator": "fixture",
-      "note": "synthetic recall fixture",
-      "source": "workstream-r"
-    }
-  ],
-  "pinned": true,
-  "priority": 10,
-  "tags": [
-    "simplicity",
-    "design"
-  ],
-  "title": "Keep it simple: if a part can go, remove it"
-}
+{"title": "Keep it simple: if it can be removed, remove it", "confidence": "explicit", "tags": ["simplicity", "design"], "evidence": [{"source": "fixture", "locator": "synthetic:keep-it-simple.md", "note": "Synthetic evidence for recall tests"}], "pinned": true, "priority": 10}
 ---
-Every screen, control, setting, file and rule has to earn its place. When a part can be removed without losing what the user asked for, remove it. Prefer the plainer design even when reaching it takes longer, reuse existing libraries before writing new ones, and avoid knobs nobody asked for. Applies to code, documents, prompts and agent workflows alike.
-
-How to apply: the agent follows this in every session; this memory outranks habit.
+Every screen, setting, file and rule must earn its place. Prefer the simpler design even when it takes more effort, and avoid adding knobs or abstractions that the task does not need. Applies to every agent that reads the shared memory.
