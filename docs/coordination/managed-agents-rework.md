@@ -32,10 +32,11 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 | Engineer M (migration + install) | `local_15a0c48f-71c2-43fe-8db3-cc45fdea948c` | building |
 | Test engineer M | `local_9adf3c05-b247-4bd0-97bb-f64f1214b6aa` | tests → `rework/tests-m` |
 | Engineer C (clients, hook, docs) | `local_111adbc3-3795-4a66-881a-f9190f3f09ac` | building |
-| Test engineer C | `local_51c2d84e-6cc7-487f-9294-8ccccdbd4e05` | tests → `rework/tests-c` |
+| Test engineer C | `local_51c2d84e-6cc7-487f-9294-8ccccdbd4e05` | 25 tests pushed: `rework/tests-c` @ `17c48e9`, all fail on d9e51c7 |
 
 ## Merged
 
+- PR 8 (hook-cap rulings: pinned budget 4,000, START_MAX 9,500 under Claude Code's 10,000-char hook cap, error/diff shapes; doc only) → `rework/managed-agents-v2` `8c57c6b`. Leftover: §4.3 R.3 still says "within 8,000 characters"; architect to fix in the next doc PR.
 - PR 7 (recall rendering rulings, doc only) → `rework/managed-agents-v2` `d9e51c7`.
 - PR 6 (design rev 3, keeps the Rust service, one renderer) → master `83ff1f7`; reinstalled, service active. Integration branch `rework/managed-agents-v2` cut at `83ff1f7`.
 - PR 5 (state file + reinstall rule) → master `94f0ab4`; local setup reinstalled, service active, revision 9.
@@ -52,6 +53,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Blockers
 
+- Architect session's outgoing messaging is paused by the app and needs the user to resume it there; seven rulings are undelivered. The coordinator does not relay around the pause.
 - Proposed card `task_8b1e5f32`: text-only MCP recall quick win on master.
 
 ## Next actions
