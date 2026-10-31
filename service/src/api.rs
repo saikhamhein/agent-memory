@@ -1,25 +1,55 @@
 use crate::{
     Error, Result,
     config::{Capability, Config},
-    model::{self, Recall},
+    model::{self, absolute_path},
+    recall,
     store::Store,
 };
 use axum::{
-    Json, Router,
-    extract::{DefaultBodyLimit, Extension, Path, Request, State},
+    Json, RequestExt, Router,
+    body::Bytes,
+    extract::{DefaultBodyLimit, Extension, MatchedPath, Path, Query, Request, State},
     http::{Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
 
-/// Name of the token that authorized the request, recorded in the recall log.
+/// Name of the token that authorized the request.
 #[derive(Clone)]
 struct Client(String);
+
+impl Client {
+    fn actor(&self) -> String {
+        format!("token:{}", self.0)
+    }
+}
+
+/// A rejected request; boxed so that handler results stay small.
+struct Reject(Box<Response>);
+impl IntoResponse for Reject {
+    fn into_response(self) -> Response {
+        *self.0
+    }
+}
+impl From<Error> for Reject {
+    fn from(e: Error) -> Self {
+        Self(Box::new(e.into_response()))
+    }
+}
+fn reject(response: impl IntoResponse) -> Reject {
+    Reject(Box::new(response.into_response()))
+}
+
+type Reply = std::result::Result<Json<Value>, Reject>;
 
 #[derive(Clone)]
 pub struct App {
@@ -30,34 +60,53 @@ pub struct App {
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        let (code, message) = match self {
-            Self::Invalid(s) => (StatusCode::BAD_REQUEST, s),
-            Self::Conflict(s) => (StatusCode::CONFLICT, s),
-            Self::NotFound => (StatusCode::NOT_FOUND, "Not found".into()),
+        let (code, body) = match self {
+            Self::Invalid(s) => (StatusCode::BAD_REQUEST, json!({"error":s})),
+            Self::Conflict {
+                kind,
+                message,
+                paths,
+            } => {
+                let mut body = json!({"error":message,"type":kind});
+                if !paths.is_empty() {
+                    body["paths"] = json!(paths);
+                }
+                (StatusCode::CONFLICT, body)
+            }
+            Self::NotFound => (StatusCode::NOT_FOUND, json!({"error":"Not found"})),
             Self::Internal(e) => {
                 eprintln!("Database operation failed: {e}");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal storage error".into(),
+                    json!({"error":"Internal storage error"}),
                 )
             }
         };
-        (code, Json(json!({"error":message}))).into_response()
+        (code, Json(body)).into_response()
     }
 }
 
+fn deny(code: StatusCode, message: &str) -> Reject {
+    reject((code, Json(json!({"error":message}))))
+}
+
+/// Bodies are read as bytes so that every malformed or unknown field is a 400, not axum's 422.
+fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T> {
+    serde_json::from_slice(if body.is_empty() { b"{}" } else { body })
+        .map_err(|e| Error::Invalid(format!("Invalid request body: {e}")))
+}
+
 impl App {
-    async fn run<F>(&self, operation: F) -> std::result::Result<Json<Value>, Response>
+    async fn run<T, F>(&self, operation: F) -> std::result::Result<T, Reject>
     where
-        F: FnOnce(&mut Store) -> Result<Value> + Send + 'static,
+        T: Send + 'static,
+        F: FnOnce(&mut Store) -> Result<T> + Send + 'static,
     {
-        let permit = self.permits.clone().try_acquire_owned().map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"error":"Service busy; retry later"})),
-            )
-                .into_response()
-        })?;
+        let permit = self
+            .permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| deny(StatusCode::SERVICE_UNAVAILABLE, "Service busy; retry later"))?;
         let store = self.store.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -67,9 +116,14 @@ impl App {
             operation(&mut guard)
         })
         .await
-        .map_err(|_| Error::Internal(anyhow::anyhow!("Storage task failed")).into_response())?
-        .map(Json)
-        .map_err(IntoResponse::into_response)
+        .map_err(|_| Error::Internal(anyhow::anyhow!("Storage task failed")))?
+        .map_err(Reject::from)
+    }
+    async fn json<F>(&self, operation: F) -> Reply
+    where
+        F: FnOnce(&mut Store) -> Result<Value> + Send + 'static,
+    {
+        self.run(operation).await.map(Json)
     }
 }
 
@@ -79,24 +133,71 @@ pub fn router(config: Config, store: Store) -> Router {
         config: Arc::new(config),
         permits: Arc::new(Semaphore::new(32)),
     };
+    const STORE: &str = "/v1/memory_stores/{store}";
     Router::new()
         .route("/v1/status", get(status))
         .route("/v1/recall", post(recall))
         .route("/v1/observations", post(observe))
-        .route("/v1/dreams", post(dream))
-        .route("/v1/dreams/{id}", get(get_dream))
-        .route("/v1/proposals/validate", post(validate))
-        .route("/v1/proposals/diff", post(diff))
-        .route("/v1/proposals/promote", post(promote))
-        .route("/v1/rollback", post(rollback))
-        .route("/v1/export", get(export))
+        .route("/v1/dreams", post(dream_start).get(dreams))
+        .route("/v1/dreams/{id}", get(dream))
+        .route("/v1/dreams/{id}/adopt", post(dream_adopt))
+        .route("/v1/dreams/{id}/cancel", post(dream_cancel))
+        .route(&format!("{STORE}/memories"), get(list).post(create))
+        .route(
+            &format!("{STORE}/memories/{{id}}"),
+            get(read).post(update).delete(delete),
+        )
+        .route(&format!("{STORE}/memory_versions"), get(versions))
+        .route(&format!("{STORE}/memory_versions/{{id}}"), get(version))
+        .route(
+            &format!("{STORE}/memory_versions/{{id}}/redact"),
+            post(redact),
+        )
         .route_layer(middleware::from_fn_with_state(app.clone(), authorize))
         .route("/healthz", get(|| async { Json(json!({"status":"ok"})) }))
         .layer(DefaultBodyLimit::max(4 * 1024 * 1024))
         .with_state(app)
 }
 
-async fn authorize(State(app): State<App>, mut request: Request, next: Next) -> Response {
+/// Reads of the live store need `recall` and its writes `promote`; any other store needs `review`.
+async fn required(app: &App, request: &mut Request) -> std::result::Result<Capability, Reject> {
+    let method = request.method().clone();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or("", |m| m.as_str());
+    Ok(match (&method, route) {
+        (&Method::GET, "/v1/status") | (&Method::POST, "/v1/recall") => Capability::Recall,
+        (&Method::POST, "/v1/observations") => Capability::Observe,
+        (&Method::POST, "/v1/dreams/{id}/adopt")
+        | (&Method::POST, "/v1/memory_stores/{store}/memory_versions/{id}/redact") => {
+            Capability::Promote
+        }
+        (_, r) if r.starts_with("/v1/memory_stores/") => {
+            let Path(params) = request
+                .extract_parts::<Path<HashMap<String, String>>>()
+                .await
+                .map_err(reject)?;
+            let store = params.get("store").cloned().unwrap_or_default();
+            let live = app.run(move |s| s.is_live(&store)).await?;
+            match (method == Method::GET, live) {
+                (true, true) => Capability::Recall,
+                (false, true) => Capability::Promote,
+                _ => Capability::Review,
+            }
+        }
+        _ => Capability::Review,
+    })
+}
+
+async fn authorize(State(app): State<App>, request: Request, next: Next) -> Response {
+    match authenticate(&app, request).await {
+        Ok(request) => next.run(request).await,
+        Err(reject) => reject.into_response(),
+    }
+}
+
+async fn authenticate(app: &App, mut request: Request) -> std::result::Result<Request, Reject> {
     let Some(token) = request
         .headers()
         .get("authorization")
@@ -104,11 +205,7 @@ async fn authorize(State(app): State<App>, mut request: Request, next: Next) -> 
         .and_then(|v| v.strip_prefix("Bearer "))
         .filter(|s| !s.is_empty() && s.len() <= 512)
     else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error":"Bearer token required"})),
-        )
-            .into_response();
+        return Err(deny(StatusCode::UNAUTHORIZED, "Bearer token required"));
     };
     let hash = model::hash(token.as_bytes());
     let Some(identity) = app
@@ -117,68 +214,89 @@ async fn authorize(State(app): State<App>, mut request: Request, next: Next) -> 
         .iter()
         .find(|t| bool::from(hash.as_bytes().ct_eq(t.sha256.as_bytes())))
     else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error":"Invalid bearer token"})),
-        )
-            .into_response();
+        return Err(deny(StatusCode::UNAUTHORIZED, "Invalid bearer token"));
     };
-    let path = request.uri().path();
-    let required = match (request.method(), path) {
-        (&Method::GET, "/v1/status") | (&Method::POST, "/v1/recall") => Capability::Recall,
-        (&Method::POST, "/v1/observations") => Capability::Observe,
-        (&Method::POST, "/v1/proposals/promote" | "/v1/rollback") => Capability::Promote,
-        _ => Capability::Review,
-    };
-    if !identity.capabilities.contains(&required) {
-        return (
+    let client = Client(identity.name.clone());
+    let needed = required(app, &mut request).await?;
+    if !identity.capabilities.contains(&needed) {
+        return Err(deny(
             StatusCode::FORBIDDEN,
-            Json(json!({"error":"Token lacks the required capability"})),
-        )
-            .into_response();
+            "Token lacks the required capability",
+        ));
     }
-    request
-        .extensions_mut()
-        .insert(Client(identity.name.clone()));
-    next.run(request).await
+    request.extensions_mut().insert(client);
+    Ok(request)
 }
 
-async fn status(State(app): State<App>) -> impl IntoResponse {
-    app.run(|s| s.status()).await
+async fn status(State(app): State<App>) -> Reply {
+    app.json(|s| s.status()).await
 }
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RecallRequest {
+    project: String,
+    project_id: String,
+    role: String,
+    topics: Vec<String>,
+    query: String,
+    client: String,
+}
+
 async fn recall(
     State(app): State<App>,
-    Extension(Client(client)): Extension<Client>,
-    Json(mut request): Json<Recall>,
-) -> Response {
-    if !request.project_id.is_empty() {
-        if !request.project.is_empty() {
-            return model::invalid("Use project_id or project, not both").into_response();
+    Extension(Client(token)): Extension<Client>,
+    body: Bytes,
+) -> Reply {
+    let mut r: RecallRequest = parse(&body)?;
+    if !r.project_id.is_empty() {
+        if !r.project.is_empty() {
+            return Err(model::invalid("Use project_id or project, not both").into());
         }
-        let Some(path) = app.config.projects.get(&request.project_id) else {
-            return model::invalid("Unknown project_id").into_response();
+        let Some(path) = app.config.projects.get(&r.project_id) else {
+            return Err(model::invalid("Unknown project_id").into());
         };
-        request.project = path.clone();
+        r.project = path.clone();
     }
+    if !r.project.is_empty() {
+        r.project = absolute_path(&r.project)?.to_string_lossy().into_owned();
+    }
+    let request = recall::Request {
+        project: r.project,
+        role: r.role,
+        topics: r.topics,
+        query: r.query,
+    };
+    let client = if r.client.is_empty() { token } else { r.client };
     let log = app.config.database.with_file_name("recall-log.jsonl");
-    app.run(move |s| {
-        let (revision, memories) = s.active()?;
-        let result = model::recall(&memories, revision, &request)?;
-        log_recall(&log, &client, &request, &result);
-        Ok(result)
+    app.json(move |s| {
+        let mirror_dir = s.status()?["mirror_dir"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let (revision, memories) = s.live_memories()?;
+        let result = recall::recall(&memories, revision, &mirror_dir, &request);
+        log_recall(&log, &client, &request, revision, &result);
+        Ok(json!({
+            "revision": revision,
+            "view": result.view,
+            "pinned": result.pinned,
+            "returned": result.returned,
+            "text": result.text,
+        }))
     })
     .await
-    .into_response()
 }
+
 /// Usage evidence for audits, next to the database; a failed write never fails the recall.
-fn log_recall(path: &std::path::Path, client: &str, request: &Recall, result: &Value) {
+fn log_recall(
+    path: &std::path::Path,
+    client: &str,
+    request: &recall::Request,
+    revision: i64,
+    result: &recall::Recalled,
+) {
     use std::{io::Write, os::unix::fs::OpenOptionsExt};
-    let returned: Vec<_> = result["memories"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|m| m["id"].clone())
-        .collect();
     let entry = json!({
         "ts": chrono::Utc::now().to_rfc3339(),
         "client": client,
@@ -186,9 +304,11 @@ fn log_recall(path: &std::path::Path, client: &str, request: &Recall, result: &V
         "query": request.query,
         "role": request.role,
         "topics": request.topics,
-        "revision": result["revision"],
-        "returned": returned,
-        "chars": result["text"].as_str().map_or(0, |t| t.chars().count()),
+        "revision": revision,
+        "view": result.view,
+        "pinned": result.pinned,
+        "returned": result.returned,
+        "chars": result.text.chars().count(),
     });
     let written = std::fs::OpenOptions::new()
         .append(true)
@@ -200,46 +320,196 @@ fn log_recall(path: &std::path::Path, client: &str, request: &Recall, result: &V
         eprintln!("Recall log write failed: {e}");
     }
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PathContent {
+    path: String,
+    content: String,
+}
+
 async fn observe(
     State(app): State<App>,
-    Json(model::Document(memory)): Json<model::Document>,
-) -> impl IntoResponse {
-    app.run(move |s| s.observe(memory)).await
+    Extension(client): Extension<Client>,
+    body: Bytes,
+) -> Reply {
+    let w: PathContent = parse(&body)?;
+    app.json(move |s| s.observe(&w.path, &w.content, &client.actor()))
+        .await
 }
-async fn dream(State(app): State<App>) -> impl IntoResponse {
-    app.run(|s| s.dream()).await
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct DreamStart {
+    sessions: Value,
 }
-async fn get_dream(State(app): State<App>, Path(id): Path<String>) -> impl IntoResponse {
-    app.run(move |s| s.get_dream(&id)).await
+impl Default for DreamStart {
+    fn default() -> Self {
+        Self {
+            sessions: json!([]),
+        }
+    }
 }
-async fn validate(
+
+async fn dream_start(
     State(app): State<App>,
-    Json(model::Document(proposal)): Json<model::Document>,
-) -> impl IntoResponse {
-    app.run(move |s| { s.check_proposal(&proposal)?; Ok(json!({"valid":true,"note":"Schema validation does not establish truth or approve promotion."})) }).await
+    Extension(client): Extension<Client>,
+    body: Bytes,
+) -> Reply {
+    let d: DreamStart = parse(&body)?;
+    app.json(move |s| s.dream_start(&d.sessions, &client.actor()))
+        .await
 }
-async fn diff(
+async fn dreams(State(app): State<App>) -> Reply {
+    app.json(|s| s.dreams()).await
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct DreamQuery {
+    diff: bool,
+}
+
+async fn dream(
     State(app): State<App>,
-    Json(model::Document(proposal)): Json<model::Document>,
-) -> impl IntoResponse {
-    app.run(move |s| s.diff(&proposal)).await
+    Path(id): Path<String>,
+    Query(q): Query<DreamQuery>,
+) -> Reply {
+    app.json(move |s| s.dream(&id, q.diff)).await
 }
-async fn promote(
+async fn dream_adopt(
     State(app): State<App>,
-    Json(model::Document(proposal)): Json<model::Document>,
-) -> impl IntoResponse {
-    app.run(move |s| s.promote(proposal)).await
+    Extension(client): Extension<Client>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Reply {
+    let review: Value = parse(&body)?;
+    app.json(move |s| s.dream_adopt(&id, &review, &client.actor()))
+        .await
 }
-async fn rollback(
+async fn dream_cancel(
     State(app): State<App>,
-    Json(model::Document(request)): Json<model::Document>,
-) -> impl IntoResponse {
-    app.run(move |s| s.rollback(request)).await
+    Extension(client): Extension<Client>,
+    Path(id): Path<String>,
+) -> Reply {
+    app.json(move |s| s.dream_cancel(&id, &client.actor()))
+        .await
 }
-async fn export(State(app): State<App>) -> impl IntoResponse {
-    app.run(|s| {
-        let (revision, memories) = s.active()?;
-        Ok(json!({"revision":revision,"memories":memories}))
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListQuery {
+    #[serde(default = "root")]
+    path_prefix: String,
+}
+fn root() -> String {
+    "/".into()
+}
+
+async fn list(
+    State(app): State<App>,
+    Path(store): Path<String>,
+    Query(q): Query<ListQuery>,
+) -> Reply {
+    app.json(move |s| s.list(&store, &q.path_prefix)).await
+}
+async fn read(State(app): State<App>, Path((store, id)): Path<(String, String)>) -> Reply {
+    app.json(move |s| s.get(&store, &id)).await
+}
+async fn create(
+    State(app): State<App>,
+    Extension(client): Extension<Client>,
+    Path(store): Path<String>,
+    body: Bytes,
+) -> Reply {
+    let w: PathContent = parse(&body)?;
+    app.json(move |s| s.create(&store, &w.path, &w.content, &client.actor()))
+        .await
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum Precondition {
+    ContentSha256 { content_sha256: String },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Update {
+    content: Option<String>,
+    path: Option<String>,
+    precondition: Option<Precondition>,
+}
+
+async fn update(
+    State(app): State<App>,
+    Extension(client): Extension<Client>,
+    Path((store, id)): Path<(String, String)>,
+    body: Bytes,
+) -> Reply {
+    let u: Update = parse(&body)?;
+    let expected = u
+        .precondition
+        .map(|Precondition::ContentSha256 { content_sha256 }| content_sha256);
+    app.json(move |s| {
+        s.update(
+            &store,
+            &id,
+            u.content.as_deref(),
+            u.path.as_deref(),
+            expected.as_deref(),
+            &client.actor(),
+        )
     })
     .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteQuery {
+    expected_content_sha256: Option<String>,
+}
+
+async fn delete(
+    State(app): State<App>,
+    Extension(client): Extension<Client>,
+    Path((store, id)): Path<(String, String)>,
+    Query(q): Query<DeleteQuery>,
+) -> Reply {
+    app.json(move |s| {
+        s.delete(
+            &store,
+            &id,
+            q.expected_content_sha256.as_deref(),
+            &client.actor(),
+        )
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VersionsQuery {
+    memory_id: Option<String>,
+    created_by: Option<String>,
+}
+
+async fn versions(
+    State(app): State<App>,
+    Path(store): Path<String>,
+    Query(q): Query<VersionsQuery>,
+) -> Reply {
+    app.json(move |s| s.versions(&store, q.memory_id.as_deref(), q.created_by.as_deref()))
+        .await
+}
+async fn version(State(app): State<App>, Path((store, id)): Path<(String, String)>) -> Reply {
+    app.json(move |s| s.version(&store, &id)).await
+}
+async fn redact(
+    State(app): State<App>,
+    Extension(client): Extension<Client>,
+    Path((store, id)): Path<(String, String)>,
+) -> Reply {
+    app.json(move |s| s.redact(&store, &id, &client.actor()))
+        .await
 }
