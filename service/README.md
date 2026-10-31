@@ -1,190 +1,113 @@
 # Shared memory service
 
-A native Rust HTTP service for the existing agent memory database. It runs on this Linux PC under systemd; the same source and database can later move to a 64-bit Raspberry Pi. SQLite is bundled into the build. The server has no Python, model API, embedding, or external database dependency. The optional client and user installer use Python 3; the installer uses Python 3.11+ when updating an existing installation.
-
-The service retains accepted revisions, observation evidence, immutable dream inputs, review requirements, and stale-promotion protection. It uses the Python tool's existing schema, so no memory re-import or rewrite is needed. JSON objects preserve additional evidence fields, including integers larger than 64 bits. Decimal/exponent values use Python-compatible finite binary64 semantics and serialization for revision hashes; non-finite values are rejected. Dates are evaluated in UTC on the server. Project roots are logical namespaces rather than paths resolved on the server's filesystem.
+A Rust HTTP service that owns the memory database. It is the only writer and the only recall renderer, and it keeps the read-only mirror. It runs under systemd on this PC at **127.0.0.1:8787**. SQLite is bundled, so the same source builds on a 64-bit Raspberry Pi. `client.py` (`agent-memory-client`, standard library only) and `mcp_server.py` (the stdio MCP adapter) talk to it over HTTP.
 
 ## Build and test
-
-Install a current stable Rust toolchain and a C compiler, then run from the repository root:
 
 ```sh
 cargo test --locked --manifest-path service/Cargo.toml
 cargo clippy --locked --manifest-path service/Cargo.toml --all-targets -- -D warnings
 cargo build --release --locked --manifest-path service/Cargo.toml
-python3 -m unittest -v test_memory.py
-python3 -m unittest -v service/tests/test_client.py
-python3 -m unittest -v service/tests/test_install.py
-```
-
-Cargo.lock pins the dependency set. SQLite's C source is built with the binary; an SQLite development package is unnecessary. The integration tests use Python 3 to check database and digest compatibility with the existing tool.
-
-## Run on this machine
-
-The installer uses the existing database in place. It preserves configuration and credentials on upgrades, replaces the binary atomically, validates the user unit, and enables/restarts the service. Older WAL databases are migrated to rollback journaling before installation proceeds. A running memory service is briefly stopped for that migration and restored afterward, including on migration failure; other database users must release their connections or the migration fails without replacing the installed binary:
-
-```sh
-python3 service/install-user.py --database "$PWD/memory.sqlite3"
-~/.local/bin/agent-memory-client status
-~/.local/bin/agent-memory-client recall --project "$PWD" --query "current task"
-systemctl --user status agent-memory
-journalctl --user -u agent-memory -n 30 --no-pager
-```
-
-Installed paths:
-
-| Item | Location |
-| --- | --- |
-| Server | `~/.local/bin/agent-memory-server` |
-| Client | `~/.local/bin/agent-memory-client` |
-| Server config and hashed tokens | `~/.config/agent-memory/server.toml` |
-| Recall-only client credential | `~/.config/agent-memory/client.json` |
-| Maintenance credential | `~/.config/agent-memory/maintainer.json` |
-| User unit | `~/.config/systemd/user/agent-memory.service` |
-| Authoritative database | The existing path passed to the installer |
-
-The default listener is **127.0.0.1:8787**. It is accessible only from this machine. Credentials are generated locally, stored with mode 0600, and never logged. The server stores SHA256 token hashes; clients hold the bearer tokens. Each token has an explicit list of capabilities with no implied inheritance. Recall credentials can retrieve any accepted scope in this single-user store; project filters are relevance filters, not tenant isolation.
-
-A user unit starts with the user's systemd manager. To keep it running after logout and start it at boot, enable lingering once with `loginctl enable-linger "$USER"`. The system unit below provides boot-time operation independently of user login on a future server.
-
-Stop with `systemctl --user stop agent-memory`; disable automatic startup with `systemctl --user disable agent-memory`. Configuration changes and credential rotation take effect after `systemctl --user restart agent-memory`. Removing a token hash revokes that token after restart.
-
-For a new empty store, explicitly run `agent-memory-server init --database /absolute/path/memory.sqlite3`. Serving a missing database fails instead of silently losing access to existing memories. Existing local Python commands remain usable, including read-only recall; both implementations coordinate through SQLite transactions. Keep one authoritative database when changing hosts.
-
-## Agent workflow
-
-For agents with shell network access, the optional HTTP client can be used in startup instructions:
-
-```sh
-~/.local/bin/agent-memory-client recall --project "$PWD" --query "task keywords" --limit 12 --budget 12000
-```
-
-For different checkout paths across computers, configure `[projects]` in server.toml and use `--project-id agent-memory`. Its configured value is the original canonical scope root already present in accepted memories; that directory need not exist on the server. Legacy `--project` uses normalized absolute POSIX paths, with component-aware subtree matching. For symlinked checkouts, pass the canonical root or a project ID.
-
-For authorized memory maintenance, explicitly select the maintenance credential:
-
-```sh
-~/.local/bin/agent-memory-client --config ~/.config/agent-memory/maintainer.json observe candidate.json
-~/.local/bin/agent-memory-client --config ~/.config/agent-memory/maintainer.json dream --output /tmp/memory-review
-# Review original evidence and edit only /tmp/memory-review/proposal.json.
-~/.local/bin/agent-memory-client --config ~/.config/agent-memory/maintainer.json diff /tmp/memory-review/proposal.json
-~/.local/bin/agent-memory-client --config ~/.config/agent-memory/maintainer.json validate /tmp/memory-review/proposal.json
-~/.local/bin/agent-memory-client --config ~/.config/agent-memory/maintainer.json promote /tmp/memory-review/proposal.json
-```
-
-The agent performs synthesis and evidence review. The server freezes inputs and enforces schema, review metadata, resolved conflicts, and base-revision checks. `reviewed: true` is an attestation by the reviewing client, not proof of human approval. Keep promotion credentials restricted to the maintenance workflow. No scheduled dreaming or model jobs are started.
-
-Draft proposals are edited on the client. The API persists immutable inputs and the final promoted proposal; it does not save intermediate draft edits. `get-dream ID` recovers the input and initial proposal, or the final proposal after promotion. A retry after an uncertain observation/dream response can create a second record; inspect status or returned identifiers before retrying writes. Promotion rejects duplicate and stale submissions with HTTP 409.
-
-Global agent instruction files are not modified by the installers. Shell clients still need access to the endpoint under their own sandbox policy. For Codex desktop, use the MCP adapter below to avoid requiring shell network access.
-
-## MCP tools for desktop agents
-
-The desktop MCP host launches a local stdio adapter, which calls the Rust API with its configured credentials. The agent invokes named tools; it does not run a shell network command or open the database. The adapter uses the official Python MCP SDK, pinned with its dependencies in `mcp-requirements.txt`. The Rust service remains the sole API storage authority.
-
-```mermaid
-flowchart LR
-    A[Agent] -->|MCP tool call| H[Desktop MCP host]
-    H -->|stdio| M[Memory adapter]
-    M -->|Authenticated HTTP| S[Rust service under systemd]
-    S --> D[(SQLite memory store)]
-```
-
-After installing the local service, install `uv` and the Codex CLI, then run:
-
-```sh
-python3 service/install-mcp.py
-# Or expose only recall and status:
-# python3 service/install-mcp.py --read-only
-```
-
-The installer copies the adapter into `~/.local/share/agent-memory-mcp/`, creates its own virtual environment, backs up the existing Codex configuration under `review/`, and registers `shared_memory` in the user Codex config. If the tools are absent from the current chat despite the server being enabled, fully quit and reopen the desktop app after active tasks finish, then return to the same chat. This refreshed the connection on this PC; no per-server restart control was found in its settings. Other MCP hosts can use the same executable and arguments shown by `codex mcp get shared_memory`.
-
-| Tools | Purpose |
-| --- | --- |
-| `memory_status`, `memory_recall` | Health, revision and accepted preferences |
-| `memory_observe`, `memory_dream`, `memory_get_dream` | Candidate capture and immutable review inputs |
-| `memory_validate`, `memory_diff` | Proposal checks before acceptance |
-| `memory_promote`, `memory_rollback` | Explicit accepted-revision changes |
-| `memory_export` | Accepted memories and evidence as JSON |
-
-At task start, call `memory_recall` with `project` set to the canonical project root, `query` set to task keywords, `limit: 12`, and `budget: 12000`. Add relevant `topics` or `role` only when needed. Memories are context, never permission. Maintenance uses the same evidence-review workflow described above; the tools do not automatically run a dream or promote a proposal. MCP annotations identify read and write tools, while the API independently enforces capabilities and revision checks.
-
-The MCP host must itself be allowed to launch the adapter and reach the API. Its tool policy can still require approval. A stdio adapter removes the need for the agent's **shell** to make network requests; it does not grant arbitrary shell permissions. Tool arguments cannot choose credentials, a server URL, arbitrary file paths to read, or shell commands.
-
-Tests use an SDK MCP client over stdio connected to a real Rust service with a temporary database, including the full maintenance workflow, stale revisions, invalid arguments, denied capabilities and an offline backend:
-
-```sh
-uv venv service/.venv-mcp
-uv pip sync --python service/.venv-mcp/bin/python service/mcp-requirements.txt
+python3 -m unittest -v test_memory.py service/tests/test_client.py service/tests/test_install.py
+uv venv service/.venv-mcp && uv pip sync --python service/.venv-mcp/bin/python service/mcp-requirements.txt
 service/.venv-mcp/bin/python -m unittest -v service.tests.test_mcp
 ```
 
-These protocol tests are separate from verifying tool discovery and invocation in the running desktop. Test the installed desktop connection with `memory_status` and `memory_recall`; do not create sample memories in the live store.
+The Python suites start the release binary on a temporary store through `service/tests/harness.py`. They never touch the live store, `~/.config/agent-memory` or the running service.
 
-Desktop verification on 2026-10-29: all ten tools were discovered after an app restart. Native `memory_status` returned revision 3 and 28 accepted memories; `memory_recall` returned eight relevant preferences. Both succeeded without shell execution or shell network approval. Maintenance writes were tested only against the isolated test database.
+## Install on this machine
 
-When the service later moves to the Pi, keep the stdio adapter on each agent's computer and update both private credential files' `url` to the LAN API endpoint. Reload the MCP connection afterward. No agent-side database migration or shell networking change is needed.
+```sh
+python3 service/install-user.py --database "$PWD/memory.sqlite3"   # add --migrate --pin SLUG… once for a v1 database
+python3 service/install-mcp.py                                     # MCP adapter for Codex and Claude Code
+ln -sfn "$PWD/hooks/agent-memory-recall.py" ~/.claude/hooks/agent-memory-recall.py
+systemctl --user is-active agent-memory && agent-memory-client status
+```
+
+`update-local.sh` runs these steps after a merge. It never migrates.
+
+| Item | Location |
+| --- | --- |
+| Server, client | `~/.local/bin/agent-memory-server`, `~/.local/bin/agent-memory-client` |
+| Server config and token hashes | `~/.config/agent-memory/server.toml` |
+| Read credential, maintenance credential | `~/.config/agent-memory/client.json`, `maintainer.json` (mode 0600) |
+| MCP adapter | `~/.local/share/agent-memory-mcp/` |
+| User unit | `~/.config/systemd/user/agent-memory.service` |
+| Mirror | `<database dir>/mnt/shared-agent-memory/`, or `mount` in `server.toml` |
+
+Each token has an explicit list of capabilities: `recall`, `observe`, `review` and `promote`. Reads of the live store need `recall`. A dream's output store needs `review`. Writes to the live store need `promote`. To keep the service running after logout, run `loginctl enable-linger "$USER"`.
+
+## Client
+
+The client uses `client.json` by default. Pass `--config ~/.config/agent-memory/maintainer.json` for writes and dreams.
+
+| Command | Does |
+| --- | --- |
+| `status` | Revision, memory count, pinned characters, pending observations, mirror state |
+| `recall [--query Q] [--project ROOT \| --project-id ID] [--role R] [--topic T]… [--client LABEL]` | Prints the start view, or with a query, only the matches |
+| `ls [PREFIX] [--store S]`, `cat PATH\|memver_… [--store S]` | Lists memories; prints a memory or version as its exact bytes |
+| `versions [PATH] [--created-by ACTOR] [--store S]` | Version history, newest first |
+| `observe PATH FILE` | Records a candidate |
+| `write PATH FILE [--expected SHA] [--to NEW] [--store S]` | Creates; with `--expected`, updates or renames |
+| `rm PATH [--expected SHA] [--store S]`, `redact VERSION` | Deletes a memory; erases an old version's content |
+| `dream start [--sessions FILE]`, `dream show [ID] [--diff]`, `dream adopt ID REVIEW.json`, `dream cancel ID` | The dream cycle |
+
+`--store` is `live` or a dream's output store id. Old `--limit`, `--budget` and `--json` flags on `recall` are accepted and ignored. Errors print `Error: …` and exit 1. The client never falls back to another store.
+
+## MCP tools
+
+The MCP host launches `mcp_server.py --config client.json [--maintenance-config maintainer.json]`. The adapter turns tool calls into authenticated API calls. Tools take paths, and the adapter resolves each path to an id with one list call. Recall returns text. Every other tool returns the API's JSON as text.
+
+| Set | Tools |
+| --- | --- |
+| Read | `memory_status`, `memory_recall(query, project, role, topics)`, `memory_list(path_prefix, store)`, `memory_read(path, store)`, `memory_versions(path, created_by, store)` |
+| Maintenance (with `--maintenance-config`) | `memory_observe`, `memory_write(path, content, expected_sha256, new_path, store)` (no `expected_sha256` means create), `memory_delete`, `memory_redact`, `memory_dream_start`, `memory_dream_get`, `memory_dream_adopt`, `memory_dream_cancel` |
+
+A 409 becomes a tool error that names its type and paths and says to re-read and retry. An unreachable service is a tool error, never an empty result. If tools are missing in a desktop app after an install, restart the app.
 
 ## HTTP API
 
-All `/v1` endpoints require `Authorization: Bearer TOKEN`. `/healthz` is an unauthenticated liveness endpoint with no memory data; authenticated `/v1/status` checks storage access. JSON bodies are limited to 4 MiB. Storage operations run off the async executor, with at most 32 outstanding operations and a 10-second SQLite lock timeout.
+Every `/v1` route needs `Authorization: Bearer TOKEN`. `/healthz` is unauthenticated and holds no data. `{store}` is `live` or a store id.
 
-| Method and path | Capability | Body or response |
+| Route | Capability | Body → result |
 | --- | --- | --- |
-| `GET /v1/status` | recall | Active revision and counts |
-| `POST /v1/recall` | recall | `{project_id?, project?, role?, topics?, query?, limit?, budget?}` → revision, selected memories, rendered text |
-| `POST /v1/observations` | observe | One memory object → observation id |
-| `POST /v1/dreams` | review | Empty body → input and initial proposal |
-| `GET /v1/dreams/{id}` | review | Input, proposal, promoted revision |
-| `POST /v1/proposals/validate` | review | Proposal → schema result |
-| `POST /v1/proposals/diff` | review | Proposal → added, removed, changed memories |
-| `POST /v1/proposals/promote` | promote | Reviewed proposal → new revision |
-| `POST /v1/rollback` | promote | `{revision, expected, reason}` → new revision restoring older content |
-| `GET /v1/export` | review | All accepted memories and revision as JSON |
+| `GET /v1/status` | recall | `{store_id, revision, memories, pinned_chars, observations_pending, dreams_running, mirror_dir, mirror_stale}` |
+| `POST /v1/recall` | recall | `{project?, project_id?, role?, topics?, query?, client?}` → `{revision, view, pinned, returned, text}` |
+| `GET /v1/memory_stores/{store}/memories?path_prefix=` | read | `{data: [{id, path, title, content_sha256, memory_version_id, updated_at}]}` |
+| `GET /v1/memory_stores/{store}/memories/{id}` | read | the same, plus `content` |
+| `POST /v1/memory_stores/{store}/memories` | write | `{path, content}` → memory |
+| `POST /v1/memory_stores/{store}/memories/{id}` | write | `{content?, path?, precondition?: {type: "content_sha256", content_sha256}}` → memory |
+| `DELETE /v1/memory_stores/{store}/memories/{id}?expected_content_sha256=` | write | `{type: "memory_deleted", id}` |
+| `GET /v1/memory_stores/{store}/memory_versions?memory_id=&created_by=` | read | `{data: [version]}`, newest first, without content |
+| `GET /v1/memory_stores/{store}/memory_versions/{id}` | read | version with content |
+| `POST /v1/memory_stores/{store}/memory_versions/{id}/redact` | promote | version |
+| `POST /v1/observations` | observe | `{path, content}` → `{id}` |
+| `POST /v1/dreams`, `GET /v1/dreams`, `GET /v1/dreams/{id}?diff=true` | review | `{sessions}` → dream; `{data: [dream]}`; dream (plus `diff`) |
+| `POST /v1/dreams/{id}/adopt` | promote | `{summary, coverage, conflicts, reviewed}` → dream |
+| `POST /v1/dreams/{id}/cancel` | review | dream |
 
-Recall defaults to 12 memories and 12000 **characters**, with limits of 100 memories and 100000 characters. The character budget limits rendered `text`; JSON memories retain complete evidence. Tentative and expired memories are excluded. Unknown project IDs are errors. Memory payloads retain the schema documented in the repository README; new project scopes still use absolute roots for Python compatibility.
+"read" means `recall` for the live store and `review` for any other store; "write" means `promote` for the live store and `review` for any other store.
 
-Each successful recall, through the API or `memory.py recall`, appends one JSON line to `recall-log.jsonl` next to the database (mode 0600): time, client (token name, `cli`, or the CLI's `--client` value), project, query, role, topics, revision, returned memory IDs and rendered character count. Use it to check whether agents actually recall. A failed log write never fails the recall; the service reports it on stderr, and `memory.py` ignores it so read-only stores stay quiet.
+Errors:
+- 400: invalid input.
+- 401 / 403: authentication or capability.
+- 404: an unknown object or route.
+- 409 `{error, type, paths?}`: `precondition_failed`, `path_exists`, `slug_exists`, `store_archived`, `pinned_budget_exceeded`, `adopt_conflict`, `observations_consumed`.
+- 413: a body over 4 MiB.
 
-Errors use HTTP 400 for invalid domain input, 401 for missing/invalid credentials, 403 for insufficient capability, 404 for missing records, 409 for stale writes, 413 for oversized bodies, 503 for a full operation queue, and 500 for storage failures. Malformed JSON/type errors use Axum's 400/422 response. The client reports errors and never silently falls back to a different store.
+Each recall appends a line to `recall-log.jsonl` next to the database: `ts`, `client` (the request label, else the token name), `project`, `query`, `role`, `topics`, `revision`, `view`, `pinned`, `returned`, `chars`.
 
-## Backup and moving to the Pi later
-
-No Pi is required for local operation. This PC's executable is x86-64; build the same locked source on the eventual **64-bit Linux Pi** to produce an ARM64 executable. Native builds avoid cross-linker and libc mismatches. The server needs a C toolchain only at build time. ARM hardware has not yet been tested.
-
-Make a consistent SQLite backup with the built-in backup command:
+## Backup and moving to the Pi
 
 ```sh
 umask 077
 ~/.local/bin/agent-memory-server backup --database /absolute/path/memory.sqlite3 --output /absolute/path/new-backup.sqlite3
 ```
 
-The output must not already exist. This captures all revisions, observations, dream inputs and promoted proposals. Preserve the associated `sources/`, `dreams/`, `exports/`, and review artifacts separately; original provider transcripts remain at their original locations and are not copied by the API. For a final move, stop the old service and other writers, make the final backup, transfer it, and start only the new authority. Do not point clients at independently writable copies.
+To move hosts:
+1. Stop the old service, make a final backup and transfer it.
+2. Build the same locked source natively on the 64-bit Pi.
+3. Install it with `deploy/agent-memory.service` and a `server.toml` based on `deploy/server.example.toml`.
+4. Start only the new service, then point each client's `url` at it.
 
-On the future server, build the binary and prepare a system service:
-
-```sh
-set -e
-sudo useradd --system --home-dir /var/lib/agent-memory --shell /usr/sbin/nologin agent-memory
-sudo install -m 0755 service/target/release/agent-memory-server /usr/local/bin/agent-memory-server
-sudo install -d -o agent-memory -g agent-memory -m 0700 /var/lib/agent-memory
-sudo install -d -o root -g agent-memory -m 0750 /etc/agent-memory
-# Install the transferred backup as the authoritative database, without overwriting an existing store.
-sudo test ! -e /var/lib/agent-memory/memory.sqlite3
-sudo install -o agent-memory -g agent-memory -m 0600 /path/to/transferred-backup.sqlite3 /var/lib/agent-memory/memory.sqlite3
-# Prepare server.toml from deploy/server.example.toml or the current server configuration.
-# Set database=/var/lib/agent-memory/memory.sqlite3, retain token hashes and logical project aliases.
-sudo install -o root -g agent-memory -m 0640 /path/to/prepared-server.toml /etc/agent-memory/server.toml
-sudo install -m 0644 service/deploy/agent-memory.service /etc/systemd/system/agent-memory.service
-sudo -u agent-memory /usr/local/bin/agent-memory-server check --config /etc/agent-memory/server.toml
-sudo systemd-analyze verify /etc/systemd/system/agent-memory.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now agent-memory
-```
-
-For LAN access, bind `listen` to the server's specific LAN IP and update each client's `url`. Restrict the port to your LAN and do not port-forward it. HTTP bearer credentials and memory contents are unencrypted on the wire; use HTTPS through a reverse proxy or an SSH tunnel if the LAN is not trusted. No remote-access infrastructure is provisioned by these files.
-
-The system unit runs as an unprivileged account, permits writes to its state directory, sends logs to journald, restarts on failure, and drains requests on SIGTERM. Configuration and data live outside the executable, so rebuilding or replacing the binary does not relocate the store.
-
-Implementation references: [Axum](https://docs.rs/axum/0.8.9/axum/), [rusqlite](https://docs.rs/rusqlite/0.37.0/rusqlite/), [systemd execution settings](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html).
+HTTP is unencrypted, so on an untrusted LAN use an SSH tunnel or an HTTPS proxy. ARM hardware is untested.
