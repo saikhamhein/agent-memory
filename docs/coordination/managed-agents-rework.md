@@ -36,6 +36,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Merged
 
+- PR 7 (recall rendering rulings, doc only) → `rework/managed-agents-v2` `d9e51c7`.
 - PR 6 (design rev 3, keeps the Rust service, one renderer) → master `83ff1f7`; reinstalled, service active. Integration branch `rework/managed-agents-v2` cut at `83ff1f7`.
 - PR 5 (state file + reinstall rule) → master `94f0ab4`; local setup reinstalled, service active, revision 9.
 
