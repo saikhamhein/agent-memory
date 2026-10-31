@@ -192,7 +192,7 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
   - Index lines fill whatever remains of `START_MAX`.
   - The rest become one `{dir} — {n} more` line per directory.
   - If those count lines don't fit either, they collapse into the single line `- {n} more memories not listed; full index: {mirror_dir}/INDEX.md`.
-  - Pinned blocks (≤4,000), plus the header and section headings (≤700), plus body blocks (≤3,000), leave at least 1,800 characters. The renderer first reserves room for the single collapse line, then fills index lines and count lines into the rest, so the bound holds at any store size.
+  - Pinned blocks (≤4,000), plus the header and section headings (≤700), plus body blocks (≤3,000), leave at least 1,800 characters. The renderer first reserves room for the single collapse line, then lists as many index lines as fit beside it, stopping at the first that doesn't. If the per-directory count lines for the rest also fit, they replace the collapse line. Otherwise the collapse line names the number of unlisted memories. Either way the bound holds at any store size.
 - **Exclusions:** tentative and expired memories never appear.
 - **Size:** everything except the index is independent of how many other memories the store holds.
 
