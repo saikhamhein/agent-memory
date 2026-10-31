@@ -43,7 +43,7 @@ When a lesson is about an instruction file's wording (a rule existed but didn't 
    - On a 409: cancel, start a new dream, and carry the edits over once. If it fails again, report the error. Don't retry blindly.
 7. **Recall usage (last 24 h)** from `/home/sai/Projects/agent-memory/recall-log.jsonl`:
    - Count entries by `client` and `view`. `session-start` is the hook's start view; `task` views are task-specific recalls.
-   - The hook also logs every run to `~/.cache/agent-memory/recall-log.jsonl` with `via` (`service`, `index` or `none`). Count the runs by `via`, and compare them with the new Claude Code sessions in the catalog. Flag the hook if sessions ran with no entry, or if runs fell back to `index` or `none`.
+   - The hook also logs every run to `~/.cache/agent-memory/recall-log.jsonl` with `via` (`service`, `index`, `none` or `skipped`). `skipped` is a healthy resume or fork. Count the runs by `via`, and compare them with the new Claude Code sessions in the catalog. Flag the hook if sessions ran with no entry, or if runs fell back to `index` or `none`.
    - List projects that had session starts but no task view.
    - If agents skip task recalls, strengthen the `self-improve-memory-setup` memory's wording in this run's dream (or start one for it) rather than suggesting a change.
 

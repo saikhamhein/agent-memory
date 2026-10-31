@@ -36,7 +36,7 @@ If it can be removed, remove it.
 - **Session start, once.** Claude Code's SessionStart hook (`hooks/agent-memory-recall.py`) injects the start view. The Codex and DeepSeek loader lines (`memory.py recall --query …`) print it, followed by the memories matching their query.
   - The start view holds the pinned core, this project's memories, any requested topics or roles, and an index line for everything else.
   - The start view fits in 9,500 characters, under Claude Code's 10,000-character cap on hook context.
-  - If the service is down, the hook injects the mirror's `INDEX.md` instead, cut to the same size. It logs every run, with `via` set to `service`, `index` or `none`, to `~/.cache/agent-memory/recall-log.jsonl`.
+  - If the service is down, the hook injects the mirror's `INDEX.md` instead, cut to the same size. It skips resumed and forked sessions, whose transcripts already hold the view, and logs every run to `~/.cache/agent-memory/recall-log.jsonl` with `via` set to `service`, `index`, `none` or `skipped`.
 - **During a task.** Recall with a query returns only the memories that match, or `No memory matches "…"`.
 - **Read-only files.** The live store is mirrored to `<database dir>/mnt/shared-agent-memory/`, with `INDEX.md`. Read a file there, or with `memory_read`, when its index line applies.
 
