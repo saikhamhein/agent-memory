@@ -40,6 +40,13 @@ class StubTests(unittest.TestCase):
         self.assertEqual(result.stdout, self.run_client('recall', *old_line[1:]).stdout)
         self.assertNotIn('Remove what is not needed.', result.stdout)  # a task query, not the start view
 
+    def test_old_global_root_flag_is_ignored(self):
+        root = self.server.root / 'old-root'
+        result = self.run_stub('--root', str(root), 'recall', '--query', 'zebrafish husbandry', '--limit', '12')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, self.run_client('recall', '--query', 'zebrafish husbandry').stdout)
+        self.assertFalse(root.exists())
+
     def test_start_view_and_client_label(self):
         result = self.run_stub('recall', '--client', 'session-start', '--project', '/home/sai/x')
         self.assertEqual(result.returncode, 0, result.stderr)

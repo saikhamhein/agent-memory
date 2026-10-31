@@ -4,9 +4,11 @@ Standard library only, so these also run without the MCP virtual environment.
 """
 import json
 import os
+import socket
 import shutil
 import subprocess
 import sys
+import time
 import unittest
 
 from service.tests.harness import REPO, content, sha, start_server
@@ -154,6 +156,18 @@ class HookTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(HOOK)], input=event, capture_output=True, text=True,
                               timeout=30, env=env or self.env)
 
+    def hook_log(self):
+        """Lines the hook appended to $HOME/.cache/agent-memory/recall-log.jsonl (its own record of failures)."""
+        log = self.home / '.cache' / 'agent-memory' / 'recall-log.jsonl'
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+    def check_log(self, line, via, project=None):
+        self.assertEqual(set(line), {'ts', 'session_id', 'source', 'project', 'chars', 'ok', 'via'})
+        self.assertEqual((line['session_id'], line['source'], line['via'], line['ok']),
+                         ('s1', 'startup', via, via != 'none'))
+        if project:
+            self.assertEqual(line['project'], project)
+
     def context(self, result):
         self.assertEqual(result.returncode, 0, result.stderr)
         output = json.loads(result.stdout)['hookSpecificOutput']
@@ -169,7 +183,10 @@ class HookTests(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual((entries[0]['client'], entries[0]['view'], entries[0]['project'], entries[0]['query']),
                          ('session-start', 'start', str(self.repo), ''))
-        self.assertLess(len(text), 20000)
+        self.assertLess(len(text), 10000)  # Claude Code keeps only a 2,000-character preview above this
+        [line] = self.hook_log()
+        self.check_log(line, 'service', str(self.repo))
+        self.assertGreater(line['chars'], 0)
 
     def test_service_down_injects_index_md(self):
         index = (self.server.mirror / 'INDEX.md').read_text()
@@ -178,6 +195,22 @@ class HookTests(unittest.TestCase):
         text = self.context(self.run_hook())
         self.assertIn(index.strip(), text)
         self.assertEqual(self.server.recall_entries(), [])
+        [line] = self.hook_log()
+        self.check_log(line, 'index', str(self.repo))
+
+    def test_hung_service_still_falls_back_within_the_timeout(self):
+        index = (self.server.mirror / 'INDEX.md').read_text()
+        hung = socket.socket()
+        self.addCleanup(hung.close)
+        hung.bind(('127.0.0.1', 0))
+        hung.listen(8)  # accepts connections in the kernel but never answers
+        (self.home / '.config/agent-memory/client.json').write_text(
+            json.dumps({'url': 'http://127.0.0.1:%d' % hung.getsockname()[1], 'token': 'fixture-reader'}))
+        started = time.monotonic()
+        text = self.context(self.run_hook())
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertIn(index.strip(), text)
+        self.check_log(self.hook_log()[-1], 'index')
 
     def test_large_store_stays_under_claude_codes_10000_character_cap(self):
         for i in range(150):
@@ -204,6 +237,9 @@ class HookTests(unittest.TestCase):
         shutil.rmtree(self.server.root / 'mnt')
         result = self.run_hook()
         self.assertEqual((result.returncode, result.stdout), (0, ''))
+        [line] = self.hook_log()
+        self.check_log(line, 'none', str(self.repo))
+        self.assertEqual(line['chars'], 0)
 
     def test_fails_open(self):
         bare = {**self.env, 'HOME': str(self.server.root / 'empty')}
