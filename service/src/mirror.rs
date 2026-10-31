@@ -57,7 +57,7 @@ pub fn write(
         if target.exists() {
             remove(&target)?;
         }
-        // Same parent, so renaming the directory needs no write access to it.
+        // Rename before sealing: rename(2) may need write access to a moved directory.
         fs::rename(&build, &target)?;
         seal(&target)?;
         Ok(name)
