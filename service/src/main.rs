@@ -78,12 +78,18 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Check { config } => {
             let config = Config::load(&config)?;
-            let store = Store::open(&config.database, &mirror(&config.database, config.mount.as_deref()))?;
+            let store = Store::open(
+                &config.database,
+                &mirror(&config.database, config.mount.as_deref()),
+            )?;
             println!("{}", store.status()?);
         }
         Command::Serve { config } => {
             let config = Config::load(&config)?;
-            let store = Store::open(&config.database, &mirror(&config.database, config.mount.as_deref()))?;
+            let store = Store::open(
+                &config.database,
+                &mirror(&config.database, config.mount.as_deref()),
+            )?;
             let listener = tokio::net::TcpListener::bind(config.listen).await?;
             eprintln!(
                 "agent-memory-server {} listening on {}",

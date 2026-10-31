@@ -17,7 +17,11 @@ fn migrate(db: &Path, args: &[&str]) -> Output {
 
 fn report(db: &Path, args: &[&str]) -> Value {
     let out = migrate(db, args);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
@@ -33,10 +37,12 @@ fn versions(db: &Path) -> Vec<(String, String, Option<String>, String, String)> 
     let mut stmt = db
         .prepare("SELECT memory_id,operation,path,created_at,created_by FROM memory_versions ORDER BY seq")
         .unwrap();
-    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect()
+    stmt.query_map([], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+    })
+    .unwrap()
+    .map(Result::unwrap)
+    .collect()
 }
 
 fn global() -> Value {
@@ -50,12 +56,20 @@ fn replays_history() {
     let a2 = memory("a", global(), "second");
     let b2 = memory("b", json!({"kind": "topic", "value": "hardware"}), "bee");
     let v1 = v1_db(
-        &[json!([a1, b1]), json!([a2, b2]), json!([b2]), json!([a2, b2])],
+        &[
+            json!([a1, b1]),
+            json!([a2, b2]),
+            json!([b2]),
+            json!([a2, b2]),
+        ],
         &[],
         &[],
     );
     let r = report(&v1.path, &[]);
-    assert_eq!(r["versions"], json!({"created": 3, "modified": 2, "deleted": 1}));
+    assert_eq!(
+        r["versions"],
+        json!({"created": 3, "modified": 2, "deleted": 1})
+    );
     let v = versions(&v1.path);
     let ops: Vec<_> = v
         .iter()
@@ -67,8 +81,18 @@ fn replays_history() {
         [
             ("created", "/global/a.md".into(), created(1), by(1).as_str()),
             ("created", "/global/b.md".into(), created(1), by(1).as_str()),
-            ("modified", "/global/a.md".into(), created(2), by(2).as_str()),
-            ("modified", "/topics/hardware/b.md".into(), created(2), by(2).as_str()),
+            (
+                "modified",
+                "/global/a.md".into(),
+                created(2),
+                by(2).as_str()
+            ),
+            (
+                "modified",
+                "/topics/hardware/b.md".into(),
+                created(2),
+                by(2).as_str()
+            ),
             ("deleted", "/global/a.md".into(), created(3), by(3).as_str()),
             ("created", "/global/a.md".into(), created(4), by(4).as_str()),
         ]
@@ -79,9 +103,11 @@ fn replays_history() {
     assert_ne!(v[0].0, v[5].0);
     let db = Connection::open(&v1.path).unwrap();
     let (n, version): (i64, i64) = db
-        .query_row("SELECT COUNT(*), (SELECT user_version FROM pragma_user_version) FROM memories", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
+        .query_row(
+            "SELECT COUNT(*), (SELECT user_version FROM pragma_user_version) FROM memories",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .unwrap();
     assert_eq!((n, version), (2, 2));
 }
@@ -103,7 +129,9 @@ fn round_trip_exact() {
     report(&v1.path, &[]);
     let db = Connection::open(&v1.path).unwrap();
     let (path, content): (String, String) = db
-        .query_row("SELECT path, content FROM memories", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_row("SELECT path, content FROM memories", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
         .unwrap();
     assert_eq!(path, "/projects/home/sai/Projects/agent-memory/unicode.md");
     let back = agent_memory_server::model::parse_legacy(&path, &content).unwrap();
@@ -116,7 +144,10 @@ fn legacy_preserved_and_frozen() {
     let v1 = v1_db(
         &[json!([memory("a", global(), "x")])],
         &[memory("o", global(), "obs")],
-        &[Dream { observations: vec![0], promoted: Some(1) }],
+        &[Dream {
+            observations: vec![0],
+            promoted: Some(1),
+        }],
     );
     let before = dump(&v1.path);
     report(&v1.path, &[]);
@@ -137,7 +168,11 @@ fn atomic_on_offender() {
     let v1 = v1_db(
         &[
             json!([memory("a", global(), "x")]),
-            json!([memory("a", json!({"kind": "topic", "value": "machine learning"}), "x")]),
+            json!([memory(
+                "a",
+                json!({"kind": "topic", "value": "machine learning"}),
+                "x"
+            )]),
         ],
         &[],
         &[],
@@ -176,25 +211,44 @@ fn refuses_nonlinear_chain() {
 #[test]
 fn pin() {
     let v1 = v1_db(
-        &[json!([memory("keep-it-simple", global(), "Simple wins."), memory("t", json!({"kind": "topic", "value": "x"}), "y")])],
+        &[json!([
+            memory("keep-it-simple", global(), "Simple wins."),
+            memory("t", json!({"kind": "topic", "value": "x"}), "y")
+        ])],
         &[],
         &[],
     );
     let r = report(&v1.path, &["--pin", "keep-it-simple"]);
     assert_eq!(r["pinned_chars"], 12);
-    let mirrored = fs::read_to_string(v1.dir.path().join("mnt/shared-agent-memory/global/keep-it-simple.md"));
+    let mirrored = fs::read_to_string(
+        v1.dir
+            .path()
+            .join("mnt/shared-agent-memory/global/keep-it-simple.md"),
+    );
     if let Ok(text) = mirrored {
         assert!(text.contains("\"pinned\": true"));
     }
     let last = versions(&v1.path).pop().unwrap();
     assert_eq!(last.4, "migration:pin");
 
-    let over = v1_db(&[json!([memory("big", global(), &"x".repeat(6001))])], &[], &[]);
+    let over = v1_db(
+        &[json!([memory("big", global(), &"x".repeat(6001))])],
+        &[],
+        &[],
+    );
     let bytes = fs::read(&over.path).unwrap();
     assert!(failure(&over.path, &["--pin", "big"]).contains("pinned_budget_exceeded"));
     assert_eq!(fs::read(&over.path).unwrap(), bytes);
     // Pinning a topic memory breaks the v2 write rules.
-    let topic = v1_db(&[json!([memory("t", json!({"kind": "topic", "value": "x"}), "y")])], &[], &[]);
+    let topic = v1_db(
+        &[json!([memory(
+            "t",
+            json!({"kind": "topic", "value": "x"}),
+            "y"
+        )])],
+        &[],
+        &[],
+    );
     failure(&topic.path, &["--pin", "t"]);
     failure(&topic.path, &["--pin", "missing"]);
 }

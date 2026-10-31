@@ -3,7 +3,9 @@
 //! which leaves the database file byte-identical.
 use agent_memory_server::{
     Result,
-    model::{PINNED_BUDGET, decode, encode, hash, invalid, now, parse, parse_legacy, render_legacy},
+    model::{
+        PINNED_BUDGET, decode, encode, hash, invalid, now, parse, parse_legacy, render_legacy,
+    },
     store::Store,
 };
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
@@ -151,7 +153,11 @@ fn replay(tx: &Transaction, pins: &[String], dry_run: bool) -> Result<Value> {
                 Some(_) => (),
             }
         }
-        let gone: Vec<String> = heads.keys().filter(|s| !seen.contains(*s)).cloned().collect();
+        let gone: Vec<String> = heads
+            .keys()
+            .filter(|s| !seen.contains(*s))
+            .cloned()
+            .collect();
         for slug in gone {
             // A slug that comes back later starts a new lineage with a new id.
             write(&heads.remove(&slug).unwrap(), "deleted", created, &actor)?;
@@ -204,7 +210,9 @@ fn replay(tx: &Transaction, pins: &[String], dry_run: bool) -> Result<Value> {
                 if pinned {
                     pinned_chars += memory.body.chars().count();
                 }
-                memories.push(json!({"slug":slug,"path":head.path,"versions":head.versions,"pinned":pinned}));
+                memories.push(
+                    json!({"slug":slug,"path":head.path,"versions":head.versions,"pinned":pinned}),
+                );
             }
             Err(e) => {
                 offenders.insert(format!("{slug} (live): {e}"));
@@ -227,9 +235,11 @@ fn replay(tx: &Transaction, pins: &[String], dry_run: bool) -> Result<Value> {
         return Err(invalid("Legacy tables changed during migration"));
     }
     memories.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
-    let revision: i64 = tx.query_row("SELECT COALESCE(MAX(seq),0) FROM memory_versions", [], |r| {
-        r.get(0)
-    })?;
+    let revision: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(seq),0) FROM memory_versions",
+        [],
+        |r| r.get(0),
+    )?;
     Ok(json!({
         "dry_run": dry_run,
         "store_id": store,
@@ -276,7 +286,10 @@ fn dump(tx: &Transaction) -> Result<Vec<String>> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let values = (0..columns)
-                .map(|i| row.get::<_, rusqlite::types::Value>(i).map(|v| format!("{v:?}")))
+                .map(|i| {
+                    row.get::<_, rusqlite::types::Value>(i)
+                        .map(|v| format!("{v:?}"))
+                })
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             out.push(values.join("|"));
         }

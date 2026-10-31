@@ -60,7 +60,11 @@ pub fn v1_db(revisions: &[Value], observations: &[Value], dreams: &[Dream]) -> V
                 n,
                 (n > 0).then(|| n - 1),
                 created(n),
-                if n == 0 { "Empty initial store".into() } else { format!("Revision {n}") },
+                if n == 0 {
+                    "Empty initial store".into()
+                } else {
+                    format!("Revision {n}")
+                },
                 body,
                 hash(body.as_bytes())
             ],
@@ -72,13 +76,11 @@ pub fn v1_db(revisions: &[Value], observations: &[Value], dreams: &[Dream]) -> V
         [revisions.len() as i64],
     )
     .unwrap();
-    let observation = |i: usize| {
-        json!({"id": format!("obs-{i}"), "created": created(i as i64), "body": observations[i]})
-    };
-    for i in 0..observations.len() {
+    let observation = |i: usize| json!({"id": format!("obs-{i}"), "created": created(i as i64), "body": observations[i]});
+    for (i, body) in observations.iter().enumerate() {
         db.execute(
             "INSERT INTO observations VALUES (?1,?2,?3)",
-            params![format!("obs-{i}"), created(i as i64), encode(&observations[i]).unwrap()],
+            params![format!("obs-{i}"), created(i as i64), encode(body).unwrap()],
         )
         .unwrap();
     }
@@ -91,7 +93,13 @@ pub fn v1_db(revisions: &[Value], observations: &[Value], dreams: &[Dream]) -> V
         });
         db.execute(
             "INSERT INTO dreams VALUES (?1,?2,?3,?4,?5,NULL)",
-            params![format!("dream-{i}"), created(base), base, encode(&input).unwrap(), dream.promoted],
+            params![
+                format!("dream-{i}"),
+                created(base),
+                base,
+                encode(&input).unwrap(),
+                dream.promoted
+            ],
         )
         .unwrap();
     }
@@ -112,12 +120,17 @@ pub fn dump(path: &std::path::Path) -> Vec<String> {
             )
             .unwrap(),
         );
-        let mut stmt = db.prepare(&format!("SELECT * FROM {table} ORDER BY rowid")).unwrap();
+        let mut stmt = db
+            .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+            .unwrap();
         let columns = stmt.column_count();
         let rows = stmt
             .query_map([], |row| {
                 (0..columns)
-                    .map(|i| row.get::<_, rusqlite::types::Value>(i).map(|v| format!("{v:?}")))
+                    .map(|i| {
+                        row.get::<_, rusqlite::types::Value>(i)
+                            .map(|v| format!("{v:?}"))
+                    })
                     .collect::<rusqlite::Result<Vec<_>>>()
             })
             .unwrap();
