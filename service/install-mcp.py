@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Install the stdio memory adapter and register it in the current user's Codex config."""
+"""Install the stdio memory adapter and register it in the current user's Codex config.
+
+Claude Code's registration in ~/.claude.json runs the same installed file."""
 import argparse
 import datetime
 import json
@@ -12,7 +14,7 @@ import tempfile
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--read-only', action='store_true', help='Expose only memory_recall and memory_status')
+    parser.add_argument('--read-only', action='store_true', help='Expose only the read tools')
     args = parser.parse_args()
     source = Path(__file__).resolve().parent
     target = Path.home() / '.local/share/agent-memory-mcp'
