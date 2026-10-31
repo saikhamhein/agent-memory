@@ -324,8 +324,8 @@ fn pin_marks_only_the_named_memories() {
 #[test]
 fn pin_budget_counts_characters_not_bytes() {
     let burmese = |n: usize| "မ".repeat(n); // 3 bytes per character
-    for (second, ok) in [(3000, true), (3001, false)] {
-        let db = v1_db(&[revision(T1, vec![mem("one", global(), &burmese(3000)), mem("two", global(), &burmese(second))])], &[], &[]);
+    for (second, ok) in [(2000, true), (2001, false)] {
+        let db = v1_db(&[revision(T1, vec![mem("one", global(), &burmese(2000)), mem("two", global(), &burmese(second))])], &[], &[]);
         let before = bytes(&db.db);
         let ran = migrate(&db.db, &["--pin", "one", "--pin", "two"]);
         if ok {
