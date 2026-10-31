@@ -6,7 +6,13 @@ Read README.md for architecture and commands. Run `python3 -m unittest -v test_m
 
 The optional Rust HTTP service is in `service/`; see `service/README.md` for API, systemd, and portability details. Run `cargo test --locked --manifest-path service/Cargo.toml` and, after a release build, `python3 -m unittest -v service/tests/test_client.py` for service and real HTTP client tests. HTTP tests use isolated temporary stores.
 
+## After every merged PR
+
+Without asking (user's standing instruction, 2026-11-01): fast-forward `/home/sai/Projects/agent-memory` master to `origin/master`, run `cargo build --release --locked --manifest-path service/Cargo.toml`, `python3 service/install-user.py --database /home/sai/Projects/agent-memory/memory.sqlite3` and `python3 service/install-mcp.py`. Also relink the recall hook once it lives in the repository. Then check `systemctl --user is-active agent-memory` and a recall, and report the result.
+
 ## Current handoff
+
+- 2026-11-01: Managed Agents memory/dreams rework in progress; coordinator state in `docs/coordination/managed-agents-rework.md`.
 
 - This machine uses `/home/sai/Projects/agent-memory`. Remote handoff details for `/home/sai/probe/agent-memory` describe a different PC and are not this store.
 - On 2026-10-29 the user requested pulling the remote and migrating to the new service/MCP system. Fast-forwarded to `20bc640`. Installation and validation completed; see `runtime/migration-current` for the backup directory.
