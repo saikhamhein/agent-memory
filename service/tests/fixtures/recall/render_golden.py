@@ -84,6 +84,21 @@ def start(ms, rev, project="", role="", topics=()):
     return text
 
 
+def index_md(ms, rev):
+    """INDEX.md (architect ruling, doc PR 12): the pinned *global* memories in full, then one line for
+    every other memory (global, every project's, topics, roles; each by priority then slug). No cap."""
+    ms = [m for m in ms if live(m)]
+    pinned = sorted([m for m in ms if m["kind"] == "global" and m["meta"].get("pinned")], key=key)
+    rest = [m for m in ms if m not in pinned]
+    lines = []
+    for kind in ("global", "projects", "topics", "roles"):
+        lines += ["- %s — %s" % (m["path"], m["meta"]["title"]) for m in sorted([m for m in rest if m["kind"] == kind], key=key)]
+    o = ["# Shared agent memory — revision %d\n" % rev, PREFACE % MIRROR]
+    if pinned: o.append("## Always apply\n" + "\n".join(block(m) for m in pinned))
+    if lines: o.append("## Index\n" + "\n".join(lines) + "\n")
+    return "\n".join(o)
+
+
 def terms(q): return [t for t in dict.fromkeys(re.findall(r"\w+", q.lower())) if len(t) >= 3 and t not in STOP]
 def toks(s): return set(re.findall(r"\w+", s.lower()))
 
@@ -113,6 +128,7 @@ if __name__ == "__main__":
     ms = load()
     am = "/home/sai/Projects/agent-memory"
     open(OUT + "/start_none.txt", "w").write(start(ms, 42))
+    open(OUT + "/index_md.txt", "w").write(index_md(ms, 42))
     open(OUT + "/start_project.txt", "w").write(start(ms, 42, am, "coordinator", ("hardware", "burmese")))
     for name, q in [("task_usb", "raspberry usb power"), ("task_burmese", "burmese font rendering")]:
         open(OUT + "/%s.txt" % name, "w").write(task(ms, 42, q, am)[0])

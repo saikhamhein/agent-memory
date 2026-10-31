@@ -709,7 +709,7 @@ fn start_within_hook_cap() {
             assert_eq!(k + counted, order.len(), "memories are dropped or invented");
         }
 
-        // index_md is the full index: pinned in full, one line for every other memory, no cap
+        // index_md is the full index, with no cap and no count lines
         let md = recall::index_md(&s.mems, REV, &mirror);
         assert!(
             md.chars().count() > START_MAX,
@@ -717,29 +717,107 @@ fn start_within_hook_cap() {
             md.chars().count()
         );
         assert!(!md.contains("truncated"));
-        assert_one_newline(&md);
-        for i in &pinned {
-            assert!(md.contains(&block(i)));
-        }
-        let ix = index(&md);
-        assert!(
-            ix.counts.is_empty() && ix.collapsed.is_none(),
-            "index_md has no count lines"
-        );
-        let want: BTreeSet<String> = s
-            .in_scope("")
-            .iter()
-            .filter(|i| !i.pinned)
-            .map(|i| i.path.clone())
-            .collect();
-        assert_eq!(
-            set(ix.listed.iter().cloned()),
-            want,
-            "one line for every other memory"
-        );
-        assert_eq!(ix.listed.len(), want.len());
-        assert!(!md.contains("/projects/"), "index_md has no project");
+        assert_index_md(&s, &md);
     }
+}
+
+/// INDEX.md (architect ruling, doc PR 12): the header, `## Always apply` with the pinned
+/// *global* memories in full, then `## Index` with one line for every other live memory:
+/// global, then every project's (pinned project memories included), topics, roles; each group
+/// by priority then slug. No cap, no count lines.
+fn assert_index_md(store: &Store, md: &str) {
+    assert_one_newline(md);
+    let pinned_global: Vec<&Item> = {
+        let mut p: Vec<&Item> = store
+            .items
+            .iter()
+            .filter(|i| i.live() && i.pinned && i.path.starts_with("/global/"))
+            .collect();
+        p.sort_by_key(|i| i.sort_key());
+        p
+    };
+    for i in &pinned_global {
+        assert!(md.contains(&block(i)), "pinned {} not in full", i.path);
+    }
+    assert_eq!(
+        section(md, "Always apply"),
+        pinned_global
+            .iter()
+            .map(|i| i.path.clone())
+            .collect::<Vec<_>>(),
+        "Always apply holds the pinned global memories, in priority order"
+    );
+    assert_eq!(
+        headings(md).len(),
+        pinned_global.len(),
+        "no other memory in full"
+    );
+    let mut rest: Vec<&Item> = store
+        .items
+        .iter()
+        .filter(|i| i.live() && !pinned_global.iter().any(|p| p.path == i.path))
+        .collect();
+    let rank = |i: &Item| match i.path.split('/').nth(1).unwrap() {
+        "global" => 0,
+        "projects" => 1,
+        "topics" => 2,
+        _ => 3,
+    };
+    rest.sort_by_key(|i| (rank(i), i.sort_key()));
+    let ix = index(md);
+    assert!(
+        ix.counts.is_empty() && ix.collapsed.is_none(),
+        "index_md has no count lines"
+    );
+    assert_eq!(
+        ix.listed,
+        rest.iter().map(|i| i.path.clone()).collect::<Vec<_>>(),
+        "one line for every other memory, in index order"
+    );
+    for i in &rest {
+        assert!(
+            md.contains(&format!("- {} — {}\n", i.path, i.title)),
+            "index line of {}",
+            i.path
+        );
+    }
+}
+
+#[test]
+fn budget_equal_to_remaining_fits() {
+    // start: two blocks of exactly 1,500 fill START_BODY_BUDGET (<=), a third does not fit
+    let mut s = Store::new();
+    for i in 0..3 {
+        let (title, path) = (
+            format!("Edge note {i}"),
+            format!("/projects/work/app/e-{i}.md"),
+        );
+        let body = body_for_block(1500, &title, &path);
+        s.add(&path, &title, &body, json!({"priority": 5 - i}));
+    }
+    let r = s.start("/work/app", "", &[]);
+    assert_eq!(
+        section(&r.text, "This project"),
+        ["/projects/work/app/e-0.md", "/projects/work/app/e-1.md"]
+    );
+    // task: four blocks of exactly 1,500 fill TASK_BODY_BUDGET, the fifth moves to More matches
+    let mut t = Store::new();
+    for i in 0..5 {
+        let (title, path) = (format!("Zebra edge {i}"), format!("/global/zebra-{i}.md"));
+        let body = body_for_block(1500, &title, &path);
+        t.add(&path, &title, &body, json!({"priority": 9 - i}));
+    }
+    for i in 0..10 {
+        t.add(
+            &format!("/global/filler-{i}.md"),
+            &format!("Filler note {i}"),
+            "Plain filler.",
+            json!({}),
+        );
+    }
+    let (shown, listed, _) = task_parts(&t.task("zebra").text);
+    assert_eq!(shown.len(), 4);
+    assert_eq!(listed, ["/global/zebra-4.md"]);
 }
 
 #[test]
@@ -1455,9 +1533,16 @@ fn golden_texts() {
 }
 
 #[test]
-fn index_md_is_the_start_view_without_a_project() {
+fn index_md_is_the_full_index() {
     let s = Store::fixture();
-    let idx = recall::index_md(&s.mems, REV, MIRROR);
-    assert_eq!(idx, s.start("", "", &[]).text);
-    assert_eq!(idx, golden("start_none.txt"));
+    let md = recall::index_md(&s.mems, REV, MIRROR);
+    assert_index_md(&s, &md);
+    assert_eq!(md, golden("index_md.txt"));
+    // it is not the no-project start view: it lists every project's memories
+    let start = s.start("", "", &[]).text;
+    assert_ne!(md, start);
+    assert_eq!(start, golden("start_none.txt"));
+    assert!(!start.contains("/projects/") && md.contains("/projects/"));
+    // the pinned project memory is a line in the index, not in full
+    assert!(md.contains("- /projects/home/sai/Projects/agent-memory/run-tests-before-merge.md — "));
 }
