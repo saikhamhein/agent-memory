@@ -22,7 +22,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 | Role | Session | Status |
 | --- | --- | --- |
-| Architect | (starting) | design |
+| Architect | `local_b602e858-1cf0-40c9-a15d-c78a09d3e1e3` (architect) | design started 2026-11-01 |
 
 ## Merged
 
