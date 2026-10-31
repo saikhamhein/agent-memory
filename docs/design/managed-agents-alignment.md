@@ -203,6 +203,40 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
 - If the service is down, the hook injects `mnt/shared-agent-memory/INDEX.md` instead, and loaders can read the same file.
 - `memory.py` is reduced to a stub that runs `agent-memory-client recall` with the same arguments; other commands print the client command to use. It keeps the existing loader line `python3 …/memory.py recall …` in `~/.codex/AGENTS.md` and `~/.dsh/AGENTS.md` working without editing the user's files. Old `--limit` and `--budget` flags are accepted and ignored.
 
+**Rendering details (ruled 2026-11-01, WS-R):**
+- **Scope.** `Kind` is `Global`, `Project`, `Topic` or `Role`. `Scope.value` is `""` for global, the absolute root for a project (`/projects/home/sai/x/s.md` → `/home/sai/x`), and the name for a topic or role.
+- **Project matching.**
+  - `Request.project` is made absolute, `..` is resolved, and it is compared by whole path components, lexically.
+  - `recall()` treats a non-absolute project as no project. The API rejects one with 400.
+- **Empty sections.** A section with nothing in it, `## Index` included, is left out together with its heading.
+- **Count line.** `{dir}` is the parent directory with a trailing slash. Count lines follow the order in which each directory first appears among the unlisted memories.
+- **`BODY_BUDGET`** counts the characters of the bodies shown in full, after trimming trailing whitespace.
+  - Memories are tried in order (first fit). One that doesn't fit becomes an index line, and later, smaller ones are still tried.
+- **`INDEX_BUDGET`** counts the characters of the listed lines, newlines included.
+  - Listing stops at the first line that doesn't fit, and everything from there on goes into count lines.
+- **Priority.** Higher comes first; a missing priority counts as 0.
+- **Task view text:**
+  ```
+  # Memories matching "{query}" — revision {revision}
+
+  ### {title} [{path}]
+  {body}
+
+  ## More matches
+  - {path} — {title}
+  +{N} more
+  ```
+  - The top 5 are tried first-fit within `BODY_BUDGET`. Any that don't fit move to "More matches".
+  - "More matches" holds at most 20 lines.
+  - `+N` counts the matches shown neither in full nor as a line. It is omitted when N = 0.
+- **`Recalled` fields.**
+  - `pinned`: the paths in "Always apply".
+  - `returned`: every path whose body is in the text, pinned included, in output order.
+  - `view`: `"start"` or `"task"`.
+- **Term frequency filter** covers the title, tags, scope value and body.
+- **Tokens.** `\w+` is the Rust regex UTS#18 class, which includes the Mn and Mc marks, so Burmese runs stay whole tokens. Python's `re` `\w` splits them, which is one more reason recall is rendered only in Rust.
+- **Expiry** is compared against the UTC date.
+
 **Usage log:** `recall-log.jsonl` stays next to the database. Each entry has `ts`, `client`, `project`, `query`, `role`, `topics`, `revision`, `view` (`start` or `task`), `pinned`, `returned` (paths) and `chars`. `client` is the request's optional `client` label (the hook sends `session-start`), otherwise the token name, so the daily report's counts keep working.
 
 **Prior art checked:** Claude Code's auto memory loads a `MEMORY.md` index (the first 200 lines or 25 KB) and reads topic files on demand ([docs](https://code.claude.com/docs/en/memory)). Managed Agents gives the agent a mount note and file tools, with no search API; search here exists because MCP-only and loader-driven agents need it.
