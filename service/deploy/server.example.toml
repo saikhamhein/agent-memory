@@ -1,6 +1,8 @@
 # Local testing: loopback only. Later use the server's LAN IP for LAN access.
 listen = "127.0.0.1:8787"
 database = "/var/lib/agent-memory/memory.sqlite3"
+# Read-only mirror of the live store. Default: "mnt" next to the database.
+# mount = "/var/lib/agent-memory/mnt"
 
 # Stable ids resolve to the original logical project roots in accepted memories.
 # These directories do not need to exist on the server or Raspberry Pi.

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Install this build as the current user's systemd service. No sudo required."""
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -30,32 +31,60 @@ def private_file(path, text):
         output.write(text)
 
 
-def migrate_database(binary, database):
-    # Old Python stores use WAL. Migrate before a long-lived service connection
-    # prevents the Python CLI from switching to rollback journaling.
+def schema_version(database):
     with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as db:
-        journal = db.execute('PRAGMA journal_mode').fetchone()[0]
+        version = db.execute('PRAGMA user_version').fetchone()[0]
     db.close()
-    if journal == 'delete':
-        return
+    return version
+
+
+def systemctl(*args):
+    return subprocess.run(['systemctl', '--user', *args, 'agent-memory.service'], check=True)
+
+
+def migrate_store(binary, database, pins):
+    """Stop the service, back up, then migrate v1 to v2 (design §3.6).
+
+    On failure the store is unchanged (migration is one transaction) and a
+    service that was running is started again. On success it stays stopped
+    until the caller restarts it with the new binary."""
     active = subprocess.run(['systemctl', '--user', 'is-active', '--quiet',
                              'agent-memory.service'], capture_output=True).returncode == 0
     if active:
-        subprocess.run(['systemctl', '--user', 'stop', 'agent-memory.service'], check=True)
+        systemctl('stop')
     try:
-        subprocess.run([str(binary), 'init', '--database', str(database)], check=True)
-    finally:
-        # Restore the old service even if migration fails. The installer stops
-        # on failure; on success its final restart picks up the new binary.
+        runtime = database.parent / 'runtime'
+        runtime.mkdir(mode=0o700, exist_ok=True)
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+        backup = runtime / f'pre-v2-{stamp}.sqlite3'
+        # `backup` refuses to overwrite and runs integrity_check on the copy.
+        subprocess.run([str(binary), 'backup', '--database', str(database), '--output', str(backup)],
+                       check=True)
+        pin_args = [arg for pin in pins for arg in ('--pin', pin)]
+        subprocess.run([str(binary), 'migrate', '--database', str(database), *pin_args], check=True)
+    except BaseException:
         if active:
-            subprocess.run(['systemctl', '--user', 'start', 'agent-memory.service'], check=True)
+            systemctl('start')
+        raise
+    return backup
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--database', type=Path, required=True, help='Existing authoritative SQLite database')
+    parser.add_argument('--migrate', action='store_true',
+                        help='Back up and migrate a v1 store to v2 (stops the service while migrating)')
+    parser.add_argument('--pin', action='append', default=[], metavar='SLUG',
+                        help='With --migrate: pin this memory (repeatable)')
     args = parser.parse_args()
     database = args.database.resolve(strict=True)
+    version = schema_version(database)
+    if version < 2 and not args.migrate:
+        parser.error('This is a v1 store; nothing was changed. Rerun with --migrate (it backs up first)')
+    if version >= 2 and args.migrate:
+        parser.error('The store is already v2; rerun without --migrate')
+    if args.pin and not args.migrate:
+        parser.error('--pin needs --migrate')
     source = Path(__file__).resolve().parent
     binary = source / 'target/release/agent-memory-server'
     if not binary.is_file():
@@ -91,9 +120,11 @@ def main():
         existing = tomllib.loads(server.read_text())
         if Path(existing['database']).resolve() != database:
             parser.error('Existing config points to a different database; no changes installed')
+    if args.migrate:
+        backup = migrate_store(binary, database, args.pin)
+        print(f'Migrated to v2; backup at {backup}')
     # Validate before replacing a running binary or its unit.
     subprocess.run([str(binary), 'check', '--config', str(server)], check=True)
-    migrate_database(binary, database)
     atomic_copy(binary, bin_dir / 'agent-memory-server', 0o755)
     atomic_copy(source / 'client.py', bin_dir / 'agent-memory-client', 0o755)
     atomic_copy(source / 'deploy/agent-memory.user.service', unit_dir / 'agent-memory.service', 0o644)
