@@ -146,6 +146,8 @@ class Server:
 
         Clients (client.py, memory.py, the hook) find their config at their default
         locations under HOME, so tests never read the real ~/.config/agent-memory.
+        The hook's two overrides (architect ruling) are set too: AGENT_MEMORY_CONFIG is the
+        client credential file and AGENT_MEMORY_MIRROR the mirror directory.
         Returns (home_path, env).
         """
         home = self.root / 'home'
@@ -155,6 +157,8 @@ class Server:
         shutil.copy(self.root / 'server.toml', config / 'server.toml')
         env = {k: v for k, v in os.environ.items() if not k.startswith('AGENT_MEMORY')}
         env['HOME'] = str(home)
+        env['AGENT_MEMORY_CONFIG'] = str(config / 'client.json')
+        env['AGENT_MEMORY_MIRROR'] = str(self.mirror)
         return home, env
 
     def client(self, *args, role='admin', env=None, binary=False, check=None):
