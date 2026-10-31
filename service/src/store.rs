@@ -134,12 +134,13 @@ fn check_free(db: &Connection, store_id: &str, path: &str, id: &str) -> Result<(
     Ok(())
 }
 
-/// The store's pinned `block_len` total.
-fn pinned(db: &Connection, store_id: &str) -> Result<usize> {
+/// The store's pinned `block_len` total and the pinned paths.
+fn pinned(db: &Connection, store_id: &str) -> Result<(usize, Vec<String>)> {
     let mut stmt = db.prepare(
         "SELECT path,content FROM memories WHERE store_id=?1 AND instr(content,'\"pinned\"')>0 ORDER BY path",
     )?;
     let mut total = 0;
+    let mut paths = Vec::new();
     for row in stmt.query_map([store_id], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
     })? {
@@ -147,15 +148,16 @@ fn pinned(db: &Connection, store_id: &str) -> Result<usize> {
         let memory = model::parse(&path, &content)?;
         if memory.pinned() {
             total += block_len(&memory);
+            paths.push(path);
         }
     }
-    Ok(total)
+    Ok((total, paths))
 }
 
-/// `pinned_budget_exceeded`, naming the written `paths`, when the store's
-/// pinned memories exceed the budget.
-fn check_pinned(db: &Connection, store_id: &str, paths: Vec<String>) -> Result<()> {
-    let total = pinned(db, store_id)?;
+/// `pinned_budget_exceeded`, naming every pinned path, when the store's pinned
+/// memories exceed the budget.
+fn check_pinned(db: &Connection, store_id: &str) -> Result<()> {
+    let (total, paths) = pinned(db, store_id)?;
     if total > PINNED_BUDGET {
         return Err(Error::conflict(
             "pinned_budget_exceeded",
@@ -535,7 +537,7 @@ impl Store {
             "store_id": self.live,
             "revision": revision(&self.db, &self.live)?,
             "memories": count("SELECT COUNT(*) FROM memories WHERE store_id=?1")?,
-            "pinned_chars": pinned(&self.db, &self.live)?,
+            "pinned_chars": pinned(&self.db, &self.live)?.0,
             "observations_pending": pending_observations(&self.db)?.len(),
             "dreams_running": running,
             "mirror_dir": self.mirror_dir(),
@@ -626,7 +628,7 @@ impl Store {
         let id = new_id("mem");
         insert_memory(&tx, &store_id, &id, path, content, actor)?;
         if memory.pinned() {
-            check_pinned(&tx, &store_id, vec![path.into()])?;
+            check_pinned(&tx, &store_id)?;
         }
         tx.commit()?;
         self.written(live);
@@ -669,7 +671,7 @@ impl Store {
         }
         modify_memory(&tx, &store_id, id, new_path, new_content, actor)?;
         if memory.pinned() {
-            check_pinned(&tx, &store_id, vec![new_path.into()])?;
+            check_pinned(&tx, &store_id)?;
         }
         tx.commit()?;
         self.written(live);
@@ -975,13 +977,7 @@ impl Store {
         for (id, path, content, _) in &added {
             insert_memory(&tx, &self.live, id, path, content, &actor)?;
         }
-        let pins = added
-            .iter()
-            .chain(&changed)
-            .filter(|r| model::parse(&r.1, &r.2).is_ok_and(|m| m.pinned()))
-            .map(|r| r.1.clone())
-            .collect();
-        check_pinned(&tx, &self.live, pins)?;
+        check_pinned(&tx, &self.live)?;
         let paths = |rows: &[Row]| rows.iter().map(|r| r.1.clone()).collect::<Vec<_>>();
         let adoption = json!({
             "summary": summary,

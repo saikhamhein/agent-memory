@@ -251,10 +251,11 @@ pub fn validate_path(path: &str) -> Result<Scope> {
     }
     if segments
         .iter()
-        .any(|s| !SEGMENT.is_match(s) || *s == "." || *s == "..")
+        .any(|s| !SEGMENT.is_match(s) || *s == "." || *s == ".." || s.len() > 255)
     {
+        // 255 bytes is NAME_MAX: a longer segment could never be mirrored.
         return Err(bad(
-            "segments use only A-Z a-z 0-9 . _ - and are not . or ..",
+            "segments use only A-Z a-z 0-9 . _ -, are not . or .., and are at most 255 bytes",
         ));
     }
     let slug = segments[segments.len() - 1]

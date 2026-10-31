@@ -30,8 +30,8 @@ pub fn is_current(mnt: &Path, store_id: &str, revision: i64, index: &str) -> boo
         && fs::read_to_string(dir.join("INDEX.md")).is_ok_and(|t| t == index)
 }
 
-/// Publishes `files` (path, content, …) as the new generation and keeps only
-/// it and the one it replaced.
+/// Publishes `files` (id, path, content, sha) as generation `<revision>` and
+/// keeps only it and the one it replaced.
 pub fn write(
     mnt: &Path,
     store_id: &str,
@@ -41,43 +41,31 @@ pub fn write(
 ) -> io::Result<()> {
     let generations = mnt.join(GENERATIONS);
     fs::create_dir_all(&generations)?;
-    let build = generations.join(format!(".build-{}", Uuid::new_v4().simple()));
-    fs::create_dir(&build)?;
-    let built = (|| {
-        for (_, path, content, _) in files {
-            let file = build.join(path.trim_start_matches('/'));
-            fs::create_dir_all(file.parent().expect("memory paths have a directory"))?;
-            create(&file, content)?;
+    let name = revision.to_string();
+    let target = generations.join(&name);
+    let marker = json!({"store_id": store_id, "revision": revision}).to_string();
+    let build = |dir: &Path| {
+        let built = fill(dir, files, index, &marker);
+        if built.is_err() {
+            let _ = remove(dir);
         }
-        create(&build.join("INDEX.md"), index)?;
-        let marker = json!({"store_id": store_id, "revision": revision});
-        create(&build.join(MARKER), &marker.to_string())?;
-        let name = revision.to_string();
-        let target = generations.join(&name);
-        if target.exists() {
-            remove(&target)?;
-        }
-        // Rename before sealing: rename(2) may need write access to a moved directory.
-        fs::rename(&build, &target)?;
-        seal(&target)?;
-        Ok(name)
-    })();
-    let name = match built {
-        Ok(name) => name,
-        Err(e) => {
-            let _ = remove(&build);
-            return Err(e);
-        }
+        built
     };
-    let link = dir(mnt);
-    let previous = fs::read_link(&link).ok();
-    let next = mnt.join(format!(".{LINK}.new"));
-    match fs::remove_file(&next) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-        _ => (),
+    let previous = fs::read_link(dir(mnt)).ok();
+    if target.exists() {
+        // Rebuilding a revision (after a crash or a renderer change): serve a
+        // fresh copy while `<revision>` is replaced, so the link never dangles.
+        let spare = format!(".build-{}", Uuid::new_v4().simple());
+        build(&generations.join(&spare))?;
+        point(mnt, &spare)?;
+        remove(&target)?;
+        build(&target)?;
+        point(mnt, &name)?;
+        remove(&generations.join(&spare))?;
+    } else {
+        build(&target)?;
+        point(mnt, &name)?;
     }
-    symlink(Path::new(GENERATIONS).join(&name), &next)?;
-    fs::rename(&next, &link)?;
     let previous = previous.as_deref().and_then(Path::file_name);
     for entry in fs::read_dir(&generations)? {
         let entry = entry?;
@@ -87,6 +75,35 @@ pub fn write(
         }
     }
     Ok(())
+}
+
+/// Writes one complete generation, then makes it read-only.
+fn fill(
+    dir: &Path,
+    files: &[(String, String, String, String)],
+    index: &str,
+    marker: &str,
+) -> io::Result<()> {
+    fs::create_dir(dir)?;
+    for (_, path, content, _) in files {
+        let file = dir.join(path.trim_start_matches('/'));
+        fs::create_dir_all(file.parent().expect("memory paths have a directory"))?;
+        create(&file, content)?;
+    }
+    create(&dir.join("INDEX.md"), index)?;
+    create(&dir.join(MARKER), marker)?;
+    seal(dir)
+}
+
+/// Atomically points `shared-agent-memory` at `.generations/<name>`.
+fn point(mnt: &Path, name: &str) -> io::Result<()> {
+    let next = mnt.join(format!(".{LINK}.new"));
+    match fs::remove_file(&next) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => (),
+    }
+    symlink(Path::new(GENERATIONS).join(name), &next)?;
+    fs::rename(&next, dir(mnt))
 }
 
 fn create(path: &Path, content: &str) -> io::Result<()> {
