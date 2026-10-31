@@ -37,6 +37,11 @@ enum Command {
     },
 }
 
+/// Placeholder until workstream M adds `config.mount`: `<database dir>/mnt`.
+fn mount(database: &std::path::Path) -> PathBuf {
+    database.with_file_name("mnt")
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
@@ -57,12 +62,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Check { config } => {
             let config = Config::load(&config)?;
-            let store = Store::open(&config.database)?;
+            let store = Store::open(&config.database, &mount(&config.database))?;
             println!("{}", store.status()?);
         }
         Command::Serve { config } => {
             let config = Config::load(&config)?;
-            let store = Store::open(&config.database)?;
+            let store = Store::open(&config.database, &mount(&config.database))?;
             let listener = tokio::net::TcpListener::bind(config.listen).await?;
             eprintln!(
                 "agent-memory-server {} listening on {}",
