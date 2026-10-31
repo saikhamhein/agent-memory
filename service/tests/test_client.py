@@ -150,8 +150,8 @@ class HookTests(unittest.TestCase):
         segments = '/'.join(self.repo.parts[1:])
         self.server.seed(f'/projects/{segments}/rule.md', 'Project rule', 'Run the project tests first.')
 
-    def run_hook(self, cwd=None, stdin=None, env=None):
-        event = json.dumps({'session_id': 's1', 'source': 'startup', 'hook_event_name': 'SessionStart',
+    def run_hook(self, cwd=None, stdin=None, env=None, source='startup'):
+        event = json.dumps({'session_id': 's1', 'source': source, 'hook_event_name': 'SessionStart',
                             'cwd': str(cwd or self.worktree)}) if stdin is None else stdin
         return subprocess.run([sys.executable, str(HOOK)], input=event, capture_output=True, text=True,
                               timeout=30, env=env or self.env)
@@ -161,10 +161,10 @@ class HookTests(unittest.TestCase):
         log = self.home / '.cache' / 'agent-memory' / 'recall-log.jsonl'
         return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
-    def check_log(self, line, via, project=None):
+    def check_log(self, line, via, project=None, source='startup'):
         self.assertEqual(set(line), {'ts', 'session_id', 'source', 'project', 'chars', 'ok', 'via'})
         self.assertEqual((line['session_id'], line['source'], line['via'], line['ok']),
-                         ('s1', 'startup', via, via != 'none'))
+                         ('s1', source, via, via != 'none'))
         if project:
             self.assertEqual(line['project'], project)
 
@@ -187,6 +187,18 @@ class HookTests(unittest.TestCase):
         [line] = self.hook_log()
         self.check_log(line, 'service', str(self.repo))
         self.assertGreater(line['chars'], 0)
+
+    def test_resume_and_fork_inject_nothing_but_are_logged(self):
+        for source in ('resume', 'fork'):
+            result = self.run_hook(source=source)
+            self.assertEqual((result.returncode, result.stdout), (0, ''), source)
+            line = self.hook_log()[-1]
+            self.check_log(line, 'skipped', source=source)
+            self.assertEqual(line['chars'], 0)
+        self.assertEqual(len(self.hook_log()), 2)
+        self.assertEqual(self.server.recall_entries(), [])  # the skipped runs never called the service
+        self.context(self.run_hook(source='startup'))  # other sources still inject
+        self.assertEqual(len(self.server.recall_entries()), 1)
 
     def test_service_down_injects_index_md(self):
         index = (self.server.mirror / 'INDEX.md').read_text()
@@ -242,8 +254,7 @@ class HookTests(unittest.TestCase):
         self.assertEqual(line['chars'], 0)
 
     def test_fails_open(self):
-        bare = {k: v for k, v in self.env.items() if not k.startswith('AGENT_MEMORY')}
-        bare['HOME'] = str(self.server.root / 'empty')
+        bare = {**self.env, 'HOME': str(self.server.root / 'empty')}
         for result in (self.run_hook(stdin='not json'), self.run_hook(stdin=''),
                        self.run_hook(cwd=self.server.root / 'missing'),
                        self.run_hook(env=bare)):
