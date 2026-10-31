@@ -125,13 +125,13 @@ Path rules:
 Further rules:
 - The body must not be empty.
 - Content is at most 102,400 bytes and must pass the existing credential patterns.
-- **Pinned budget:** the bodies of all pinned memories in a store total at most **6,000 characters**. A write that would exceed it fails with 409 `pinned_budget_exceeded`. The core rules therefore always fit and can never be cut; curating them is the dream's job.
+- **Pinned budget:** the bodies of all pinned memories in a store total at most **4,000 characters** (`model::PINNED_BUDGET`, counted as `body.chars().count()`). A write that would exceed it fails with 409 `pinned_budget_exceeded`. The core rules therefore always fit and can never be cut; curating them is the dream's job.
 - Migration writes frontmatter in today's `encode()` format.
 
 **Mirror (read-only copy):**
 - The live store is written to `<database dir>/mnt/shared-agent-memory/`. `mnt` is configurable as `mount` in `server.toml`.
 - Each memory is a file at its path holding the exact stored bytes, mode 0444, in directories with mode 0555.
-- `INDEX.md` holds the start view for "no project" (§3.3), so a file tool can still read it when the service is down.
+- `INDEX.md` is the **full** index for "no project": the pinned memories in full, then one line for every other memory, with no size cap (`recall::index_md`). A file tool can read it when the service is down.
 - A marker file `.agent-memory-store` contains `{store_id, revision}`.
 - After each committed live write, the service writes `mnt/.generations/<revision>/` and renames a symlink over `mnt/shared-agent-memory`, then deletes the generations older than the previous one. A plain temporary directory plus rename can't replace a non-empty directory atomically; renaming a symlink can.
 - If writing the mirror fails, the commit stands and `status` reports `mirror_stale`. `Store::open` rebuilds a stale mirror.
@@ -145,7 +145,8 @@ Further rules:
   - 409 `path_exists` / `slug_exists`: create on a taken path, or a slug already used elsewhere.
   - 409 `store_archived`: any write to an archived store.
   - 400 `store_full`: at 10,000 memories.
-- **Redact:** refused on the head version of a live memory. Otherwise it nulls `content`, `path` and `content_sha256` and sets `redacted_at` / `redacted_by`.
+- **Delete:** the `deleted` version keeps the memory's last `path`, with `content` and `content_sha256` set to null.
+- **Redact:** refused with 400 `invalid` on the head version of a live memory. Otherwise it nulls `content`, `path` and `content_sha256` and sets `redacted_at` / `redacted_by`.
 - **Actors:** `token:<name>`, `dream:<id>`, or `migration:revision-<n>` / `migration:pin`.
 
 ### 3.3 Recall
@@ -180,10 +181,13 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
 - **Always apply:** every pinned memory in scope (global, plus this project's), in full. It is never cut, because of the write-time budget.
 - **This project:** the project's unpinned memories, in full, ordered by `priority` (descending) then slug.
 - **Requested:** topic and role memories named in the request, in full, in the same order.
-- **Body cap:** "This project" and "Requested" share `BODY_BUDGET = 6000` characters. A memory over the cap moves to the index as a line.
+- **Whole-view cap:** the start view is at most `START_MAX = 9500` characters, so it fits under Claude Code's 10,000-character cap on hook `additionalContext`. Above that cap, Claude Code keeps only a 2,000-character preview ([hooks docs](https://code.claude.com/docs/en/hooks.md), "JSON output").
+- **Body cap:** "This project" and "Requested" share `START_BODY_BUDGET = 3000` characters. A memory over the cap moves to the index as a line.
 - **Index:** one line for each other memory in every scope except other projects, which never apply to this session. Order: this project's overflow, then global, then topics, then roles, each ordered by `priority` then slug.
-  - Lines stop at `INDEX_BUDGET = 8000` characters.
+  - Index lines fill whatever remains of `START_MAX`.
   - The rest become one `{dir} — {n} more` line per directory.
+  - If those count lines don't fit either, they collapse into the single line `- {n} more memories not listed; full index: {mirror_dir}/INDEX.md`.
+  - Pinned memories (≤4,000) plus the header (≤600) plus bodies (≤3,000) leave at least 1,900 characters for index and count lines, so the bound holds at any store size.
 - **Exclusions:** tentative and expired memories never appear.
 - **Size:** everything except the index is independent of how many other memories the store holds.
 
@@ -193,14 +197,14 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
 2. **Terms:** lowercase `\w+` tokens of at least 3 characters that are not in the frozen `STOPWORDS` list in `recall.rs` (about 60 common English words). With 4 or more candidates, a term found in more than half of them is also ignored (for example "memory", "agent", "user").
 3. **Match rule:** at least 1 distinct term in the title, tags or scope value, or at least 2 distinct terms in the body.
 4. **Ranking:** score = 3 × title/tag/scope hits + body hits. Ties sort by `priority`, then slug.
-5. **Output:** the top `SEARCH_RESULTS = 5` in full, within `BODY_BUDGET`. Further matches appear as `- {path} — {title}` under "More matches", at most 20 lines, then `+N more`.
-6. **No match:** the output is exactly `No memory matches "{query}".`
+5. **Output:** the top `SEARCH_RESULTS = 5` in full, within `TASK_BODY_BUDGET = 6000`. Further matches appear as `- {path} — {title}` under "More matches", at most 20 lines, then `+N more`.
+6. **No match:** the output is exactly `No memory matches "{query}".\n`. Every recall text ends with exactly one newline.
 7. **Why not BM25:** its scores have no natural cut-off, so "an unrelated query returns nothing" would need a tuned threshold. The distinct-term rule with a frequency filter is deterministic and testable.
 
 **One load per session.** The hook (Claude Code) and the loader lines (Codex, DeepSeek) request the start view once. The skill and the MCP instructions say to call recall again only with a query.
 
 **Fallbacks:**
-- If the service is down, the hook injects `mnt/shared-agent-memory/INDEX.md` instead, and loaders can read the same file.
+- If the service is down, the hook injects `mnt/shared-agent-memory/INDEX.md`, cut at the last line boundary within `START_MAX` and ending with `… truncated; full index: {path}`. Pinned memories come first in that file, so the core survives the cut. Loaders can read the same file.
 - `memory.py` is reduced to a stub that runs `agent-memory-client recall` with the same arguments; other commands print the client command to use. It keeps the existing loader line `python3 …/memory.py recall …` in `~/.codex/AGENTS.md` and `~/.dsh/AGENTS.md` working without editing the user's files. Old `--limit` and `--budget` flags are accepted and ignored.
 
 **Rendering details (ruled 2026-11-01, WS-R):**
@@ -210,9 +214,9 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
   - `recall()` treats a non-absolute project as no project. The API rejects one with 400.
 - **Empty sections.** A section with nothing in it, `## Index` included, is left out together with its heading.
 - **Count line.** `{dir}` is the parent directory with a trailing slash. Count lines follow the order in which each directory first appears among the unlisted memories.
-- **`BODY_BUDGET`** counts the characters of the bodies shown in full, after trimming trailing whitespace.
+- **`START_BODY_BUDGET` / `TASK_BODY_BUDGET`** count the characters of the bodies shown in full, after trimming trailing whitespace.
   - Memories are tried in order (first fit). One that doesn't fit becomes an index line, and later, smaller ones are still tried.
-- **`INDEX_BUDGET`** counts the characters of the listed lines, newlines included.
+- **Index lines** are added while the whole text, with its count lines, stays within `START_MAX`, counted in `chars()` with newlines included.
   - Listing stops at the first line that doesn't fit, and everything from there on goes into count lines.
 - **Priority.** Higher comes first; a missing priority counts as 0.
 - **Task view text:**
@@ -226,7 +230,7 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
   - {path} — {title}
   +{N} more
   ```
-  - The top 5 are tried first-fit within `BODY_BUDGET`. Any that don't fit move to "More matches".
+  - The top 5 are tried first-fit within `TASK_BODY_BUDGET`. Any that don't fit move to "More matches".
   - "More matches" holds at most 20 lines.
   - `+N` counts the matches shown neither in full nor as a line. It is omitted when N = 0.
 - **`Recalled` fields.**
@@ -267,6 +271,9 @@ Reads are not MCP resources either: in Claude Code those are `@`-mentions made b
    - **Pending** means not in the input of any adopted v2 dream or promoted legacy dream.
 2. **Work.** The agent reads the mirror, the sessions and the observations, then edits the output store through the memory API. `review` is enough for an output store.
 3. **Diff (`GET /v1/dreams/{id}?diff=true`).** Returns `{added, removed, changed}` against the base.
+   - `added` and `removed` items are `{memory_id, path, content}`.
+   - `changed` items are `{memory_id, before: {path, content}, after: {path, content}}`.
+   - After adoption, `adoption` holds `{summary, coverage, conflicts, added, changed, removed}`, the last three as lists of paths.
 4. **Adopt (`POST /v1/dreams/{id}/adopt`, `promote`).**
    - Body: `{summary, coverage, conflicts, reviewed}`. The same gates as today's promote apply, and the dream must be `running`.
    - In one transaction:
@@ -357,8 +364,8 @@ Object shapes:
 - **dream:** `{id, status, output_store_id, sessions, observations, created_at, ended_at, adoption}`.
 
 Error responses:
-- 409 bodies are `{"error", "type", "paths"?}`.
-- 400 for invalid input, 401 / 403 for authentication, 404 for unknown objects, 413 above 4 MiB.
+- Every error body is `{"error", "type"}`. 409 bodies add `paths` for every type except `store_archived`; for `slug_exists`, `paths` holds the path that already uses the slug.
+- 400 has type `invalid`, and its message names the reason, for example `store_full`, redacting a head version, a dream that is not running, or a failed review gate. 401 and 403 are authentication errors. 404 has type `not_found`. 413 is for bodies above 4 MiB.
 - Removed v1 routes return 404.
 
 **Rust boundaries:**
@@ -472,7 +479,7 @@ Shared helpers, each built once:
    - delete adds a `deleted` version and keeps the lineage;
    - redacting the head fails;
    - redacting an old version nulls its fields and keeps `created_by`.
-9. `store_full` at 10,001 memories. `pinned_budget_exceeded` past 6,000 characters, with nothing written.
+9. `store_full` at 10,001 memories. Pinned bodies of exactly 4,000 characters are accepted; 4,001 gives `pinned_budget_exceeded`, with nothing written.
 10. `dream_start_freezes_and_clones`:
     - same ids, paths and hashes in the output store;
     - live store untouched;
@@ -502,14 +509,15 @@ Shared helpers, each built once:
 1. `core_never_cut`: every pinned in-scope memory, including `/global/keep-it-simple.md`, appears in full in every start view for any project, role or topic set:
    - with the fixture alone;
    - with 5,000 extra memories;
-   - when 30 large unpinned project memories overflow `BODY_BUDGET`.
+   - when 30 large unpinned project memories overflow `START_BODY_BUDGET`.
 2. `start_is_constant_beyond_index`: adding 10, 500 or 5,000 memories in other scopes leaves the start view unchanged above the `## Index` heading.
 3. `index_bounded_and_named`:
    - the index part stays within 8,000 characters plus the count lines;
    - the count lines add up exactly to the unlisted memories;
    - other projects never appear.
-4. `project_and_requested_in_full`: the project's memories and the requested topic and role memories appear in full; overflow beyond `BODY_BUDGET` becomes index lines, never silent drops.
-5. `unrelated_query_returns_nothing`: `kubernetes ingress yaml` gives exactly `No memory matches "kubernetes ingress yaml".`
+4. `project_and_requested_in_full`: the project's memories and the requested topic and role memories appear in full; overflow beyond `START_BODY_BUDGET` becomes index lines, never silent drops.
+13. `start_within_hook_cap`: with pinned memories at exactly 4,000 characters, plus maximal project and requested memories, plus 5,000 others, the start view is at most 9,500 characters and the pinned memories are intact. `index_md` is never truncated.
+5. `unrelated_query_returns_nothing`: `kubernetes ingress yaml` gives exactly `No memory matches "kubernetes ingress yaml".\n`
 6. `no_unrelated_bodies`: for 5 fixture queries, every returned body contains a non-stop query term in its title, tags or scope, or two in its body.
 7. `common_and_stop_words_ignored`: `the memory agent` matches nothing.
 8. `match_rule`: one title term matches; one body-only term doesn't; two body terms do.
@@ -544,7 +552,7 @@ Shared helpers, each built once:
 3. `legacy_preserved_and_frozen`.
 4. `atomic_on_offender`: a topic of `"machine learning"` aborts the migration, lists the value, and leaves the database byte-identical.
 5. `dry_run_changes_nothing`; `second_run_refuses`.
-6. `pin`: `--pin keep-it-simple` makes it pinned in the mirror and in every start view; pins over 6,000 characters abort.
+6. `pin`: `--pin keep-it-simple` makes it pinned in the mirror and in every start view; pins over 4,000 characters abort.
 7. `pending_observations_carry_over`.
 8. `install_refuses_v1_without_flag`: exits non-zero, and the database and service state are restored.
 9. `install_migrate_backs_up_first`.
@@ -580,7 +588,7 @@ C also rewrites `SKILL.md` and `ops/daily-memory-dream.md` for this cycle:
 5. Diff.
 6. Adopt.
 7. On a 409, cancel and redo once.
-8. Report, including pinned characters out of 6,000.
+8. Report, including pinned characters out of 4,000.
 
 The coordinator reviews these against §3.
 
@@ -589,7 +597,7 @@ The coordinator reviews these against §3.
 1. **Build.** Cut `rework/managed-agents-v2` from the current master. Run A, R, H, M and C, merging in the order of §4.2.
 2. **Combined check** on the integration head:
    - `cargo test`, `clippy -D warnings`, a release build and all Python suites;
-   - `migrate --dry-run --pin keep-it-simple …` against a copy of a fresh `backup` of the live store. The coordinator and the architect review the report and settle the pinned set: `keep-it-simple` plus what fits in 6,000 characters;
+   - `migrate --dry-run --pin keep-it-simple …` against a copy of a fresh `backup` of the live store. The coordinator and the architect review the report and settle the pinned set: `keep-it-simple` plus what fits in 4,000 characters;
    - a fresh-eyes review campaign and triage.
 3. **Cutover**, after the coordinator has the user's go in chat:
    1. Record the master SHA.
