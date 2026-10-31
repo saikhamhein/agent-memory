@@ -25,7 +25,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 | Architect | `local_b602e858-1cf0-40c9-a15d-c78a09d3e1e3` (architect) | PR 6 rev 3 merged @ c9b48a3; reviews workstream PRs |
 | Engineer A (store + mirror) | `local_f7b57f17-4e91-4996-ba3b-3fddbd222144` | PR 11: architect approves after the block_len pinned budget + unique generation names |
 | Test engineer A | `local_c79accd0-cf18-4ce5-9f59-86e28b10f1a7` | `rework/tests-a` @ `f565521`: 19 tests, 19/19 on engineer WIP, 6 mutants caught; told to adopt PR 10 block_len |
-| Engineer R (recall) | `local_6158a6a3-f625-44c2-9401-7a559884a564` | PR 9: changes requested (needs PR 8/10 rulings) |
+| Engineer R (recall) | `local_6158a6a3-f625-44c2-9401-7a559884a564` | PR 9: 17/18 pass, byte-identical to test-R renderer; one test being fixed |
 | Test engineer R | `local_88b6d74f-ee66-441e-a12a-cb3df7e5719c` | `rework/tests-r` @ `30114e5`: 19 tests, PR 10 block_len adopted |
 | Engineer H (HTTP API) | `local_a320fa63-05c9-4d9a-9f6a-ebad5ce08624` | building |
 | Test engineer H | `local_7a6bae6a-f710-4da7-a17d-ba7c2ff467f9` | `rework/tests-h` @ `0a70203`: encodes the architect rulings; fails to compile on the integration head as intended |
@@ -36,6 +36,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Merged
 
+- PR 13 (index lines still fill beside the collapse line; doc only) → `rework/managed-agents-v2`.
 - PR 12 (INDEX.md contents, 255-byte path segments, observation ids in `observations_consumed` paths; doc only) → `rework/managed-agents-v2`.
 - PR 10 (budgets count the rendered block incl. heading, `model::block_len`; doc only) → `rework/managed-agents-v2`.
 - PR 8 (hook-cap rulings: pinned budget 4,000, START_MAX 9,500 under Claude Code's 10,000-char hook cap, error/diff shapes; doc only) → `rework/managed-agents-v2` `8c57c6b`. Leftover: §4.3 R.3 still says "within 8,000 characters"; architect to fix in the next doc PR.
