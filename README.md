@@ -60,7 +60,7 @@ Scope kinds: `global`, `project` (absolute canonical root in `value`), `topic`, 
 4. `python3 memory.py diff PATH` and `validate PATH`. Review the diff against source evidence. Add honest `coverage` and `summary`, then set `reviewed: true`. This flag records the agent's evidence review; it does not fabricate user approval.
 5. When the memory update is authorized, `python3 memory.py promote PATH`, then `python3 memory.py export`. A stale base revision is rejected. Start a new dream and reconcile if another agent promoted first. Observations arriving after the snapshot remain pending for the next dream.
 
-Dreaming runs on demand: ask an agent to “run dream-memory over new sessions and report the memory diff.” A daily scheduled dream (`daily-memory-dream`, set 2026-10-29) runs the same candidate/review/promotion process and stays quiet on days with nothing new. No paid model run or background learning is set up.
+Dreaming runs on demand: ask an agent to “run dream-memory over new sessions and report the memory diff.” A daily scheduled dream (`daily-memory-dream`, 05:25 local, re-registered 2026-11-01) runs the same candidate/review/promotion process fully autonomously under the user's standing authorization: it promotes and exports without asking, never leaves proposals for approval, and stays quiet on days with nothing new. No paid model run or background learning is set up.
 
 ## Recovery, verification and portability
 
