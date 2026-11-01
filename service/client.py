@@ -92,6 +92,9 @@ def parser():
     observe = commands.add_parser('observe')
     observe.add_argument('path')
     observe.add_argument('file', type=Path)
+    useful = commands.add_parser('useful', help='Mark a recalled memory that helped; the dream weighs it')
+    useful.add_argument('path')
+    useful.add_argument('--why', required=True, help='How it changed what you did')
     write = commands.add_parser('write', help='Create, or update with --expected')
     write.add_argument('path')
     write.add_argument('file', type=Path)
@@ -149,6 +152,8 @@ def run(args):
         return api.call('GET', f'/v1/memory_stores/{store}/memory_versions?' + urllib.parse.urlencode(query))
     if args.command == 'observe':
         return api.call('POST', '/v1/observations', dict(path=args.path, content=args.file.read_bytes().decode()))
+    if args.command == 'useful':
+        return api.call('POST', '/v1/feedback', dict(path=args.path, why=args.why))
     if args.command == 'write':
         content = args.file.read_bytes().decode()
         if args.expected is None:

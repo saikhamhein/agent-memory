@@ -104,6 +104,18 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(self.json('status')['memories'], 1)
         self.assertEqual(self.json('status')['observations_pending'], 1)
 
+    def test_useful_logs_a_mark_and_changes_nothing(self):
+        self.server.seed('/global/keep.md', 'Keep')
+        before = self.json('status')
+        marked = self.run_client('useful', '/global/keep.md', '--why', 'It stopped a guess', role='agent-session')
+        self.assertEqual(json.loads(marked.stdout)['path'], '/global/keep.md')
+        [mark] = [e for e in self.server.recall_entries() if e['view'] == 'useful']
+        self.assertEqual((mark['client'], mark['path'], mark['why']), ('agent-session', '/global/keep.md', 'It stopped a guess'))
+        self.assertEqual(self.json('status'), before)
+        self.assertIn('404', self.run_client('useful', '/global/missing.md', '--why', 'w', role='agent-session', ok=False).stderr)
+        self.assertIn('403', self.run_client('useful', '/global/keep.md', '--why', 'w', role='reader', ok=False).stderr)
+        self.assertEqual(len(self.server.recall_entries()), 1)
+
     def test_dream_workflow(self):
         self.server.seed('/global/existing.md', 'Existing', 'Original body.')
         self.run_client('observe', '/global/candidate.md', self.file('c.md', content('Candidate')), role='agent-session')

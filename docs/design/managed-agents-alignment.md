@@ -529,7 +529,7 @@ pub fn index_md(memories: &[Memory], revision: i64, mirror_dir: &str) -> String;
 ```
 
 **MCP tools (C).** Paths are resolved to ids with one list call.
-- **The only tool set** (session credential): `memory_status`; `memory_recall(query="", project="")` (text only; the agent passes the canonical project root, X20; `role` and `topics` dropped, X25); `memory_list(path_prefix="/")`; `memory_read(path)` (live store, current content only); `memory_observe(path, content)`.
+- **The only tool set** (session credential): `memory_status`; `memory_recall(query="", project="")` (text only; the agent passes the canonical project root, X20; `role` and `topics` dropped, X25); `memory_list(path_prefix="/")`; `memory_read(path)` (live store, current content only); `memory_observe(path, content)`; `memory_useful(path, why)` (appends a `view: "useful"` line to the recall log, changes nothing; added 2026-11-01).
 - There is no maintenance mode and no `--maintenance-config`. Maintenance goes through the client CLI with `maintainer.json` (§3.4).
 - A 409 becomes a ToolError that names its type and paths and says to re-read and retry.
 
@@ -678,7 +678,7 @@ Shared helpers, each built once:
 
 **C (`test_mcp.py`, `test_client.py`, `test_memory.py`, against the real server through `harness.py`)**
 
-1. `session_catalog`: exactly 5 tools (`memory_status`, `memory_recall`, `memory_list`, `memory_read`, `memory_observe`); recall returns text with no `structuredContent`; the adapter has no `--maintenance-config` option.
+1. `session_catalog`: exactly 6 tools (`memory_status`, `memory_recall`, `memory_list`, `memory_read`, `memory_observe`, `memory_useful`); recall returns text with no `structuredContent`; the adapter has no `--maintenance-config` option.
 2. `observe_only`: `memory_observe` succeeds, and the observation's `created_by` is `token:agent-session`. `memory_read` of a `memver_` id is refused.
 3. `write_by_path` (client CLI with `maintainer.json`):
    - create;
