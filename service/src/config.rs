@@ -28,6 +28,9 @@ pub struct Token {
 pub struct Config {
     pub listen: SocketAddr,
     pub database: PathBuf,
+    /// Directory holding the read-only mirror; defaults to `mnt` next to the database.
+    #[serde(default)]
+    pub mount: Option<PathBuf>,
     #[serde(default)]
     pub projects: BTreeMap<String, String>,
     pub tokens: Vec<Token>,
@@ -43,6 +46,10 @@ impl Config {
         anyhow::ensure!(
             self.database.is_absolute(),
             "database must be an absolute path"
+        );
+        anyhow::ensure!(
+            self.mount.as_ref().is_none_or(|m| m.is_absolute()),
+            "mount must be an absolute path"
         );
         anyhow::ensure!(
             !self.tokens.is_empty(),
@@ -71,5 +78,10 @@ impl Config {
             absolute_path(path)?;
         }
         Ok(())
+    }
+    pub fn mount_dir(&self) -> PathBuf {
+        self.mount
+            .clone()
+            .unwrap_or_else(|| self.database.with_file_name("mnt"))
     }
 }
