@@ -45,14 +45,14 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 Reports:
 - Review 3 done: 1 blocker (default MCP install registers the maintainer token for every session, so any injected session can write, delete, redact or adopt live memory), 7 should-fix, 8 later, 14 removable items. File: `/tmp/claude-1000/-home-sai-Projects-agent-memory--claude-worktrees-sleepy-antonelli-01c285/ec71ef4b-fcb2-4f2d-9792-397bfe038dc0/scratchpad/review-security-api-simplicity.md`, with a copy in the shared notes folder. The coordinator found the same blocker independently and asked the user whether ordinary sessions should be read-and-suggest only.
 
-- Dream handover from session `local_75db75dc-b488-4b0b-ba64-59e58d5c83fd` (2026-11-01), items for triage:
+- Dream handover from session `local_75db75dc-b488-4b0b-ba64-59e58d5c83fd` (2026-11-01; it had not seen the v2 work, so the user said to weigh it with caution). Items for triage:
   1. the skill owns the procedure, and the task prompt keeps only run specifics (authorization, out of scope, quiet day, recall-usage check, report);
   2. review the full memory set every run, and adopt only when something changes;
   3. a session-reading script (Claude, Codex and DeepSeek formats; files that catalog.py marked changed);
   4. last dream time from `GET /v1/dreams`, and an id-level diff summary;
   5. maintenance via the CLI with files, which PR 18 already settles;
   6. the task prompt hard-codes v1, so the cutover must copy `ops/daily-memory-dream.md` into the task in the same step (design §5 step 8).
-  Items 1 and 2 must land in `ops/daily-memory-dream.md` and the skill before cutover, so the cutover carries them.
+  The coordinator keeps 1 and 2 on its own judgment (one source of procedure; stale memories cleaned on quiet days), so they land in `ops/daily-memory-dream.md` and the skill before cutover. Items 3 and 4 are advisory and the triage lead decides them.
   Live task: `daily-memory-dream` at 05:25 local, prompt `~/.claude/scheduled-tasks/daily-memory-dream/SKILL.md`.
 
 Then a fresh triage lead classes the findings: (a) fix before release, (b) small fix, (c) later.
