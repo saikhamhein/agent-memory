@@ -1,184 +1,98 @@
-import concurrent.futures
-import importlib.util
-import json
-import os
+"""memory.py is a stub that forwards `recall` to the HTTP client (design §3.3, §4.3 C.8).
+
+The loader lines in ~/.codex/AGENTS.md and ~/.dsh/AGENTS.md run `python3 …/memory.py recall …`
+and must keep working unchanged. The service is the only storage, so there is no storage to test here.
+"""
 from pathlib import Path
-import sqlite3
 import subprocess
 import sys
-import tempfile
 import unittest
 
-import memory
+from service.tests.harness import start_server
+
+STUB = Path(__file__).resolve().parent / 'memory.py'
+CLIENT = STUB.parent / 'service' / 'client.py'
 
 
-def item(name='example', kind='global', value=None):
-    return {'id': name, 'title': name, 'body': 'Check existing evidence before asking.',
-            'scope': {'kind': kind, **({'value': value} if value else {})},
-            'confidence': 'explicit', 'tags': ['evidence'],
-            'evidence': [{'source': 'test', 'locator': 'fixture:1', 'note': 'Test-only evidence'}]}
-
-
-class MemoryTests(unittest.TestCase):
+class StubTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-        self.db = memory.connect(self.root)
+        self.server = start_server(self)
+        self.server.seed('/global/keep.md', 'Keep it simple', 'Remove what is not needed.', pinned=True)
+        self.server.seed('/global/zebrafish.md', 'Zebrafish husbandry', 'Zebrafish tanks need weekly water changes.')
+        self.home, self.env = self.server.home()  # default client config under a throwaway HOME
+        self.cwd = self.server.root / 'cwd'
+        self.cwd.mkdir()
 
-    def tearDown(self):
-        self.db.close(); self.tmp.cleanup()
+    def run_stub(self, *args):
+        return subprocess.run([sys.executable, str(STUB), *args], capture_output=True, text=True,
+                              timeout=30, env=self.env, cwd=self.cwd)
 
-    def proposal(self, items=None):
-        path = memory.new_dream(self.db, self.root)
-        p = json.loads(path.read_text())
-        p.update(memories=items or [item()], summary='Test revision', coverage='Fixture only', reviewed=True)
-        memory.atomic_json(path, p)
-        return path
+    def run_client(self, *args):
+        return subprocess.run([sys.executable, str(CLIENT), *args], capture_output=True, text=True,
+                              timeout=30, env=self.env, cwd=self.cwd)
 
-    def test_stale_promotion_and_immutable_input(self):
-        first, second = self.proposal(), self.proposal([item('second')])
-        before = first.with_name('input.json').read_bytes()
-        memory.promote(self.db, first)
-        with self.assertRaisesRegex(ValueError, 'Stale'):
-            memory.promote(self.db, second)
-        self.assertEqual(before, first.with_name('input.json').read_bytes())
-        self.assertEqual(0, json.loads(self.db.execute('SELECT body FROM revisions WHERE id=0').fetchone()[0]).__len__())
+    def test_old_loader_line_prints_the_clients_output(self):
+        old_line = ['recall', '--project', '/home/sai/Projects/agent-memory', '--query', 'zebrafish husbandry',
+                    '--limit', '12', '--budget', '12000']
+        result = self.run_stub(*old_line)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Loader lines always pass --query, so the stub prints the start view, one blank line, then the task view.
+        start = self.run_client('recall', '--project', old_line[2], '--limit', '12', '--budget', '12000').stdout
+        task = self.run_client('recall', *old_line[1:]).stdout
+        self.assertEqual(result.stdout, start + '\n' + task)
+        self.assertIn('Always apply', result.stdout)
+        self.assertIn('Remove what is not needed.', result.stdout)  # the pinned core reaches Codex and DeepSeek
+        self.assertIn('Zebrafish tanks need weekly water changes.', task)
+        self.assertEqual([e['view'] for e in self.server.recall_entries()], ['start', 'task'] * 2)
 
-    def test_candidates_are_not_retrieved_and_late_observations_survive(self):
-        self.db.execute('INSERT INTO observations VALUES (?,?,?)', ('a', memory.now(), memory.encode(item())))
-        path = self.proposal()
-        self.db.execute('INSERT INTO observations VALUES (?,?,?)', ('b', memory.now(), memory.encode(item('later'))))
-        self.assertEqual([], memory.active(self.db)[1])
-        memory.promote(self.db, path)
-        next_path = memory.new_dream(self.db, self.root)
-        snap = json.loads(next_path.with_name('input.json').read_text())
-        self.assertEqual(['b'], [o['id'] for o in snap['observations']])
+    def test_old_global_root_flag_is_ignored(self):
+        root = self.server.root / 'old-root'
+        result = self.run_stub('--root', str(root), 'recall', '--query', 'zebrafish husbandry', '--limit', '12')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, self.run_client('recall').stdout + '\n' +
+                         self.run_client('recall', '--query', 'zebrafish husbandry').stdout)
+        self.assertFalse(root.exists())
 
-    def test_retrieval_scope_expiry_and_budget(self):
-        values = [item(), item('project', 'project', '/projects/a'), item('topic', 'topic', 'burmese')]
-        expired = item('old'); expired['expires'] = '2000-01-01'; values.append(expired)
-        tentative = item('guess'); tentative['confidence'] = 'tentative'; values.append(tentative)
-        self.assertEqual(['example'], [m['id'] for m in memory.retrieve(values, '/projects/ab')])
-        selected = memory.retrieve(values, '/projects/a/src', topics=['burmese'])
-        self.assertEqual({'example', 'project', 'topic'}, {m['id'] for m in selected})
-        self.assertLessEqual(len(memory.render(selected, 1, 350)), 350)
+    def test_start_view_and_client_label(self):
+        result = self.run_stub('recall', '--client', 'session-start', '--project', '/home/sai/x')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.startswith('# Shared agent memory — revision'))
+        self.assertIn('Remove what is not needed.', result.stdout)
+        self.assertEqual(result.stdout, self.run_client('recall', '--client', 'session-start', '--project', '/home/sai/x').stdout)
+        self.assertEqual([e['client'] for e in self.server.recall_entries()], ['session-start', 'session-start'])
+        unrelated = self.run_stub('recall', '--query', 'kubernetes ingress yaml').stdout
+        self.assertTrue(unrelated.startswith('# Shared agent memory — revision'))  # start view, then the task view
+        self.assertTrue(unrelated.endswith('\n\nNo memory matches "kubernetes ingress yaml".\n'))
 
-    def test_recall_appends_usage_log(self):
-        memory.promote(self.db, self.proposal())
-        command = [sys.executable, str(Path(memory.__file__)), '--root', str(self.root), 'recall']
-        for extra in (['--query', 'evidence', '--project', '/projects/a'], ['--client', 'session-start']):
-            result = subprocess.run(command + extra, capture_output=True, text=True, timeout=5)
-            self.assertEqual(0, result.returncode, result.stderr)
-        log = self.root / 'recall-log.jsonl'
-        first, second = [json.loads(line) for line in log.read_text().splitlines()]
-        self.assertEqual(('cli', 'evidence', '/projects/a', 1, ['example']),
-                         (first['client'], first['query'], first['project'], first['revision'], first['returned']))
-        self.assertEqual(len(result.stdout) - 1, second['chars'])
-        self.assertEqual('session-start', second['client'])
-        self.assertEqual(0o600, log.stat().st_mode & 0o777)
+    def test_other_commands_name_the_client_and_exit_2(self):
+        candidate = self.server.root / 'candidate.json'
+        candidate.write_text('{}')
+        for args in (['status'], ['observe', str(candidate)], ['dream'], ['promote', str(candidate)],
+                     ['rollback', '0'], ['export'], ['init'], ['validate', str(candidate)]):
+            result = self.run_stub(*args)
+            self.assertEqual(result.returncode, 2, args)
+            self.assertIn('agent-memory-client', result.stderr, args)
+            self.assertEqual(result.stdout, '', args)
+        self.assertEqual(self.server.api('GET', '/v1/status')[1]['observations_pending'], 0)
 
-    def test_concurrent_observations(self):
-        def save(i):
-            db = memory.connect(self.root)
-            db.execute('INSERT INTO observations VALUES (?,?,?)', (str(i), memory.now(), memory.encode(item())))
-            db.close()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(save, range(32)))
-        self.assertEqual(32, self.db.execute('SELECT COUNT(*) FROM observations').fetchone()[0])
+    def test_service_down_is_an_error_not_an_empty_recall(self):
+        self.server.stop()
+        result = self.run_stub('recall', '--project', '/home/sai/x', '--limit', '12', '--budget', '12000')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('Error:', result.stderr)
 
-    def test_readonly_commands_without_filesystem_write_access(self):
-        proposal = self.proposal()
-        memory.promote(self.db, proposal)
-        self.db.close()
-        database = self.root / 'memory.sqlite3'
-        before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns)
-                  for p in self.root.iterdir() if p.is_file()}
-        database.chmod(0o444)
-        self.root.chmod(0o555)
-        try:
-            if os.access(self.root, os.W_OK) or os.access(database, os.W_OK):
-                self.skipTest('This user can override filesystem permissions')
-            command = [sys.executable, str(Path(memory.__file__)), '--root', str(self.root)]
-            for args in (['recall', '--json'], ['status'], ['diff', str(proposal)],
-                         ['validate', str(proposal)]):
-                with self.subTest(command=args[0]):
-                    result = subprocess.run(command + args, capture_output=True, text=True, timeout=5)
-                    self.assertEqual(0, result.returncode, result.stderr)
-                    if args[0] == 'recall':
-                        self.assertEqual({'revision': 1, 'memories': [item()]}, json.loads(result.stdout))
-            after = {p.name: (p.read_bytes(), p.stat().st_mtime_ns)
-                     for p in self.root.iterdir() if p.is_file()}
-            self.assertEqual(before, after)
-        finally:
-            self.root.chmod(0o700)
-            database.chmod(0o600)
+    def test_stub_creates_no_files(self):
+        self.run_stub('recall')
+        self.run_stub('status')
+        self.assertEqual(list(self.cwd.iterdir()), [])  # no database, log or other file appears beside it
 
-    def test_readonly_connection_rejects_writes_and_sees_new_commits(self):
-        reader = memory.connect(self.root, readonly=True)
-        try:
-            with self.assertRaises(sqlite3.OperationalError):
-                reader.execute("UPDATE state SET value=0 WHERE key='active'")
-            self.db.execute('BEGIN IMMEDIATE')
-            try:
-                self.assertEqual((0, []), memory.active(reader))
-            finally:
-                self.db.rollback()
-            memory.promote(self.db, self.proposal())
-            self.assertEqual((1, [item()]), memory.active(reader))
-        finally:
-            reader.close()
 
-    def test_readonly_commands_do_not_create_missing_store(self):
-        root = self.root / 'missing'
-        for command in ('recall', 'status'):
-            result = subprocess.run([sys.executable, str(Path(memory.__file__)),
-                                     '--root', str(root), command], capture_output=True)
-            self.assertNotEqual(0, result.returncode)
-            self.assertFalse(root.exists())
-
-    def test_wal_migration_preserves_store(self):
-        self.db.execute('PRAGMA journal_mode=WAL')
-        memory.promote(self.db, self.proposal())
-        before = list(self.db.iterdump())
-        self.db.close()
-        result = subprocess.run([sys.executable, str(Path(memory.__file__)),
-                                 '--root', str(self.root), 'init'], capture_output=True, text=True)
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.db = memory.connect(self.root, readonly=True)
-        self.assertEqual('delete', self.db.execute('PRAGMA journal_mode').fetchone()[0])
-        self.assertEqual(before, list(self.db.iterdump()))
-
-    def test_readonly_uri_escapes_path(self):
-        root = self.root / 'store ?#%'
-        writer = memory.connect(root)
-        writer.close()
-        reader = memory.connect(root, readonly=True)
-        try:
-            self.assertEqual((0, []), memory.active(reader))
-        finally:
-            reader.close()
-
-    def test_rollback_preserves_history_and_rejects_wrong_head(self):
-        memory.promote(self.db, self.proposal())
-        command = [sys.executable, str(Path(memory.__file__)), '--root', str(self.root),
-                   'rollback', '0', '--reason', 'Test restore', '--expected']
-        self.assertNotEqual(0, subprocess.run(command + ['0'], capture_output=True).returncode)
-        self.assertEqual(0, subprocess.run(command + ['1'], capture_output=True).returncode)
-        self.assertEqual((2, []), memory.active(self.db))
-        self.assertEqual(3, self.db.execute('SELECT COUNT(*) FROM revisions').fetchone()[0])
-
-    def test_validation_and_review_gates(self):
-        invalid = item(); invalid['evidence'] = []
-        with self.assertRaises(ValueError): memory.validate([invalid])
-        with self.assertRaises(ValueError): memory.validate([item(), item()])
-        secret = item(); secret['body'] = 'api_key=' + 'x' * 30
-        with self.assertRaises(ValueError): memory.validate([secret])
-        path = self.proposal(); p = json.loads(path.read_text()); p['reviewed'] = False
-        memory.atomic_json(path, p)
-        with self.assertRaises(ValueError): memory.promote(self.db, path)
-        p['reviewed'] = True; p['conflicts'] = [{'status': 'unresolved'}]
-        memory.atomic_json(path, p)
-        with self.assertRaises(ValueError): memory.promote(self.db, path)
+class StubSourceTests(unittest.TestCase):
+    def test_stub_has_no_storage(self):
+        source = STUB.read_text()
+        self.assertNotIn('sqlite3', source)
+        self.assertLessEqual(len(source.splitlines()), 40)  # design §3.3 calls for a ~20-line stub
 
 
 if __name__ == '__main__':

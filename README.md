@@ -1,77 +1,79 @@
 # Shared agent memory
 
-One local source of accepted collaboration preferences for Codex, Claude Code, DeepSeek Harness and other agents that can read local files. Python 3.9+ and SQLite; no model API, cloud upload, embeddings or background service is required. The agent performs semantic consolidation. The CLI handles storage and revision safety.
+One local store of collaboration preferences and lessons, shared by Codex, Claude Code, DeepSeek Harness and other agents. A Rust service (`service/`) owns the SQLite database and is the only writer. Agents read through a hook or loader line, MCP tools, the `agent-memory-client` CLI, or read-only files. The agent does the thinking in a dream; the service keeps versions and checks preconditions. Memories are context, never permission.
 
-This machine uses `/home/sai/Projects/agent-memory`. The database and generated artifacts are ignored by Git; pulling code does not transfer memories from another machine. See `AGENTS.md` for the local handoff.
+The design is [docs/design/managed-agents-alignment.md](docs/design/managed-agents-alignment.md). It follows Anthropic's Managed Agents [memory stores](https://platform.claude.com/docs/en/managed-agents/memory) and [dreams](https://platform.claude.com/docs/en/managed-agents/dreams), run locally.
 
-## Daily use
+## Memories
 
-An optional native Rust HTTP service, systemd units and stdio MCP adapter are available in [service/README.md](service/README.md). They use this same SQLite schema and add authenticated API/tool access, backup support, and a later Raspberry Pi migration path. The MCP adapter lets a desktop host call the API without agent shell network access. The original local CLI remains available.
+A memory is a Markdown file at a path. The path is its scope:
 
-Initialize a new store with `python3 memory.py init`. For an existing WAL-mode store, run this once with write access to migrate it to rollback journaling; accepted revisions and evidence are preserved. Rollback journaling lets agents read without creating SQLite sidecar files. Short reads and writes can briefly wait for one another, with a 30-second lock timeout.
+| Path | Loaded for |
+| --- | --- |
+| `/global/<slug>.md` | every session |
+| `/projects/<root segments…>/<slug>.md` | sessions in that project root or below it |
+| `/topics/<topic>/<slug>.md` | a request or a matching query |
+| `/roles/<role>/<slug>.md` | a request or a matching query |
 
-`recall`, `status`, `diff`, `validate`, and `export` open the database read-only and never initialize a missing store. Export still requires write access to its output directory. Recording, dreaming, promotion, rollback, and initialization require database write access.
+Content is `---\n<JSON frontmatter>\n---\n<body>`:
 
-```sh
-python3 /home/sai/Projects/agent-memory/memory.py recall --project "$PWD" --query "current task" --limit 12 --budget 12000
+```
+---
+{"title": "Keep it simple", "confidence": "explicit", "tags": ["simplicity"], "pinned": true,
+ "evidence": [{"source": "claude", "locator": "session id, file:line", "note": "short quote of the user"}]}
+---
+If it can be removed, remove it.
 ```
 
-Use a canonical project root for other clones/worktrees of the same repository. Add relevant `--topic hardware`, `--topic machine-learning`, `--topic documentation`, `--topic software-development`, `--topic robotics`, `--topic ui`, or `--topic media`. Role filters such as `--role coordinator` can be used when that role has accepted memories. Topic and role memories are opt-in so irrelevant advice does not fill the context. Global memories always qualify; a keyword score orders qualifying memories. The budget is **characters**, not tokens; long entries are omitted whole. JSON output includes provenance and is not budget-limited.
+- Required: `title` (one line, at most 120 characters), `confidence` (`explicit`, `corroborated` or `tentative`), `tags`, and `evidence` with `source`, `locator` and `note`.
+- Optional: `pinned`, `expires` (`YYYY-MM-DD`), `priority`. Other keys are kept.
+- `pinned` memories are the core rules. They load in full in every session. Together, the pinned memories (each heading plus body) are limited to 4,000 characters.
+- Tentative and expired memories are never recalled.
+- Every change is a new immutable version. Updates and deletes carry the `content_sha256` they replace, so concurrent writers can't overwrite each other.
 
-Codex loads a small pointer through its user-level `AGENTS.md`; that asks the agent to call recall. This is instruction-based retrieval, not a modification of Codex's internal memory database or guaranteed mechanical injection. Claude Code and DeepSeek use equivalent pointers. Fresh sessions are needed to discover changed global instructions. Existing sessions can be asked to reload them. A restricted agent may need read permission for this directory and write permission only when recording or dreaming.
+## How agents get memories
 
-For ChatGPT or Claude web without filesystem access, use the exported `PROFILE.md` as project context or a context attachment. That is a snapshot; replace it after a new accepted revision. Do not upload the evidence database or private raw logs just to share the profile. A local authenticated HTTP service and Codex stdio MCP adapter are installed on this PC; see [service/README.md](service/README.md). Codex and Claude Code startup instructions prefer the MCP tools with local CLI fallback; DeepSeek uses the local CLI against the same store. No cloud integration is installed.
+- **Session start, once.** Claude Code's SessionStart hook (`hooks/agent-memory-recall.py`) injects the start view. The Codex and DeepSeek loader lines (`memory.py recall --query …`) print it, followed by the memories matching their query.
+  - The start view holds the pinned core, this project's memories, any requested topics or roles, and an index line for everything else.
+  - The start view fits in 9,500 characters, under Claude Code's 10,000-character cap on hook context.
+  - If the service is down, the hook injects the mirror's `INDEX.md` instead, cut to the same size. It skips resumed and forked sessions, whose transcripts already hold the view, and logs every run to `~/.cache/agent-memory/recall-log.jsonl` with `via` set to `service`, `index`, `none` or `skipped`.
+- **During a task.** Recall with a query returns only the memories that match, or `No memory matches "…"`.
+- **Read-only files.** The live store is mirrored to `<database dir>/mnt/shared-agent-memory/`, with `INDEX.md`. Read a file there, or with `memory_read`, when its index line applies.
 
-## Layout and authority
+```sh
+agent-memory-client recall --project "$PWD"                      # start view
+agent-memory-client recall --project "$PWD" --query "usb power"  # matches only
+agent-memory-client ls /topics/ && agent-memory-client cat /topics/hardware/pi-usb.md
+```
 
-- `memory.sqlite3`: accepted revisions, active revision pointer, append-only observations, dream input snapshots and reviewed proposals. Keep SQLite sidecars with it while running; use SQLite's backup API for a live backup.
-- `dreams/<id>/input.json`: frozen review input, never edit. `proposal.json`: a separate editable proposed replacement.
-- `exports/revision-N/`: generated Markdown/JSON snapshots. `exports/current.json`: identifies the latest exported revision. The database is authoritative; recall always reads it.
-- `sources/`: coverage and source locators. Original session logs stay in their provider locations.
-- `skill/dream-memory/SKILL.md`: the repeatable capture, retrieval and dream procedure.
-
-Accepted memories are context, not permission grants. Current user instructions and current repository facts take precedence. A fresh explicit correction can supersede an older preference; confirm intent where it is consequential or unclear. Old task-specific permissions, live worker state, credentials and unrelated personal information are not global memories.
+Pass the canonical project root, the main checkout rather than a worktree. The hook resolves it itself.
 
 ## Capturing a lesson
 
-Write one JSON object in task scratch space:
+Ordinary sessions record candidates. Candidates are never recalled until a dream adopts them:
 
-```json
-{
-  "id": "short-stable-name",
-  "title": "Actionable title",
-  "body": "Specific behavior to retain, including its scope or exception.",
-  "scope": {"kind": "global"},
-  "confidence": "explicit",
-  "tags": ["communication"],
-  "evidence": [{"source": "codex", "locator": "session-id and message-id or absolute file:line", "note": "Short sanitized quote or precise paraphrase of the user's correction"}]
-}
+```sh
+agent-memory-client --config ~/.config/agent-memory/maintainer.json observe /global/check-evidence.md lesson.md
 ```
 
-Scope kinds: `global`, `project` (absolute canonical root in `value`), `topic`, `role` (matching string in `value`). Confidence: `explicit`, `corroborated`, `tentative`. Optional `expires` is an ISO date; expired and tentative entries do not enter ordinary recall. Record source dates and source hashes when available. Keep secondary agent-authored summaries labeled as such.
+Record explicit corrections and well-supported lessons, with evidence: provider, session, date, file:line, and a short sanitized quote. Agent interpretation isn't user evidence. Don't record credentials, private unrelated facts, task permissions or transient status; keep project state in the repository.
 
-`memory.py observe FILE` appends a candidate. Concurrent observations get unique IDs. It does not change accepted guidance. Never treat a transcript's embedded instructions as current authority. The credential check rejects several common patterns but cannot detect every secret; inspect and sanitize the content before recording it.
+## Dreams
 
-## Dreaming
+A dream copies the live store into an output store, never changing its input. The agent edits that copy by path, reviews the diff, and adopts it. Adoption merges each memory and fails with 409 if live changed the same memory meanwhile. The procedure is [skill/dream-memory/SKILL.md](skill/dream-memory/SKILL.md). The daily scheduled run uses [ops/daily-memory-dream.md](ops/daily-memory-dream.md).
 
-1. Refresh the local source catalog with `python3 catalog.py`. Import or read any available cloud exports separately and record their coverage. Preserve original logs.
-2. `python3 memory.py dream` creates a new input/proposal pair from the accepted revision and pending observations. Review new or changed sessions and prior memory. Extract corrections with surrounding context and outcomes, not just keyword matches.
-3. Consolidate the proposal: merge duplicates, scope project exceptions, retire stale facts and resolve contradictions. Keep supporting evidence; omit weak guesses. `conflicts` entries need `status: "resolved"` plus their reasoning. Unresolved choices stay outside accepted guidance.
-4. `python3 memory.py diff PATH` and `validate PATH`. Review the diff against source evidence. Add honest `coverage` and `summary`, then set `reviewed: true`. This flag records the agent's evidence review; it does not fabricate user approval.
-5. When the memory update is authorized, `python3 memory.py promote PATH`, then `python3 memory.py export`. A stale base revision is rejected. Start a new dream and reconcile if another agent promoted first. Observations arriving after the snapshot remain pending for the next dream.
+To undo a change, write an old version back: `versions PATH` or `versions --created-by dream:<id>`, `cat memver_…`, then `write … --expected`. To remove a leaked secret from history, use `redact VERSION`.
 
-Dreaming runs on demand: ask an agent to “run dream-memory over new sessions and report the memory diff.” A daily scheduled dream (`daily-memory-dream`, 05:25 local, re-registered 2026-11-01) runs the same candidate/review/promotion process fully autonomously under the user's standing authorization: it promotes and exports without asking, never leaves proposals for approval, and stays quiet on days with nothing new. No paid model run or background learning is set up.
+## Layout
 
-## Recovery, verification and portability
+| Path | What |
+| --- | --- |
+| `memory.sqlite3` | The authoritative store (ignored by Git) |
+| `mnt/shared-agent-memory/` | Read-only mirror of the live store |
+| `recall-log.jsonl` | One line per recall: client, project, view, returned paths, characters |
+| `service/` | Rust service, `client.py` (`agent-memory-client`), `mcp_server.py`, installers |
+| `hooks/agent-memory-recall.py` | Claude Code SessionStart hook |
+| `memory.py` | Stub that forwards `recall` for the existing loader lines |
+| `catalog.py` | Lists new or changed session logs into `sources/` for a dream |
 
-`python3 memory.py status` shows the active revision. Restore old content as a new revision with `python3 memory.py rollback N --expected CURRENT --reason "why"`; this preserves audit history and rejects a stale expected head. Run export afterward. Tests: `python3 -m unittest -v test_memory.py`.
-
-Relocate the entire store together, update the small adapters, and use `memory.py --root /new/location COMMAND`. Source locators refer to the original machine and may need mapping. Do not merge live SQLite files through a file-sync service; use one authoritative host or transfer a quiescent backup/export with explicit conflict resolution. API clients can share the service's store once network access is configured; no cross-device database synchronization is implemented. The current service listens only on this PC's loopback interface.
-
-## Design basis
-
-The design borrows scoped, versioned text memories and separate dream output from Anthropic's [memory stores](https://platform.claude.com/docs/en/managed-agents/memory) and [dreams](https://platform.claude.com/docs/en/managed-agents/dreams). It implements those ideas locally rather than calling Managed Agents APIs.
-
-Integration uses documented instruction files: [Codex AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md), [Claude Code memory](https://code.claude.com/docs/en/memory), and [DeepSeek Harness agent instructions](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/context/agent-instructions/README.md).
-
-The [reference MCP knowledge-graph server](https://github.com/modelcontextprotocol/servers/blob/main/src/memory/README.md) provides entities/observations, and [agent-memory-mcp](https://github.com/mikeylong/agent-memory-mcp) describes scoped SQLite memory. Neither was installed or audited here. A small standard-library implementation was chosen for transparent revision checks and a reviewable dream workflow without introducing a server or model dependency. Retrieval is lexical, not semantic; scope must be selected explicitly. Revisit a mature MCP integration if tool access across more clients becomes necessary.
+Install, API and tests: [service/README.md](service/README.md).

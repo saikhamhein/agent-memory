@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Inventory local agent logs without copying their private contents into memory."""
+"""Inventory local agent logs without copying their private contents into memory.
+
+Writes sources/latest-catalog.json and sources/changed-sessions.json: the new or changed logs, newest first
+and at most 100, as the {source, locator, sha256} list that `agent-memory-client dream start --sessions` takes."""
 import argparse
 import hashlib
 import json
 from pathlib import Path
 import datetime as dt
+
+MAX_SESSIONS = 100  # a dream takes at most 100 session locators
 
 
 def scan(home):
@@ -56,8 +61,12 @@ def main():
     (out / ('catalog-' + stamp + '.json')).write_text(text)
     temporary = out / ('latest-' + stamp + '.tmp')
     temporary.write_text(text); temporary.replace(previous_path)
+    changed = sorted((f for f in result['files'] if f['changed_since_previous_scan']), key=lambda f: -f['mtime_ns'])
+    sessions = [{'source': f['provider'], 'locator': f['path'], 'sha256': f['sha256']} for f in changed[:MAX_SESSIONS]]
+    (out / 'changed-sessions.json').write_text(json.dumps(sessions, indent=2) + '\n')
     print(json.dumps({'files': len(result['files']), 'changed': sum(f['changed_since_previous_scan'] for f in result['files']),
-                      'errors': len(result['errors']), 'catalog': str(previous_path)}))
+                      'errors': len(result['errors']), 'catalog': str(previous_path),
+                      'sessions': str(out / 'changed-sessions.json'), 'sessions_left_out': max(0, len(changed) - MAX_SESSIONS)}))
 
 
 if __name__ == '__main__':
