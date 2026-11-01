@@ -64,7 +64,7 @@ Record explicit corrections and well-supported lessons, with evidence: provider,
 
 Dreams use the maintenance credential, `agent-memory-client --config ~/.config/agent-memory/maintainer.json`. One dream runs at a time. It copies the live store into an output store, never changing its input. The agent reviews the whole store and the pending observations, edits that copy by path, checks the diff, and adopts it, or cancels when nothing changed. Adoption merges each memory and fails with 409 if live changed the same memory meanwhile. Adopting or canceling empties the output store. The procedure is [skill/dream-memory/SKILL.md](skill/dream-memory/SKILL.md). The daily scheduled run uses [ops/daily-memory-dream.md](ops/daily-memory-dream.md).
 
-To undo a change, write an old version back with the maintenance credential: `versions PATH` or `versions --created-by dream:<id>`, `cat memver_…`, then `write … --expected`. To remove a leaked secret from history, use `redact VERSION`.
+To undo a change, write an old version back with the maintenance credential: `versions PATH` or `versions --created-by dream:<id>`, `cat memver_…`, then `write … --expected`. To remove a leaked secret, write a clean version, then `redact` the old version (`memver_…`) or the observation id.
 
 ## Layout
 

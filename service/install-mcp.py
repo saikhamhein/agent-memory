@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Install the stdio memory adapter and register it in the current user's Codex config.
+"""Install the stdio memory adapter and register it for Codex and, at user scope, Claude Code.
 
 It registers the session credential (client.json) only; maintenance runs through agent-memory-client.
-Claude Code's registration in ~/.claude.json runs the same installed file."""
+A matching registration is left alone, an older one of ours is replaced, and an unrelated one is refused."""
 import argparse
 import json
 import os
@@ -44,16 +44,27 @@ def main():
         backup.unlink(missing_ok=True)
         with os.fdopen(os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb') as f:
             f.write(codex_config.read_bytes())
-    # Do not silently replace an unrelated server with the same name.
+    python, wanted = str(venv / 'bin/python'), [str(executable), '--config', str(config_dir / 'client.json')]
+    # Leave a matching entry alone, replace our own older one, and never replace an unrelated server.
     existing = subprocess.run(['codex', 'mcp', 'get', 'shared_memory', '--json'], capture_output=True, text=True)
     if existing.returncode == 0:
         entry = json.loads(existing.stdout)
         transport = entry.get('transport', entry)
         if str(executable) not in transport.get('args', []):
-            parser.error('An unrelated shared_memory MCP server already exists; registration not changed')
-    command = ['codex', 'mcp', 'add', 'shared_memory', '--', str(venv / 'bin/python'),
-               str(executable), '--config', str(config_dir / 'client.json')]
-    subprocess.run(command, check=True)
+            parser.error('An unrelated shared_memory MCP server already exists in Codex; registration not changed')
+    if existing.returncode != 0 or [transport.get('command'), *transport.get('args', [])] != [python, *wanted]:
+        subprocess.run(['codex', 'mcp', 'add', 'shared_memory', '--', python, *wanted], check=True)
+    if shutil.which('claude'):  # user scope, through the CLI: ~/.claude.json is never edited here
+        existing = subprocess.run(['claude', 'mcp', 'get', 'shared_memory'], capture_output=True, text=True)
+        fields = dict(line.strip().split(': ', 1) for line in existing.stdout.splitlines() if ': ' in line)
+        ours = fields.get('Scope', '').startswith('User') and str(executable) in fields.get('Args', '')
+        if existing.returncode == 0 and not ours:
+            parser.error('Claude Code has a shared_memory MCP server this installer did not add; registration not changed')
+        if existing.returncode != 0 or (fields.get('Command'), fields.get('Args')) != (python, ' '.join(wanted)):
+            if existing.returncode == 0:
+                subprocess.run(['claude', 'mcp', 'remove', 'shared_memory', '--scope', 'user'], check=True)
+            subprocess.run(['claude', 'mcp', 'add', '--scope', 'user', 'shared_memory', '--', python, *wanted],
+                           check=True)
     print('Registered shared_memory. Reload MCP servers in the desktop client before using it.')
 
 

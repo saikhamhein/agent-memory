@@ -19,7 +19,7 @@ The Python suites start the release binary on a temporary store through `service
 
 ```sh
 python3 service/install-user.py --database "$PWD/memory.sqlite3"   # add --migrate --pin SLUG… once for a v1 database
-python3 service/install-mcp.py                                     # MCP adapter, session credential only
+python3 service/install-mcp.py                                     # MCP adapter for Codex and Claude Code (user scope)
 ln -sfn "$PWD/hooks/agent-memory-recall.py" ~/.claude/hooks/agent-memory-recall.py
 systemctl --user is-active agent-memory && agent-memory-client status
 ```
@@ -49,7 +49,7 @@ The client uses `client.json` by default, which allows `status`, `recall`, `ls`,
 | `versions [PATH] [--created-by ACTOR] [--store S]` | Version history, newest first |
 | `observe PATH FILE` | Records a candidate |
 | `write PATH FILE [--expected SHA] [--to NEW] [--store S]` | Creates; with `--expected`, updates or renames |
-| `rm PATH [--expected SHA] [--store S]`, `redact VERSION` | Deletes a memory; erases an old version's content |
+| `rm PATH [--expected SHA] [--store S]`, `redact ID` | Deletes a memory; erases an old version's content (`memver_…`) or an observation's body |
 | `dream start [--sessions FILE]`, `dream show [ID] [--diff]`, `dream adopt ID REVIEW.json`, `dream cancel ID` | The dream cycle |
 
 `--store` is `live` or a dream's output store id. Old `--limit`, `--budget` and `--json` flags on `recall` are accepted and ignored. Errors print `Error: …` and exit 1. The client never falls back to another store.
@@ -58,7 +58,7 @@ The client uses `client.json` by default, which allows `status`, `recall`, `ls`,
 
 The MCP host launches `mcp_server.py --config client.json`. The adapter has the session tools only, on the live store: `memory_status`, `memory_recall(query, project)`, `memory_list(path_prefix)`, `memory_read(path)` and `memory_observe(path, content)`. Pass `project` as the canonical project root, or recall returns no project memories. Recall returns text; every other tool returns the API's JSON as text. There is no maintenance mode: dreams run through the client.
 
-`install-mcp.py` registers it for Codex and keeps one copy of the previous Codex config at `runtime/codex-config.toml`.
+`install-mcp.py` registers it with `codex mcp` and `claude mcp --scope user` (never by editing `~/.claude.json`), leaves a matching entry alone, replaces an older one of its own, refuses an unrelated one, and keeps one copy of the previous Codex config at `runtime/codex-config.toml`. New sessions pick it up; an open one needs `/mcp reconnect`.
 
 A 409 becomes a tool error that names its type and paths and says to re-read and retry. An unreachable service is a tool error, never an empty result. If tools are missing in a desktop app after an install, restart the app.
 
@@ -105,7 +105,7 @@ umask 077
 To move hosts:
 1. Stop the old service, make a final backup and transfer it.
 2. Build the same locked source natively on the 64-bit Pi.
-3. Install it with `deploy/agent-memory.service` and a `server.toml` based on `deploy/server.example.toml`.
+3. Install it with `deploy/agent-memory.service` and a `server.toml` based on `deploy/server.example.toml`, which shows how to make each token.
 4. Start only the new service, then point each client's `url` at it.
 
 HTTP is unencrypted, so on an untrusted LAN use an SSH tunnel or an HTTPS proxy. ARM hardware is untested.

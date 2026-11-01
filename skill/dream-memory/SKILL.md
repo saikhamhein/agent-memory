@@ -39,10 +39,12 @@ Only the daily scheduled dream, or a dream the user asks for, runs this. It uses
    - Ones with `created_by` `token:agent-session` came from ordinary sessions: suggestions, not evidence. Check each one's evidence locator against the user's own words in that transcript.
    - Keep one by writing it into the output store, on its own or merged into an existing memory.
    - Drop one that cites no user message, and say so in `coverage`.
+   - An observation holding a credential: `agent-memory-client --config ~/.config/agent-memory/maintainer.json redact OBSERVATION_ID`, then drop it.
 6. **Review the whole store, every run,** not only today's changes. List and read it with `ls --store OUT` and `cat PATH --store OUT`; change it with `write PATH FILE --store OUT` (new), `write PATH FILE --expected SHA [--to NEW] --store OUT` (update or move) and `rm PATH --expected SHA --store OUT`, each after `agent-memory-client --config ~/.config/agent-memory/maintainer.json`.
    - Turn kept observations and new lessons into short, actionable memories. Merge near-duplicates, and put each under the narrowest path that fits (global, project, topic or role).
    - Slugs are unique across the store, because memories and prompts refer to each other by slug (`self-improve-memory-setup`). Give project memories a project prefix. A 409 `slug_exists` names the memory that holds it: merge into it or pick another slug.
    - Expire or delete stale facts. Keep evidence for every retained rule.
+   - A credential in a live memory: write a clean version, adopt, then `redact` the old `memver_…` version (the current one can't be redacted).
    - Resolve contradictions with dated direct evidence, and record each in `conflicts` as `{"status": "resolved", …}` with the reasoning.
    - When a rule existed but didn't trigger or wasn't applied, fix its wording or trigger. Every agent loads the store at session start, so this is the fix.
    - `pinned` marks the core rules. Change a pinned memory, or the pinned set, only on the user's own words. Together, pinned memories (heading plus body) stay within 4,000 characters.

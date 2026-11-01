@@ -100,8 +100,8 @@ def parser():
     rm = commands.add_parser('rm')
     rm.add_argument('path')
     rm.add_argument('--expected')
-    redact = commands.add_parser('redact')
-    redact.add_argument('version')
+    redact = commands.add_parser('redact', help='Erase an old memory version (memver_…) or an observation')
+    redact.add_argument('id')
     for command in (ls, cat, versions, write, rm):
         command.add_argument('--store', default='live')
     dream = commands.add_parser('dream').add_subparsers(dest='action', required=True)
@@ -165,7 +165,9 @@ def run(args):
             target += '?expected_content_sha256=' + q(args.expected)
         return api.call('DELETE', target)
     if args.command == 'redact':
-        return api.call('POST', f'/v1/memory_stores/live/memory_versions/{q(args.version)}/redact', {})
+        if args.id.startswith('memver_'):
+            return api.call('POST', f'/v1/memory_stores/live/memory_versions/{q(args.id)}/redact', {})
+        return api.call('POST', f'/v1/observations/{q(args.id)}/redact', {})
     if args.action == 'start':
         return api.call('POST', '/v1/dreams', dict(sessions=json.loads(args.sessions.read_text()) if args.sessions else []))
     if args.action == 'show':
