@@ -50,7 +50,9 @@ fn content_with(title: &str, body: &str, extra: Value) -> String {
 /// Pinned cost of a memory (design §3.1, `model::block_len`): the characters of the block recall prints for it,
 /// `### {title} [{path}]\n{body}\n\n`, with the body's trailing whitespace trimmed. Written out here on purpose.
 fn block_len(title: &str, path: &str, body: &str) -> usize {
-    format!("### {title} [{path}]\n{}\n\n", body.trim_end()).chars().count()
+    format!("### {title} [{path}]\n{}\n\n", body.trim_end())
+        .chars()
+        .count()
 }
 
 fn content(title: &str, body: &str) -> String {
@@ -115,7 +117,13 @@ impl Fx {
         let app = api::router(config(&db, &mnt), store);
         Fx { tmp, app, db, mnt }
     }
-    async fn call(&self, method: &str, path: &str, token: &str, body: Value) -> (StatusCode, Value) {
+    async fn call(
+        &self,
+        method: &str,
+        path: &str,
+        token: &str,
+        body: Value,
+    ) -> (StatusCode, Value) {
         call(&self.app, method, path, Some(token), body).await
     }
     /// Setup call by the admin token that must succeed with 200.
@@ -144,10 +152,13 @@ impl Fx {
         self.ok("POST", "/v1/dreams", json!({"sessions": []})).await
     }
     async fn adopt(&self, token: &str, id: &str) -> (StatusCode, Value) {
-        self.call("POST", &format!("/v1/dreams/{id}/adopt"), token, review()).await
+        self.call("POST", &format!("/v1/dreams/{id}/adopt"), token, review())
+            .await
     }
     async fn status(&self) -> Value {
-        self.call("GET", "/v1/status", "reader", Value::Null).await.1
+        self.call("GET", "/v1/status", "reader", Value::Null)
+            .await
+            .1
     }
     /// An independent `Store` on the same database, as the oracle for what the service holds.
     fn oracle(&self) -> Store {
@@ -159,12 +170,28 @@ fn review() -> Value {
     json!({"summary": "Test adoption", "coverage": "Fixtures only", "conflicts": [], "reviewed": true})
 }
 
-async fn call(app: &Router, method: &str, path: &str, token: Option<&str>, body: Value) -> (StatusCode, Value) {
-    let bytes = if body.is_null() { Vec::new() } else { body.to_string().into_bytes() };
+async fn call(
+    app: &Router,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    body: Value,
+) -> (StatusCode, Value) {
+    let bytes = if body.is_null() {
+        Vec::new()
+    } else {
+        body.to_string().into_bytes()
+    };
     call_bytes(app, method, path, token, bytes).await
 }
 
-async fn call_bytes(app: &Router, method: &str, path: &str, token: Option<&str>, body: Vec<u8>) -> (StatusCode, Value) {
+async fn call_bytes(
+    app: &Router,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    body: Vec<u8>,
+) -> (StatusCode, Value) {
     let mut builder = Request::builder()
         .method(method)
         .uri(path)
@@ -172,28 +199,46 @@ async fn call_bytes(app: &Router, method: &str, path: &str, token: Option<&str>,
     if let Some(t) = token {
         builder = builder.header("authorization", format!("Bearer {t}"));
     }
-    let response = app.clone().oneshot(builder.body(Body::from(body)).unwrap()).await.unwrap();
+    let response = app
+        .clone()
+        .oneshot(builder.body(Body::from(body)).unwrap())
+        .await
+        .unwrap();
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or(json!(String::from_utf8_lossy(&bytes))))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(json!(String::from_utf8_lossy(&bytes))),
+    )
 }
 
 fn assert_conflict(result: &(StatusCode, Value), kind: &str, paths: Option<&[&str]>) {
     let (code, body) = result;
     assert_eq!(*code, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["type"], kind, "{body}");
-    assert!(body["error"].as_str().is_some_and(|s| !s.is_empty()), "{body}");
+    assert!(
+        body["error"].as_str().is_some_and(|s| !s.is_empty()),
+        "{body}"
+    );
     // §4.1: every 409 carries `paths` except store_archived.
     if kind == "store_archived" {
         assert!(body.get("paths").is_none(), "{body}");
     } else if let Some(paths) = paths {
-        let mut got: Vec<_> = body["paths"].as_array().into_iter().flatten().cloned().collect();
+        let mut got: Vec<_> = body["paths"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
         got.sort_by_key(ToString::to_string);
         let mut want: Vec<_> = paths.iter().map(|p| json!(p)).collect();
         want.sort_by_key(ToString::to_string);
         assert_eq!(got, want, "{body}");
     } else {
-        assert!(body["paths"].as_array().is_some_and(|p| !p.is_empty()), "{body}");
+        assert!(
+            body["paths"].as_array().is_some_and(|p| !p.is_empty()),
+            "{body}"
+        );
     }
 }
 
@@ -241,54 +286,212 @@ impl Need {
 async fn capability_matrix() {
     for (token, caps) in TOKENS {
         let fx = Fx::new();
-        let a = fx.create("live", "/global/a.md", &content("Alpha", "alpha body")).await["id"]
-            .as_str().unwrap().to_owned();
-        let b = fx.create("live", "/global/b.md", &content("Beta", "beta body")).await["id"]
-            .as_str().unwrap().to_owned();
-        fx.update("live", &a, &content("Alpha two", "alpha body two")).await;
-        let old = versions_of(&fx.ok("GET", &format!("/v1/memory_stores/live/memory_versions?memory_id={a}"), Value::Null).await)
-            .last().unwrap()["id"].as_str().unwrap().to_owned();
+        let a = fx
+            .create("live", "/global/a.md", &content("Alpha", "alpha body"))
+            .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let b = fx
+            .create("live", "/global/b.md", &content("Beta", "beta body"))
+            .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        fx.update("live", &a, &content("Alpha two", "alpha body two"))
+            .await;
+        let old = versions_of(
+            &fx.ok(
+                "GET",
+                &format!("/v1/memory_stores/live/memory_versions?memory_id={a}"),
+                Value::Null,
+            )
+            .await,
+        )
+        .last()
+        .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         let d1 = fx.dream().await["id"].as_str().unwrap().to_owned();
         let d2 = fx.dream().await;
-        let (d2_id, out) = (d2["id"].as_str().unwrap().to_owned(), d2["output_store_id"].as_str().unwrap().to_owned());
+        let (d2_id, out) = (
+            d2["id"].as_str().unwrap().to_owned(),
+            d2["output_store_id"].as_str().unwrap().to_owned(),
+        );
 
         let live = "/v1/memory_stores/live";
         let o = format!("/v1/memory_stores/{out}");
         let ops: Vec<(&str, &str, String, Value, Need)> = vec![
-            ("status", "GET", "/v1/status".into(), Value::Null, Need::Recall),
-            ("recall", "POST", "/v1/recall".into(), json!({}), Need::Recall),
-            ("live list", "GET", format!("{live}/memories"), Value::Null, Need::Recall),
-            ("live get", "GET", format!("{live}/memories/{a}"), Value::Null, Need::Recall),
-            ("live versions", "GET", format!("{live}/memory_versions"), Value::Null, Need::Recall),
-            ("live version", "GET", format!("{live}/memory_versions/{old}"), Value::Null, Need::Recall),
-            ("live create", "POST", format!("{live}/memories"),
-                json!({"path": "/global/c.md", "content": content("Gamma", "gamma body")}), Need::Promote),
-            ("live update", "POST", format!("{live}/memories/{b}"),
-                json!({"content": content("Beta two", "beta body two")}), Need::Promote),
-            ("live delete", "DELETE", format!("{live}/memories/{b}"), Value::Null, Need::Promote),
-            ("redact", "POST", format!("{live}/memory_versions/{old}/redact"), json!({}), Need::Promote),
-            ("observe", "POST", "/v1/observations".into(),
-                json!({"path": "/global/obs-matrix.md", "content": content("Observed", "seen once")}), Need::Observe),
-            ("dream list", "GET", "/v1/dreams".into(), Value::Null, Need::Review),
-            ("dream get", "GET", format!("/v1/dreams/{d2_id}?diff=true"), Value::Null, Need::Review),
-            ("dream start", "POST", "/v1/dreams".into(), json!({"sessions": []}), Need::Review),
-            ("output list", "GET", format!("{o}/memories"), Value::Null, Need::Review),
-            ("output get", "GET", format!("{o}/memories/{a}"), Value::Null, Need::Review),
-            ("output versions", "GET", format!("{o}/memory_versions"), Value::Null, Need::Review),
-            ("output create", "POST", format!("{o}/memories"),
-                json!({"path": "/global/o.md", "content": content("Omega", "omega body")}), Need::Review),
-            ("output update", "POST", format!("{o}/memories/{a}"),
-                json!({"content": content("Alpha three", "alpha body three")}), Need::Review),
-            ("output delete", "DELETE", format!("{o}/memories/{b}"), Value::Null, Need::Review),
-            ("dream cancel", "POST", format!("/v1/dreams/{d2_id}/cancel"), json!({}), Need::Review),
-            ("dream adopt", "POST", format!("/v1/dreams/{d1}/adopt"), review(), Need::Promote),
+            (
+                "status",
+                "GET",
+                "/v1/status".into(),
+                Value::Null,
+                Need::Recall,
+            ),
+            (
+                "recall",
+                "POST",
+                "/v1/recall".into(),
+                json!({}),
+                Need::Recall,
+            ),
+            (
+                "live list",
+                "GET",
+                format!("{live}/memories"),
+                Value::Null,
+                Need::Recall,
+            ),
+            (
+                "live get",
+                "GET",
+                format!("{live}/memories/{a}"),
+                Value::Null,
+                Need::Recall,
+            ),
+            (
+                "live versions",
+                "GET",
+                format!("{live}/memory_versions"),
+                Value::Null,
+                Need::Recall,
+            ),
+            (
+                "live version",
+                "GET",
+                format!("{live}/memory_versions/{old}"),
+                Value::Null,
+                Need::Recall,
+            ),
+            (
+                "live create",
+                "POST",
+                format!("{live}/memories"),
+                json!({"path": "/global/c.md", "content": content("Gamma", "gamma body")}),
+                Need::Promote,
+            ),
+            (
+                "live update",
+                "POST",
+                format!("{live}/memories/{b}"),
+                json!({"content": content("Beta two", "beta body two")}),
+                Need::Promote,
+            ),
+            (
+                "live delete",
+                "DELETE",
+                format!("{live}/memories/{b}"),
+                Value::Null,
+                Need::Promote,
+            ),
+            (
+                "redact",
+                "POST",
+                format!("{live}/memory_versions/{old}/redact"),
+                json!({}),
+                Need::Promote,
+            ),
+            (
+                "observe",
+                "POST",
+                "/v1/observations".into(),
+                json!({"path": "/global/obs-matrix.md", "content": content("Observed", "seen once")}),
+                Need::Observe,
+            ),
+            (
+                "dream list",
+                "GET",
+                "/v1/dreams".into(),
+                Value::Null,
+                Need::Review,
+            ),
+            (
+                "dream get",
+                "GET",
+                format!("/v1/dreams/{d2_id}?diff=true"),
+                Value::Null,
+                Need::Review,
+            ),
+            (
+                "dream start",
+                "POST",
+                "/v1/dreams".into(),
+                json!({"sessions": []}),
+                Need::Review,
+            ),
+            (
+                "output list",
+                "GET",
+                format!("{o}/memories"),
+                Value::Null,
+                Need::Review,
+            ),
+            (
+                "output get",
+                "GET",
+                format!("{o}/memories/{a}"),
+                Value::Null,
+                Need::Review,
+            ),
+            (
+                "output versions",
+                "GET",
+                format!("{o}/memory_versions"),
+                Value::Null,
+                Need::Review,
+            ),
+            (
+                "output create",
+                "POST",
+                format!("{o}/memories"),
+                json!({"path": "/global/o.md", "content": content("Omega", "omega body")}),
+                Need::Review,
+            ),
+            (
+                "output update",
+                "POST",
+                format!("{o}/memories/{a}"),
+                json!({"content": content("Alpha three", "alpha body three")}),
+                Need::Review,
+            ),
+            (
+                "output delete",
+                "DELETE",
+                format!("{o}/memories/{b}"),
+                Value::Null,
+                Need::Review,
+            ),
+            (
+                "dream cancel",
+                "POST",
+                format!("/v1/dreams/{d2_id}/cancel"),
+                json!({}),
+                Need::Review,
+            ),
+            (
+                "dream adopt",
+                "POST",
+                format!("/v1/dreams/{d1}/adopt"),
+                review(),
+                Need::Promote,
+            ),
         ];
         for (name, method, path, body, need) in ops {
             let (code, response) = fx.call(method, &path, token, body).await;
             if caps.contains(&need.cap()) {
-                assert_eq!(code, StatusCode::OK, "{token} should be allowed {name}: {response}");
+                assert_eq!(
+                    code,
+                    StatusCode::OK,
+                    "{token} should be allowed {name}: {response}"
+                );
             } else {
-                assert_eq!(code, StatusCode::FORBIDDEN, "{token} should be denied {name}: {response}");
+                assert_eq!(
+                    code,
+                    StatusCode::FORBIDDEN,
+                    "{token} should be denied {name}: {response}"
+                );
             }
         }
     }
@@ -322,7 +525,10 @@ async fn authentication_applies_to_every_route() {
             assert_eq!(code, StatusCode::UNAUTHORIZED, "{method} {path} {token:?}");
         }
     }
-    assert_eq!(call(&fx.app, "GET", "/healthz", None, Value::Null).await.0, StatusCode::OK);
+    assert_eq!(
+        call(&fx.app, "GET", "/healthz", None, Value::Null).await.0,
+        StatusCode::OK
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -332,27 +538,71 @@ async fn authentication_applies_to_every_route() {
 #[tokio::test]
 async fn live_alias() {
     let fx = Fx::new();
-    let created = fx.create("live", "/global/a.md", &content("Alpha", "alpha body")).await;
+    let created = fx
+        .create("live", "/global/a.md", &content("Alpha", "alpha body"))
+        .await;
     let id = created["id"].as_str().unwrap();
     let store_id = fx.status().await["store_id"].as_str().unwrap().to_owned();
     assert!(store_id.starts_with("memstore_") && store_id.len() == "memstore_".len() + 32);
     // Reads agree through both names; the recall-only token may use either.
-    for suffix in ["memories".to_string(), format!("memories/{id}"), "memory_versions".to_string()] {
-        let alias = fx.call("GET", &format!("/v1/memory_stores/live/{suffix}"), "reader", Value::Null).await;
-        let direct = fx.call("GET", &format!("/v1/memory_stores/{store_id}/{suffix}"), "reader", Value::Null).await;
+    for suffix in [
+        "memories".to_string(),
+        format!("memories/{id}"),
+        "memory_versions".to_string(),
+    ] {
+        let alias = fx
+            .call(
+                "GET",
+                &format!("/v1/memory_stores/live/{suffix}"),
+                "reader",
+                Value::Null,
+            )
+            .await;
+        let direct = fx
+            .call(
+                "GET",
+                &format!("/v1/memory_stores/{store_id}/{suffix}"),
+                "reader",
+                Value::Null,
+            )
+            .await;
         assert_eq!(alias.0, StatusCode::OK, "{suffix}");
         assert_eq!(alias, direct, "{suffix}");
     }
     // A write through the real id is visible through the alias, and the reverse.
-    let via_id = fx.create(&store_id, "/global/b.md", &content("Beta", "beta body")).await;
-    let alias_get = fx.ok("GET", &format!("/v1/memory_stores/live/memories/{}", via_id["id"].as_str().unwrap()), Value::Null).await;
+    let via_id = fx
+        .create(&store_id, "/global/b.md", &content("Beta", "beta body"))
+        .await;
+    let alias_get = fx
+        .ok(
+            "GET",
+            &format!(
+                "/v1/memory_stores/live/memories/{}",
+                via_id["id"].as_str().unwrap()
+            ),
+            Value::Null,
+        )
+        .await;
     assert_eq!(alias_get["path"], "/global/b.md");
-    fx.update("live", id, &content("Alpha two", "alpha body two")).await;
-    let direct = fx.ok("GET", &format!("/v1/memory_stores/{store_id}/memories/{id}"), Value::Null).await;
+    fx.update("live", id, &content("Alpha two", "alpha body two"))
+        .await;
+    let direct = fx
+        .ok(
+            "GET",
+            &format!("/v1/memory_stores/{store_id}/memories/{id}"),
+            Value::Null,
+        )
+        .await;
     assert_eq!(direct["content"], content("Alpha two", "alpha body two"));
     // The real id is live for capability purposes: reader may not write through it.
-    let denied = fx.call("POST", &format!("/v1/memory_stores/{store_id}/memories"), "reader",
-        json!({"path": "/global/c.md", "content": content("Gamma", "gamma body")})).await;
+    let denied = fx
+        .call(
+            "POST",
+            &format!("/v1/memory_stores/{store_id}/memories"),
+            "reader",
+            json!({"path": "/global/c.md", "content": content("Gamma", "gamma body")}),
+        )
+        .await;
     assert_eq!(denied.0, StatusCode::FORBIDDEN);
 }
 
@@ -371,25 +621,54 @@ async fn status_shape_and_counters() {
     assert_eq!(s["dreams_running"], 0);
     assert_eq!(s["mirror_stale"], false);
     let mirror_dir = s["mirror_dir"].as_str().unwrap();
-    assert!(mirror_dir.starts_with(fx.mnt.to_str().unwrap()), "{mirror_dir}");
+    assert!(
+        mirror_dir.starts_with(fx.mnt.to_str().unwrap()),
+        "{mirror_dir}"
+    );
     assert!(mirror_dir.ends_with("shared-agent-memory"), "{mirror_dir}");
     let keys: HashSet<_> = s.as_object().unwrap().keys().cloned().collect();
     assert_eq!(
         keys,
         HashSet::from_iter(
-            ["store_id", "revision", "memories", "pinned_chars", "observations_pending", "dreams_running", "mirror_dir", "mirror_stale"]
-                .map(String::from)
+            [
+                "store_id",
+                "revision",
+                "memories",
+                "pinned_chars",
+                "observations_pending",
+                "dreams_running",
+                "mirror_dir",
+                "mirror_stale"
+            ]
+            .map(String::from)
         )
     );
 
-    fx.create("live", "/global/a.md", &content_with("Pinned rule", "twelve chars", json!({"pinned": true}))).await;
-    fx.create("live", "/global/b.md", &content("Plain", "not counted")).await;
-    fx.ok("POST", "/v1/observations", json!({"path": "/global/seen.md", "content": content("Seen", "once")})).await;
+    fx.create(
+        "live",
+        "/global/a.md",
+        &content_with("Pinned rule", "twelve chars", json!({"pinned": true})),
+    )
+    .await;
+    fx.create("live", "/global/b.md", &content("Plain", "not counted"))
+        .await;
+    fx.ok(
+        "POST",
+        "/v1/observations",
+        json!({"path": "/global/seen.md", "content": content("Seen", "once")}),
+    )
+    .await;
     fx.dream().await;
     let s = fx.status().await;
-    assert_eq!(s["revision"], 2, "revision is the live store's version count");
+    assert_eq!(
+        s["revision"], 2,
+        "revision is the live store's version count"
+    );
     assert_eq!(s["memories"], 2);
-    assert_eq!(s["pinned_chars"], block_len("Pinned rule", "/global/a.md", "twelve chars"));
+    assert_eq!(
+        s["pinned_chars"],
+        block_len("Pinned rule", "/global/a.md", "twelve chars")
+    );
     assert_eq!(s["observations_pending"], 1);
     assert_eq!(s["dreams_running"], 1);
 }
@@ -406,30 +685,75 @@ async fn read_shapes_and_byte_exact_content() {
     assert!(id.starts_with("mem_") && id.len() == 4 + 32, "{id}");
     assert_eq!(created["path"], "/global/spaced.md");
     assert_eq!(created["content_sha256"], hash);
-    assert!(created["memory_version_id"].as_str().unwrap().starts_with("memver_"));
+    assert!(
+        created["memory_version_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("memver_")
+    );
     assert!(created["updated_at"].as_str().is_some());
 
-    fx.create("live", "/topics/hardware/usb.md", &content("USB power", "usb body")).await;
-    fx.create("live", "/projects/p/q/proj.md", &content("Project", "project body")).await;
+    fx.create(
+        "live",
+        "/topics/hardware/usb.md",
+        &content("USB power", "usb body"),
+    )
+    .await;
+    fx.create(
+        "live",
+        "/projects/p/q/proj.md",
+        &content("Project", "project body"),
+    )
+    .await;
 
-    let all = fx.ok("GET", "/v1/memory_stores/live/memories", Value::Null).await;
+    let all = fx
+        .ok("GET", "/v1/memory_stores/live/memories", Value::Null)
+        .await;
     let rows = all["data"].as_array().unwrap();
     assert_eq!(rows.len(), 3);
     let row = rows.iter().find(|r| r["id"] == id).unwrap();
     let keys: HashSet<_> = row.as_object().unwrap().keys().cloned().collect();
     assert_eq!(
         keys,
-        HashSet::from_iter(["id", "path", "title", "content_sha256", "memory_version_id", "updated_at"].map(String::from)),
+        HashSet::from_iter(
+            [
+                "id",
+                "path",
+                "title",
+                "content_sha256",
+                "memory_version_id",
+                "updated_at"
+            ]
+            .map(String::from)
+        ),
         "list rows carry metadata and no content"
     );
     assert_eq!(row["title"], "Spaced");
     // path_prefix narrows by whole prefix.
-    for (prefix, expect) in [("/global/", 1), ("/topics/", 1), ("/projects/p/", 1), ("/", 3), ("/roles/", 0)] {
-        let r = fx.ok("GET", &format!("/v1/memory_stores/live/memories?path_prefix={prefix}"), Value::Null).await;
+    for (prefix, expect) in [
+        ("/global/", 1),
+        ("/topics/", 1),
+        ("/projects/p/", 1),
+        ("/", 3),
+        ("/roles/", 0),
+    ] {
+        let r = fx
+            .ok(
+                "GET",
+                &format!("/v1/memory_stores/live/memories?path_prefix={prefix}"),
+                Value::Null,
+            )
+            .await;
         assert_eq!(r["data"].as_array().unwrap().len(), expect, "{prefix}");
     }
 
-    let got = fx.ok("GET", &format!("/v1/memory_stores/live/memories/{id}"), Value::Null).await;
+    let got = fx
+        .ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memories/{id}"),
+            Value::Null,
+        )
+        .await;
     assert_eq!(got["content"], raw);
     assert_eq!(got["content_sha256"], hash);
     assert_eq!(got["path"], "/global/spaced.md");
@@ -441,10 +765,18 @@ async fn versions_and_redact() {
     let v1_text = content("First", "secret-ish first body");
     let m = fx.create("live", "/global/a.md", &v1_text).await;
     let id = m["id"].as_str().unwrap().to_owned();
-    fx.update("live", &id, &content("Second", "second body")).await;
-    fx.create("live", "/global/other.md", &content("Other", "other body")).await;
+    fx.update("live", &id, &content("Second", "second body"))
+        .await;
+    fx.create("live", "/global/other.md", &content("Other", "other body"))
+        .await;
 
-    let list = fx.ok("GET", &format!("/v1/memory_stores/live/memory_versions?memory_id={id}"), Value::Null).await;
+    let list = fx
+        .ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memory_versions?memory_id={id}"),
+            Value::Null,
+        )
+        .await;
     let versions = versions_of(&list);
     assert_eq!(versions.len(), 2);
     assert_eq!(versions[0]["operation"], "modified", "newest first");
@@ -456,30 +788,72 @@ async fn versions_and_redact() {
         assert!(v.get("content").is_none(), "list omits content: {v}");
         assert!(v["redacted_at"].is_null() && v["redacted_by"].is_null());
     }
-    assert_eq!(fx.ok("GET", "/v1/memory_stores/live/memory_versions", Value::Null).await["data"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        fx.ok("GET", "/v1/memory_stores/live/memory_versions", Value::Null)
+            .await["data"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
 
     let old_id = versions[1]["id"].as_str().unwrap();
-    let old = fx.ok("GET", &format!("/v1/memory_stores/live/memory_versions/{old_id}"), Value::Null).await;
+    let old = fx
+        .ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memory_versions/{old_id}"),
+            Value::Null,
+        )
+        .await;
     assert_eq!(old["content"], v1_text);
     assert_eq!(old["content_sha256"], sha256(v1_text.as_bytes()));
     assert_eq!(old["path"], "/global/a.md");
 
     // The head of a live memory cannot be redacted (§3.2).
     let head_id = versions[0]["id"].as_str().unwrap();
-    let refused = fx.call("POST", &format!("/v1/memory_stores/live/memory_versions/{head_id}/redact"), "admin", json!({})).await;
+    let refused = fx
+        .call(
+            "POST",
+            &format!("/v1/memory_stores/live/memory_versions/{head_id}/redact"),
+            "admin",
+            json!({}),
+        )
+        .await;
     assert_invalid(&refused, "");
     // An older version can: its fields are nulled, its history stays.
-    let redacted = fx.ok("POST", &format!("/v1/memory_stores/live/memory_versions/{old_id}/redact"), json!({})).await;
+    let redacted = fx
+        .ok(
+            "POST",
+            &format!("/v1/memory_stores/live/memory_versions/{old_id}/redact"),
+            json!({}),
+        )
+        .await;
     assert_eq!(redacted["id"], old_id);
-    assert!(redacted["content"].is_null() && redacted["path"].is_null() && redacted["content_sha256"].is_null());
+    assert!(
+        redacted["content"].is_null()
+            && redacted["path"].is_null()
+            && redacted["content_sha256"].is_null()
+    );
     assert!(redacted["redacted_at"].as_str().is_some());
     assert_eq!(redacted["redacted_by"], "token:admin");
     assert_eq!(redacted["created_by"], "token:admin");
     assert_eq!(redacted["operation"], "created");
-    let again = fx.ok("GET", &format!("/v1/memory_stores/live/memory_versions/{old_id}"), Value::Null).await;
+    let again = fx
+        .ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memory_versions/{old_id}"),
+            Value::Null,
+        )
+        .await;
     assert!(again["content"].is_null() && again["redacted_by"] == "token:admin");
     // The head stays readable.
-    let got = fx.ok("GET", &format!("/v1/memory_stores/live/memories/{id}"), Value::Null).await;
+    let got = fx
+        .ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memories/{id}"),
+            Value::Null,
+        )
+        .await;
     assert_eq!(got["content"], content("Second", "second body"));
 }
 
@@ -491,11 +865,21 @@ async fn versions_and_redact() {
 async fn preconditions_over_http() {
     let fx = Fx::new();
     let url = "/v1/memory_stores/live/memories";
-    let m = fx.create("live", "/global/a.md", &content("One", "one body")).await;
+    let m = fx
+        .create("live", "/global/a.md", &content("One", "one body"))
+        .await;
     let id = m["id"].as_str().unwrap().to_owned();
     let sha = m["content_sha256"].as_str().unwrap().to_owned();
     let count_versions = || async {
-        versions_of(&fx.ok("GET", &format!("/v1/memory_stores/live/memory_versions?memory_id={id}"), Value::Null).await).len()
+        versions_of(
+            &fx.ok(
+                "GET",
+                &format!("/v1/memory_stores/live/memory_versions?memory_id={id}"),
+                Value::Null,
+            )
+            .await,
+        )
+        .len()
     };
     assert_eq!(count_versions().await, 1);
 
@@ -506,69 +890,161 @@ async fn preconditions_over_http() {
     })).await;
     assert_conflict(&stale, "precondition_failed", Some(&["/global/a.md"]));
     assert_eq!(count_versions().await, 1);
-    assert_eq!(fx.ok("GET", &format!("{url}/{id}"), Value::Null).await["content_sha256"], sha.as_str());
+    assert_eq!(
+        fx.ok("GET", &format!("{url}/{id}"), Value::Null).await["content_sha256"],
+        sha.as_str()
+    );
 
     // A matching hash creates a new version id and the memory keeps its id.
     let two = content("Two", "two body");
-    let updated = fx.ok("POST", &format!("{url}/{id}"), json!({
-        "content": two, "precondition": {"type": "content_sha256", "content_sha256": sha}
-    })).await;
+    let updated = fx
+        .ok(
+            "POST",
+            &format!("{url}/{id}"),
+            json!({
+                "content": two, "precondition": {"type": "content_sha256", "content_sha256": sha}
+            }),
+        )
+        .await;
     assert_eq!(updated["id"], id.as_str());
     assert_ne!(updated["memory_version_id"], m["memory_version_id"]);
     assert_eq!(updated["content_sha256"], sha256(two.as_bytes()));
     assert_eq!(count_versions().await, 2);
     // Replaying the same precondition now fails: the stored hash moved on.
-    let replay = fx.call("POST", &format!("{url}/{id}"), "admin", json!({
-        "content": content("Three", "three body"),
-        "precondition": {"type": "content_sha256", "content_sha256": sha}
-    })).await;
+    let replay = fx
+        .call(
+            "POST",
+            &format!("{url}/{id}"),
+            "admin",
+            json!({
+                "content": content("Three", "three body"),
+                "precondition": {"type": "content_sha256", "content_sha256": sha}
+            }),
+        )
+        .await;
     assert_conflict(&replay, "precondition_failed", Some(&["/global/a.md"]));
 
     // Without a precondition an update applies unconditionally.
-    fx.update("live", &id, &content("Three", "three body")).await;
+    fx.update("live", &id, &content("Three", "three body"))
+        .await;
     assert_eq!(count_versions().await, 3);
 
     // Rename keeps the id; history shows both paths.
-    let renamed = fx.ok("POST", &format!("{url}/{id}"), json!({"path": "/topics/misc/a.md"})).await;
+    let renamed = fx
+        .ok(
+            "POST",
+            &format!("{url}/{id}"),
+            json!({"path": "/topics/misc/a.md"}),
+        )
+        .await;
     assert_eq!(renamed["id"], id.as_str());
     assert_eq!(renamed["path"], "/topics/misc/a.md");
-    let paths: Vec<_> = versions_of(&fx.ok("GET", &format!("/v1/memory_stores/live/memory_versions?memory_id={id}"), Value::Null).await)
-        .iter().map(|v| v["path"].clone()).collect();
+    let paths: Vec<_> = versions_of(
+        &fx.ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memory_versions?memory_id={id}"),
+            Value::Null,
+        )
+        .await,
+    )
+    .iter()
+    .map(|v| v["path"].clone())
+    .collect();
     assert_eq!(paths.first().unwrap(), "/topics/misc/a.md");
     assert!(paths.contains(&json!("/global/a.md")));
 
     // Delete with a stale hash is refused; with the current hash it succeeds and the lineage stays.
-    let now = fx.ok("GET", &format!("{url}/{id}"), Value::Null).await["content_sha256"].as_str().unwrap().to_owned();
-    let refused = fx.call("DELETE", &format!("{url}/{id}?expected_content_sha256={}", sha256(b"nope")), "admin", Value::Null).await;
+    let now = fx.ok("GET", &format!("{url}/{id}"), Value::Null).await["content_sha256"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refused = fx
+        .call(
+            "DELETE",
+            &format!("{url}/{id}?expected_content_sha256={}", sha256(b"nope")),
+            "admin",
+            Value::Null,
+        )
+        .await;
     assert_conflict(&refused, "precondition_failed", None);
-    let deleted = fx.ok("DELETE", &format!("{url}/{id}?expected_content_sha256={now}"), Value::Null).await;
+    let deleted = fx
+        .ok(
+            "DELETE",
+            &format!("{url}/{id}?expected_content_sha256={now}"),
+            Value::Null,
+        )
+        .await;
     assert_eq!(deleted, json!({"type": "memory_deleted", "id": id}));
-    assert_eq!(fx.call("GET", &format!("{url}/{id}"), "admin", Value::Null).await.0, StatusCode::NOT_FOUND);
-    let history = versions_of(&fx.ok("GET", &format!("/v1/memory_stores/live/memory_versions?memory_id={id}"), Value::Null).await);
+    assert_eq!(
+        fx.call("GET", &format!("{url}/{id}"), "admin", Value::Null)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let history = versions_of(
+        &fx.ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memory_versions?memory_id={id}"),
+            Value::Null,
+        )
+        .await,
+    );
     assert_eq!(history[0]["operation"], "deleted");
-    assert_eq!(history[0]["path"], "/topics/misc/a.md", "a deleted version keeps the last path");
-    let tomb = fx.ok("GET", &format!("/v1/memory_stores/live/memory_versions/{}", history[0]["id"].as_str().unwrap()), Value::Null).await;
-    assert!(tomb["content"].is_null() && tomb["content_sha256"].is_null(), "{tomb}");
+    assert_eq!(
+        history[0]["path"], "/topics/misc/a.md",
+        "a deleted version keeps the last path"
+    );
+    let tomb = fx
+        .ok(
+            "GET",
+            &format!(
+                "/v1/memory_stores/live/memory_versions/{}",
+                history[0]["id"].as_str().unwrap()
+            ),
+            Value::Null,
+        )
+        .await;
+    assert!(
+        tomb["content"].is_null() && tomb["content_sha256"].is_null(),
+        "{tomb}"
+    );
     assert!(history.len() >= 5);
     // Deleting twice is a 404, not a second tombstone.
-    assert_eq!(fx.call("DELETE", &format!("{url}/{id}"), "admin", Value::Null).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        fx.call("DELETE", &format!("{url}/{id}"), "admin", Value::Null)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
 }
 
 /// §4.3 A7 through HTTP: eight concurrent updates carrying the same hash, one winner.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_http_writers_one_winner() {
     let fx = Fx::new();
-    let m = fx.create("live", "/global/a.md", &content("Start", "start body")).await;
-    let (id, sha) = (m["id"].as_str().unwrap().to_owned(), m["content_sha256"].as_str().unwrap().to_owned());
+    let m = fx
+        .create("live", "/global/a.md", &content("Start", "start body"))
+        .await;
+    let (id, sha) = (
+        m["id"].as_str().unwrap().to_owned(),
+        m["content_sha256"].as_str().unwrap().to_owned(),
+    );
     let tasks: Vec<_> = (0..8)
         .map(|i| {
             let app = fx.app.clone();
             let (url, sha) = (format!("/v1/memory_stores/live/memories/{id}"), sha.clone());
             tokio::spawn(async move {
-                call(&app, "POST", &url, Some("admin"), json!({
-                    "content": content(&format!("Racer {i}"), "racer body"),
-                    "precondition": {"type": "content_sha256", "content_sha256": sha}
-                })).await
+                call(
+                    &app,
+                    "POST",
+                    &url,
+                    Some("admin"),
+                    json!({
+                        "content": content(&format!("Racer {i}"), "racer body"),
+                        "precondition": {"type": "content_sha256", "content_sha256": sha}
+                    }),
+                )
+                .await
             })
         })
         .collect();
@@ -576,11 +1052,22 @@ async fn concurrent_http_writers_one_winner() {
     for t in tasks {
         results.push(t.await.unwrap());
     }
-    assert_eq!(results.iter().filter(|r| r.0 == StatusCode::OK).count(), 1, "{results:?}");
+    assert_eq!(
+        results.iter().filter(|r| r.0 == StatusCode::OK).count(),
+        1,
+        "{results:?}"
+    );
     for r in results.iter().filter(|r| r.0 != StatusCode::OK) {
         assert_conflict(r, "precondition_failed", None);
     }
-    let versions = versions_of(&fx.ok("GET", &format!("/v1/memory_stores/live/memory_versions?memory_id={id}"), Value::Null).await);
+    let versions = versions_of(
+        &fx.ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memory_versions?memory_id={id}"),
+            Value::Null,
+        )
+        .await,
+    );
     assert_eq!(versions.len(), 2);
 }
 
@@ -592,24 +1079,56 @@ async fn concurrent_http_writers_one_winner() {
 async fn error_mapping_conflicts() {
     let fx = Fx::new();
     let url = "/v1/memory_stores/live/memories";
-    let a = fx.create("live", "/global/a.md", &content("Alpha", "alpha body")).await;
+    let a = fx
+        .create("live", "/global/a.md", &content("Alpha", "alpha body"))
+        .await;
 
     // path_exists: create on a taken path, and a rename onto one.
-    let again = fx.call("POST", url, "admin", json!({"path": "/global/a.md", "content": content("Other", "other body")})).await;
+    let again = fx
+        .call(
+            "POST",
+            url,
+            "admin",
+            json!({"path": "/global/a.md", "content": content("Other", "other body")}),
+        )
+        .await;
     assert_conflict(&again, "path_exists", Some(&["/global/a.md"]));
-    let b = fx.create("live", "/global/b.md", &content("Beta", "beta body")).await;
-    let rename = fx.call("POST", &format!("{url}/{}", b["id"].as_str().unwrap()), "admin", json!({"path": "/global/a.md"})).await;
+    let b = fx
+        .create("live", "/global/b.md", &content("Beta", "beta body"))
+        .await;
+    let rename = fx
+        .call(
+            "POST",
+            &format!("{url}/{}", b["id"].as_str().unwrap()),
+            "admin",
+            json!({"path": "/global/a.md"}),
+        )
+        .await;
     assert_conflict(&rename, "path_exists", Some(&["/global/a.md"]));
 
     // slug_exists: the slug a.md is used elsewhere in the store.
-    let slug = fx.call("POST", url, "admin", json!({"path": "/topics/hardware/a.md", "content": content("Other", "other body")})).await;
+    let slug = fx
+        .call(
+            "POST",
+            url,
+            "admin",
+            json!({"path": "/topics/hardware/a.md", "content": content("Other", "other body")}),
+        )
+        .await;
     assert_conflict(&slug, "slug_exists", Some(&["/global/a.md"]));
 
     // precondition_failed (update and delete) is covered in `preconditions_over_http`.
-    let stale = fx.call("POST", &format!("{url}/{}", a["id"].as_str().unwrap()), "admin", json!({
-        "content": content("Alpha two", "x"),
-        "precondition": {"type": "content_sha256", "content_sha256": sha256(b"stale")}
-    })).await;
+    let stale = fx
+        .call(
+            "POST",
+            &format!("{url}/{}", a["id"].as_str().unwrap()),
+            "admin",
+            json!({
+                "content": content("Alpha two", "x"),
+                "precondition": {"type": "content_sha256", "content_sha256": sha256(b"stale")}
+            }),
+        )
+        .await;
     assert_conflict(&stale, "precondition_failed", Some(&["/global/a.md"]));
 
     // pinned_budget_exceeded: `paths` = every pinned path the store would hold after the rejected write (architect ruling).
@@ -621,84 +1140,199 @@ async fn error_mapping_conflicts() {
         "path": "/global/core.md",
         "content": content_with("Core", &"p".repeat(4001 - overhead), json!({"pinned": true}))
     })).await;
-    assert_conflict(&refused, "pinned_budget_exceeded", Some(&["/global/core.md"]));
-    assert_eq!(fx2.ok("GET", url, Value::Null).await["data"], json!([]), "nothing written");
+    assert_conflict(
+        &refused,
+        "pinned_budget_exceeded",
+        Some(&["/global/core.md"]),
+    );
+    assert_eq!(
+        fx2.ok("GET", url, Value::Null).await["data"],
+        json!([]),
+        "nothing written"
+    );
     let four_k = "p".repeat(4000 - overhead);
-    fx2.create("live", "/global/core.md", &content_with("Core", &four_k, json!({"pinned": true}))).await;
+    fx2.create(
+        "live",
+        "/global/core.md",
+        &content_with("Core", &four_k, json!({"pinned": true})),
+    )
+    .await;
     let over = fx2.call("POST", url, "admin", json!({
         "path": "/global/more.md", "content": content_with("More", "q", json!({"pinned": true}))
     })).await;
-    assert_conflict(&over, "pinned_budget_exceeded", Some(&["/global/core.md", "/global/more.md"]));
+    assert_conflict(
+        &over,
+        "pinned_budget_exceeded",
+        Some(&["/global/core.md", "/global/more.md"]),
+    );
     let grow = fx2.call("POST", url, "admin", json!({
         "path": "/projects/p/more.md", "content": content_with("More", "q", json!({"pinned": true}))
     })).await;
-    assert_conflict(&grow, "pinned_budget_exceeded", Some(&["/global/core.md", "/projects/p/more.md"]));
-    assert_eq!(fx2.ok("GET", url, Value::Null).await["data"].as_array().unwrap().len(), 1);
+    assert_conflict(
+        &grow,
+        "pinned_budget_exceeded",
+        Some(&["/global/core.md", "/projects/p/more.md"]),
+    );
+    assert_eq!(
+        fx2.ok("GET", url, Value::Null).await["data"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(fx2.status().await["pinned_chars"], 4000);
     // Unpinned memories are not limited by the pinned budget.
-    fx2.create("live", "/global/free.md", &content("Free", &"u".repeat(7000))).await;
+    fx2.create(
+        "live",
+        "/global/free.md",
+        &content("Free", &"u".repeat(7000)),
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn error_mapping_dream_conflicts() {
     let fx = Fx::new();
-    let a = fx.create("live", "/global/a.md", &content("Alpha", "alpha body")).await;
-    let b = fx.create("live", "/global/b.md", &content("Beta", "beta body")).await;
-    let (a_id, b_id) = (a["id"].as_str().unwrap().to_owned(), b["id"].as_str().unwrap().to_owned());
+    let a = fx
+        .create("live", "/global/a.md", &content("Alpha", "alpha body"))
+        .await;
+    let b = fx
+        .create("live", "/global/b.md", &content("Beta", "beta body"))
+        .await;
+    let (a_id, b_id) = (
+        a["id"].as_str().unwrap().to_owned(),
+        b["id"].as_str().unwrap().to_owned(),
+    );
 
     // adopt_conflict: live and dream both change a -> 409 naming a; nothing changes; dream stays running.
     let d = fx.dream().await;
-    let (d_id, out) = (d["id"].as_str().unwrap().to_owned(), d["output_store_id"].as_str().unwrap().to_owned());
-    fx.update(&out, &a_id, &content("Alpha dream", "dream edit")).await;
-    fx.update("live", &a_id, &content("Alpha live", "live edit")).await;
-    let before = fx.ok("GET", "/v1/memory_stores/live/memories", Value::Null).await;
+    let (d_id, out) = (
+        d["id"].as_str().unwrap().to_owned(),
+        d["output_store_id"].as_str().unwrap().to_owned(),
+    );
+    fx.update(&out, &a_id, &content("Alpha dream", "dream edit"))
+        .await;
+    fx.update("live", &a_id, &content("Alpha live", "live edit"))
+        .await;
+    let before = fx
+        .ok("GET", "/v1/memory_stores/live/memories", Value::Null)
+        .await;
     let conflict = fx.adopt("admin", &d_id).await;
     assert_conflict(&conflict, "adopt_conflict", Some(&["/global/a.md"]));
-    assert_eq!(fx.ok("GET", "/v1/memory_stores/live/memories", Value::Null).await, before);
-    let got = fx.ok("GET", &format!("/v1/dreams/{d_id}"), Value::Null).await;
+    assert_eq!(
+        fx.ok("GET", "/v1/memory_stores/live/memories", Value::Null)
+            .await,
+        before
+    );
+    let got = fx
+        .ok("GET", &format!("/v1/dreams/{d_id}"), Value::Null)
+        .await;
     assert_eq!(got["status"], "running");
     assert!(got["ended_at"].is_null());
     // The output store is still writable while the dream runs.
-    fx.update(&out, &b_id, &content("Beta dream", "still writable")).await;
+    fx.update(&out, &b_id, &content("Beta dream", "still writable"))
+        .await;
 
     // adopt_conflict on an added path both sides created.
     let d = fx.dream().await;
-    let (d_id, out) = (d["id"].as_str().unwrap().to_owned(), d["output_store_id"].as_str().unwrap().to_owned());
-    fx.create(&out, "/global/new.md", &content("New dream", "dream new")).await;
-    fx.create("live", "/global/new.md", &content("New live", "live new")).await;
-    assert_conflict(&fx.adopt("admin", &d_id).await, "adopt_conflict", Some(&["/global/new.md"]));
+    let (d_id, out) = (
+        d["id"].as_str().unwrap().to_owned(),
+        d["output_store_id"].as_str().unwrap().to_owned(),
+    );
+    fx.create(&out, "/global/new.md", &content("New dream", "dream new"))
+        .await;
+    fx.create("live", "/global/new.md", &content("New live", "live new"))
+        .await;
+    assert_conflict(
+        &fx.adopt("admin", &d_id).await,
+        "adopt_conflict",
+        Some(&["/global/new.md"]),
+    );
     // Cancel releases it; cancelling again is a no-op.
-    assert_eq!(fx.ok("POST", &format!("/v1/dreams/{d_id}/cancel"), json!({})).await["status"], "canceled");
-    assert_eq!(fx.ok("POST", &format!("/v1/dreams/{d_id}/cancel"), json!({})).await["status"], "canceled");
+    assert_eq!(
+        fx.ok("POST", &format!("/v1/dreams/{d_id}/cancel"), json!({}))
+            .await["status"],
+        "canceled"
+    );
+    assert_eq!(
+        fx.ok("POST", &format!("/v1/dreams/{d_id}/cancel"), json!({}))
+            .await["status"],
+        "canceled"
+    );
 
     // store_archived: writes to the output store of a canceled dream.
-    let archived = fx.call("POST", &format!("/v1/memory_stores/{out}/memories"), "admin",
-        json!({"path": "/global/late.md", "content": content("Late", "late body")})).await;
+    let archived = fx
+        .call(
+            "POST",
+            &format!("/v1/memory_stores/{out}/memories"),
+            "admin",
+            json!({"path": "/global/late.md", "content": content("Late", "late body")}),
+        )
+        .await;
     assert_conflict(&archived, "store_archived", None);
-    let archived = fx.call("DELETE", &format!("/v1/memory_stores/{out}/memories/{a_id}"), "admin", Value::Null).await;
+    let archived = fx
+        .call(
+            "DELETE",
+            &format!("/v1/memory_stores/{out}/memories/{a_id}"),
+            "admin",
+            Value::Null,
+        )
+        .await;
     assert_conflict(&archived, "store_archived", None);
     // Reads of an archived store still work.
-    assert_eq!(fx.call("GET", &format!("/v1/memory_stores/{out}/memories"), "admin", Value::Null).await.0, StatusCode::OK);
+    assert_eq!(
+        fx.call(
+            "GET",
+            &format!("/v1/memory_stores/{out}/memories"),
+            "admin",
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
 
     // observations_consumed: two dreams share one pending observation; the second adopt is refused.
     let fx = Fx::new();
-    fx.ok("POST", "/v1/observations", json!({"path": "/global/obs-1.md", "content": content("Observed", "seen once")})).await;
+    fx.ok(
+        "POST",
+        "/v1/observations",
+        json!({"path": "/global/obs-1.md", "content": content("Observed", "seen once")}),
+    )
+    .await;
     let first = fx.dream().await;
     let second = fx.dream().await;
-    assert_eq!(first["observations"].as_array().unwrap().len(), 1, "ASSUMPTION: `observations` is a list");
+    assert_eq!(
+        first["observations"].as_array().unwrap().len(),
+        1,
+        "ASSUMPTION: `observations` is a list"
+    );
     assert_eq!(second["observations"].as_array().unwrap().len(), 1);
-    let (first_id, second_id) = (first["id"].as_str().unwrap().to_owned(), second["id"].as_str().unwrap().to_owned());
+    let (first_id, second_id) = (
+        first["id"].as_str().unwrap().to_owned(),
+        second["id"].as_str().unwrap().to_owned(),
+    );
     assert_eq!(fx.adopt("admin", &first_id).await.0, StatusCode::OK);
     let consumed = fx.adopt("admin", &second_id).await;
     assert_eq!(consumed.0, StatusCode::CONFLICT, "{}", consumed.1);
     assert_eq!(consumed.1["type"], "observations_consumed");
     assert_eq!(fx.status().await["observations_pending"], 0);
-    assert_eq!(fx.ok("GET", &format!("/v1/dreams/{second_id}"), Value::Null).await["status"], "running");
+    assert_eq!(
+        fx.ok("GET", &format!("/v1/dreams/{second_id}"), Value::Null)
+            .await["status"],
+        "running"
+    );
 
     // store_archived after a successful adopt as well.
     let out = first["output_store_id"].as_str().unwrap();
-    let archived = fx.call("POST", &format!("/v1/memory_stores/{out}/memories"), "admin",
-        json!({"path": "/global/late.md", "content": content("Late", "late body")})).await;
+    let archived = fx
+        .call(
+            "POST",
+            &format!("/v1/memory_stores/{out}/memories"),
+            "admin",
+            json!({"path": "/global/late.md", "content": content("Late", "late body")}),
+        )
+        .await;
     assert_conflict(&archived, "store_archived", None);
 }
 
@@ -709,10 +1343,16 @@ async fn error_mapping_store_full() {
     let hash = sha256(text.as_bytes());
     let fx = Fx::seeded(|db| {
         let mut conn = rusqlite::Connection::open(db).unwrap();
-        let live: String = conn.query_row("SELECT id FROM stores WHERE kind='live'", [], |r| r.get(0)).unwrap();
+        let live: String = conn
+            .query_row("SELECT id FROM stores WHERE kind='live'", [], |r| r.get(0))
+            .unwrap();
         let tx = conn.transaction().unwrap();
         for i in 0..10_000 {
-            let (mem, ver, path) = (format!("mem_{i:032x}"), format!("memver_{i:032x}"), format!("/global/seed-{i:05}.md"));
+            let (mem, ver, path) = (
+                format!("mem_{i:032x}"),
+                format!("memver_{i:032x}"),
+                format!("/global/seed-{i:05}.md"),
+            );
             tx.execute(
                 "INSERT INTO memory_versions (id, store_id, memory_id, operation, path, content, content_sha256, created_at, created_by)
                  VALUES (?1, ?2, ?3, 'created', ?4, ?5, ?6, '2026-11-01T00:00:00Z', 'test:seed')",
@@ -727,37 +1367,84 @@ async fn error_mapping_store_full() {
         tx.commit().unwrap();
     });
     assert_eq!(fx.status().await["memories"], 10_000);
-    let (code, body) = fx.call("POST", "/v1/memory_stores/live/memories", "admin",
-        json!({"path": "/global/one-too-many.md", "content": content("Extra", "extra body")})).await;
+    let (code, body) = fx
+        .call(
+            "POST",
+            "/v1/memory_stores/live/memories",
+            "admin",
+            json!({"path": "/global/one-too-many.md", "content": content("Extra", "extra body")}),
+        )
+        .await;
     assert_invalid(&(code, body), "store_full");
     assert_eq!(fx.status().await["memories"], 10_000);
     // Deleting one frees a slot.
-    fx.ok("DELETE", &format!("/v1/memory_stores/live/memories/mem_{:032x}", 0), Value::Null).await;
-    fx.create("live", "/global/fits-now.md", &content("Fits", "fits body")).await;
+    fx.ok(
+        "DELETE",
+        &format!("/v1/memory_stores/live/memories/mem_{:032x}", 0),
+        Value::Null,
+    )
+    .await;
+    fx.create("live", "/global/fits-now.md", &content("Fits", "fits body"))
+        .await;
 }
 
 #[tokio::test]
 async fn error_mapping_bad_requests() {
     let fx = Fx::new();
     let url = "/v1/memory_stores/live/memories";
-    let a = fx.create("live", "/global/a.md", &content("Alpha", "alpha body")).await;
+    let a = fx
+        .create("live", "/global/a.md", &content("Alpha", "alpha body"))
+        .await;
     let id = a["id"].as_str().unwrap();
     let good = content("Fine", "fine body");
     let bad_creates = [
-        ("path traversal", json!({"path": "/global/../x.md", "content": good})),
+        (
+            "path traversal",
+            json!({"path": "/global/../x.md", "content": good}),
+        ),
         ("no .md", json!({"path": "/global/x", "content": good})),
-        ("unknown top dir", json!({"path": "/other/x.md", "content": good})),
-        ("bad slug", json!({"path": "/global/Bad_Slug.md", "content": good})),
-        ("non-ascii segment", json!({"path": "/topics/မြန်မာ/x.md", "content": good})),
-        ("no frontmatter", json!({"path": "/global/x.md", "content": "just text"})),
-        ("empty evidence", json!({"path": "/global/x.md", "content": content_with("T", "b", json!({"evidence": []}))})),
-        ("empty body", json!({"path": "/global/x.md", "content": content("T", "")})),
-        ("credential", json!({"path": "/global/x.md", "content": content("T", "api_key=abcdefghijklmnop")})),
-        ("pinned topic", json!({"path": "/topics/t/x.md", "content": content_with("T", "b", json!({"pinned": true}))})),
-        ("forbidden key", json!({"path": "/global/x.md", "content": content_with("T", "b", json!({"scope": "global"}))})),
+        (
+            "unknown top dir",
+            json!({"path": "/other/x.md", "content": good}),
+        ),
+        (
+            "bad slug",
+            json!({"path": "/global/Bad_Slug.md", "content": good}),
+        ),
+        (
+            "non-ascii segment",
+            json!({"path": "/topics/မြန်မာ/x.md", "content": good}),
+        ),
+        (
+            "no frontmatter",
+            json!({"path": "/global/x.md", "content": "just text"}),
+        ),
+        (
+            "empty evidence",
+            json!({"path": "/global/x.md", "content": content_with("T", "b", json!({"evidence": []}))}),
+        ),
+        (
+            "empty body",
+            json!({"path": "/global/x.md", "content": content("T", "")}),
+        ),
+        (
+            "credential",
+            json!({"path": "/global/x.md", "content": content("T", "api_key=abcdefghijklmnop")}),
+        ),
+        (
+            "pinned topic",
+            json!({"path": "/topics/t/x.md", "content": content_with("T", "b", json!({"pinned": true}))}),
+        ),
+        (
+            "forbidden key",
+            json!({"path": "/global/x.md", "content": content_with("T", "b", json!({"scope": "global"}))}),
+        ),
         ("missing content", json!({"path": "/global/x.md"})),
         ("missing path", json!({"content": good})),
-        ("content not a string", json!({"path": "/global/x.md", "content": 7})),
+        (
+            "content not a string",
+            json!({"path": "/global/x.md", "content": 7}),
+        ),
     ];
     for (name, body) in bad_creates {
         let (code, response) = fx.call("POST", url, "admin", body).await;
@@ -765,13 +1452,22 @@ async fn error_mapping_bad_requests() {
         assert_invalid(&(code, response), "");
     }
     // Malformed JSON.
-    assert_invalid(&call_bytes(&fx.app, "POST", url, Some("admin"), b"{not json".to_vec()).await, "");
+    assert_invalid(
+        &call_bytes(&fx.app, "POST", url, Some("admin"), b"{not json".to_vec()).await,
+        "",
+    );
     // Updates: bad content, bad path, empty update, malformed precondition.
     for (name, body) in [
         ("bad content", json!({"content": "no frontmatter"})),
         ("bad path", json!({"path": "/global/../y.md"})),
-        ("bad precondition type", json!({"content": good, "precondition": {"type": "etag", "content_sha256": "x"}})),
-        ("precondition without hash", json!({"content": good, "precondition": {"type": "content_sha256"}})),
+        (
+            "bad precondition type",
+            json!({"content": good, "precondition": {"type": "etag", "content_sha256": "x"}}),
+        ),
+        (
+            "precondition without hash",
+            json!({"content": good, "precondition": {"type": "content_sha256"}}),
+        ),
     ] {
         let (code, response) = fx.call("POST", &format!("{url}/{id}"), "admin", body).await;
         assert_eq!(code, StatusCode::BAD_REQUEST, "{name}: {response}");
@@ -780,10 +1476,30 @@ async fn error_mapping_bad_requests() {
     // Dream start: 101 sessions and duplicate locators.
     let session = |n: usize| json!({"source": "claude", "locator": format!("/s/{n}.jsonl")});
     let many: Vec<_> = (0..101).map(session).collect();
-    assert_eq!(fx.call("POST", "/v1/dreams", "admin", json!({"sessions": many})).await.0, StatusCode::BAD_REQUEST);
-    assert_eq!(fx.call("POST", "/v1/dreams", "admin", json!({"sessions": [session(1), session(1)]})).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        fx.call("POST", "/v1/dreams", "admin", json!({"sessions": many}))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fx.call(
+            "POST",
+            "/v1/dreams",
+            "admin",
+            json!({"sessions": [session(1), session(1)]})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
     let hundred: Vec<_> = (0..100).map(session).collect();
-    assert_eq!(fx.call("POST", "/v1/dreams", "admin", json!({"sessions": hundred})).await.0, StatusCode::OK);
+    assert_eq!(
+        fx.call("POST", "/v1/dreams", "admin", json!({"sessions": hundred}))
+            .await
+            .0,
+        StatusCode::OK
+    );
     // Adopt review gates, "the same gates as today's promote": reviewed, coverage, resolved conflicts.
     let d = fx.dream().await;
     let d_id = d["id"].as_str().unwrap();
@@ -791,56 +1507,134 @@ async fn error_mapping_bad_requests() {
         ("not reviewed", json!({"reviewed": false})),
         ("empty coverage", json!({"coverage": ""})),
         ("empty summary", json!({"summary": ""})),
-        ("unresolved conflict", json!({"conflicts": [{"status": "unresolved"}]})),
+        (
+            "unresolved conflict",
+            json!({"conflicts": [{"status": "unresolved"}]}),
+        ),
     ] {
         let mut body = review();
         for (k, v) in patch.as_object().unwrap() {
             body[k] = v.clone();
         }
-        let (code, response) = fx.call("POST", &format!("/v1/dreams/{d_id}/adopt"), "admin", body).await;
+        let (code, response) = fx
+            .call("POST", &format!("/v1/dreams/{d_id}/adopt"), "admin", body)
+            .await;
         assert_eq!(code, StatusCode::BAD_REQUEST, "{name}: {response}");
         assert_invalid(&(code, response), "");
     }
-    assert_eq!(fx.ok("GET", &format!("/v1/dreams/{d_id}"), Value::Null).await["status"], "running");
+    assert_eq!(
+        fx.ok("GET", &format!("/v1/dreams/{d_id}"), Value::Null)
+            .await["status"],
+        "running"
+    );
     // Cancelling a completed dream is a 400 (§3.5).
     assert_eq!(fx.adopt("admin", d_id).await.0, StatusCode::OK);
-    assert_invalid(&fx.call("POST", &format!("/v1/dreams/{d_id}/cancel"), "admin", json!({})).await, "");
+    assert_invalid(
+        &fx.call(
+            "POST",
+            &format!("/v1/dreams/{d_id}/cancel"),
+            "admin",
+            json!({}),
+        )
+        .await,
+        "",
+    );
     // Adopting a dream that is no longer running is a 400 as well.
     assert_invalid(&fx.adopt("admin", d_id).await, "");
     let c = fx.dream().await;
     let c_id = c["id"].as_str().unwrap();
-    fx.ok("POST", &format!("/v1/dreams/{c_id}/cancel"), json!({})).await;
+    fx.ok("POST", &format!("/v1/dreams/{c_id}/cancel"), json!({}))
+        .await;
     assert_invalid(&fx.adopt("admin", c_id).await, "");
     // Observations validate like memories.
-    for body in [json!({"path": "/global/../o.md", "content": good}), json!({"path": "/global/o.md", "content": "plain"}), json!({})] {
-        assert_eq!(fx.call("POST", "/v1/observations", "admin", body).await.0, StatusCode::BAD_REQUEST);
+    for body in [
+        json!({"path": "/global/../o.md", "content": good}),
+        json!({"path": "/global/o.md", "content": "plain"}),
+        json!({}),
+    ] {
+        assert_eq!(
+            fx.call("POST", "/v1/observations", "admin", body).await.0,
+            StatusCode::BAD_REQUEST
+        );
     }
     // Nothing from the failed requests was stored.
-    assert_eq!(fx.ok("GET", url, Value::Null).await["data"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        fx.ok("GET", url, Value::Null).await["data"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
 async fn error_mapping_not_found() {
     let fx = Fx::new();
-    let a = fx.create("live", "/global/a.md", &content("Alpha", "alpha body")).await;
+    let a = fx
+        .create("live", "/global/a.md", &content("Alpha", "alpha body"))
+        .await;
     let id = a["id"].as_str().unwrap();
     let d = fx.dream().await;
     let d_id = d["id"].as_str().unwrap();
     let no_dream = "drm_00000000000000000000000000000000";
     let no_version = "memver_00000000000000000000000000000000";
     let cases: Vec<(&str, String, Value)> = vec![
-        ("GET", format!("/v1/memory_stores/{NO_STORE}/memories"), Value::Null),
-        ("GET", format!("/v1/memory_stores/{NO_STORE}/memories/{id}"), Value::Null),
-        ("POST", format!("/v1/memory_stores/{NO_STORE}/memories"), json!({"path": "/global/z.md", "content": content("Z", "z")})),
-        ("GET", format!("/v1/memory_stores/{NO_STORE}/memory_versions"), Value::Null),
-        ("GET", format!("/v1/memory_stores/live/memories/{NO_ID}"), Value::Null),
-        ("GET", "/v1/memory_stores/live/memories/not-an-id".into(), Value::Null),
-        ("POST", format!("/v1/memory_stores/live/memories/{NO_ID}"), json!({"content": content("Z", "z")})),
-        ("DELETE", format!("/v1/memory_stores/live/memories/{NO_ID}"), Value::Null),
-        ("GET", format!("/v1/memory_stores/live/memory_versions/{no_version}"), Value::Null),
-        ("POST", format!("/v1/memory_stores/live/memory_versions/{no_version}/redact"), json!({})),
+        (
+            "GET",
+            format!("/v1/memory_stores/{NO_STORE}/memories"),
+            Value::Null,
+        ),
+        (
+            "GET",
+            format!("/v1/memory_stores/{NO_STORE}/memories/{id}"),
+            Value::Null,
+        ),
+        (
+            "POST",
+            format!("/v1/memory_stores/{NO_STORE}/memories"),
+            json!({"path": "/global/z.md", "content": content("Z", "z")}),
+        ),
+        (
+            "GET",
+            format!("/v1/memory_stores/{NO_STORE}/memory_versions"),
+            Value::Null,
+        ),
+        (
+            "GET",
+            format!("/v1/memory_stores/live/memories/{NO_ID}"),
+            Value::Null,
+        ),
+        (
+            "GET",
+            "/v1/memory_stores/live/memories/not-an-id".into(),
+            Value::Null,
+        ),
+        (
+            "POST",
+            format!("/v1/memory_stores/live/memories/{NO_ID}"),
+            json!({"content": content("Z", "z")}),
+        ),
+        (
+            "DELETE",
+            format!("/v1/memory_stores/live/memories/{NO_ID}"),
+            Value::Null,
+        ),
+        (
+            "GET",
+            format!("/v1/memory_stores/live/memory_versions/{no_version}"),
+            Value::Null,
+        ),
+        (
+            "POST",
+            format!("/v1/memory_stores/live/memory_versions/{no_version}/redact"),
+            json!({}),
+        ),
         ("GET", format!("/v1/dreams/{no_dream}"), Value::Null),
-        ("GET", format!("/v1/dreams/{no_dream}?diff=true"), Value::Null),
+        (
+            "GET",
+            format!("/v1/dreams/{no_dream}?diff=true"),
+            Value::Null,
+        ),
         ("POST", format!("/v1/dreams/{no_dream}/adopt"), review()),
         ("POST", format!("/v1/dreams/{no_dream}/cancel"), json!({})),
     ];
@@ -848,14 +1642,40 @@ async fn error_mapping_not_found() {
         let (code, response) = fx.call(method, &path, "admin", body).await;
         assert_eq!(code, StatusCode::NOT_FOUND, "{method} {path}: {response}");
         assert_eq!(response["type"], "not_found", "{method} {path}: {response}");
-        assert!(response["error"].as_str().is_some(), "{method} {path}: {response}");
+        assert!(
+            response["error"].as_str().is_some(),
+            "{method} {path}: {response}"
+        );
     }
     // A memory of the live store is not found in a dream's output store under another id, and vice versa.
     let out = d["output_store_id"].as_str().unwrap();
-    let in_out = fx.create(out, "/global/only-in-dream.md", &content("D", "dream only")).await;
+    let in_out = fx
+        .create(out, "/global/only-in-dream.md", &content("D", "dream only"))
+        .await;
     let dream_only = in_out["id"].as_str().unwrap();
-    assert_eq!(fx.call("GET", &format!("/v1/memory_stores/live/memories/{dream_only}"), "admin", Value::Null).await.0, StatusCode::NOT_FOUND);
-    assert_eq!(fx.call("GET", &format!("/v1/memory_stores/{out}/memories/{id}"), "admin", Value::Null).await.0, StatusCode::OK, "clones keep their ids");
+    assert_eq!(
+        fx.call(
+            "GET",
+            &format!("/v1/memory_stores/live/memories/{dream_only}"),
+            "admin",
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fx.call(
+            "GET",
+            &format!("/v1/memory_stores/{out}/memories/{id}"),
+            "admin",
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::OK,
+        "clones keep their ids"
+    );
     let _ = d_id;
 }
 
@@ -866,37 +1686,125 @@ async fn error_mapping_not_found() {
 #[tokio::test]
 async fn actor_recorded() {
     let fx = Fx::new();
-    let m = fx.create("live", "/global/a.md", &content("Alpha", "alpha body")).await;
+    let m = fx
+        .create("live", "/global/a.md", &content("Alpha", "alpha body"))
+        .await;
     let id = m["id"].as_str().unwrap().to_owned();
     // A second token writes the next version.
-    let (code, _) = fx.call("POST", &format!("/v1/memory_stores/live/memories/{id}"), "maintainer",
-        json!({"content": content("Alpha two", "second body")})).await;
+    let (code, _) = fx
+        .call(
+            "POST",
+            &format!("/v1/memory_stores/live/memories/{id}"),
+            "maintainer",
+            json!({"content": content("Alpha two", "second body")}),
+        )
+        .await;
     assert_eq!(code, StatusCode::OK);
-    let versions = versions_of(&fx.ok("GET", &format!("/v1/memory_stores/live/memory_versions?memory_id={id}"), Value::Null).await);
+    let versions = versions_of(
+        &fx.ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memory_versions?memory_id={id}"),
+            Value::Null,
+        )
+        .await,
+    );
     assert_eq!(versions[0]["created_by"], "token:maintainer");
     assert_eq!(versions[1]["created_by"], "token:admin");
     // The created_by filter picks out one actor's versions.
-    let only_admin = versions_of(&fx.ok("GET", "/v1/memory_stores/live/memory_versions?created_by=token:admin", Value::Null).await);
+    let only_admin = versions_of(
+        &fx.ok(
+            "GET",
+            "/v1/memory_stores/live/memory_versions?created_by=token:admin",
+            Value::Null,
+        )
+        .await,
+    );
     assert_eq!(only_admin.len(), 1);
     assert_eq!(only_admin[0]["id"], versions[1]["id"]);
-    let nobody = versions_of(&fx.ok("GET", "/v1/memory_stores/live/memory_versions?created_by=token:nobody", Value::Null).await);
+    let nobody = versions_of(
+        &fx.ok(
+            "GET",
+            "/v1/memory_stores/live/memory_versions?created_by=token:nobody",
+            Value::Null,
+        )
+        .await,
+    );
     assert!(nobody.is_empty());
     // Delete is recorded too.
-    fx.call("DELETE", &format!("/v1/memory_stores/live/memories/{id}"), "maintainer", Value::Null).await;
-    let versions = versions_of(&fx.ok("GET", &format!("/v1/memory_stores/live/memory_versions?memory_id={id}"), Value::Null).await);
-    assert_eq!((versions[0]["operation"].as_str(), versions[0]["created_by"].as_str()), (Some("deleted"), Some("token:maintainer")));
+    fx.call(
+        "DELETE",
+        &format!("/v1/memory_stores/live/memories/{id}"),
+        "maintainer",
+        Value::Null,
+    )
+    .await;
+    let versions = versions_of(
+        &fx.ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memory_versions?memory_id={id}"),
+            Value::Null,
+        )
+        .await,
+    );
+    assert_eq!(
+        (
+            versions[0]["operation"].as_str(),
+            versions[0]["created_by"].as_str()
+        ),
+        (Some("deleted"), Some("token:maintainer"))
+    );
     // A dream's clone is created by `dream:<id>`; adopted changes land in the live store under the same actor.
-    fx.create("live", "/global/b.md", &content("Beta", "beta body")).await;
+    fx.create("live", "/global/b.md", &content("Beta", "beta body"))
+        .await;
     let d = fx.dream().await;
-    let (d_id, out) = (d["id"].as_str().unwrap().to_owned(), d["output_store_id"].as_str().unwrap().to_owned());
-    let clones = versions_of(&fx.ok("GET", &format!("/v1/memory_stores/{out}/memory_versions"), Value::Null).await);
-    assert!(!clones.is_empty() && clones.iter().all(|v| v["created_by"] == format!("dream:{d_id}")), "{clones:?}");
-    fx.create(&out, "/global/c.md", &content("Gamma", "gamma body")).await;
-    let in_out = versions_of(&fx.ok("GET", &format!("/v1/memory_stores/{out}/memory_versions?created_by=token:admin"), Value::Null).await);
-    assert_eq!(in_out.len(), 1, "writes to the output store are attributed to the token");
+    let (d_id, out) = (
+        d["id"].as_str().unwrap().to_owned(),
+        d["output_store_id"].as_str().unwrap().to_owned(),
+    );
+    let clones = versions_of(
+        &fx.ok(
+            "GET",
+            &format!("/v1/memory_stores/{out}/memory_versions"),
+            Value::Null,
+        )
+        .await,
+    );
+    assert!(
+        !clones.is_empty()
+            && clones
+                .iter()
+                .all(|v| v["created_by"] == format!("dream:{d_id}")),
+        "{clones:?}"
+    );
+    fx.create(&out, "/global/c.md", &content("Gamma", "gamma body"))
+        .await;
+    let in_out = versions_of(
+        &fx.ok(
+            "GET",
+            &format!("/v1/memory_stores/{out}/memory_versions?created_by=token:admin"),
+            Value::Null,
+        )
+        .await,
+    );
+    assert_eq!(
+        in_out.len(),
+        1,
+        "writes to the output store are attributed to the token"
+    );
     assert_eq!(fx.adopt("admin", &d_id).await.0, StatusCode::OK);
-    let adopted = versions_of(&fx.ok("GET", &format!("/v1/memory_stores/live/memory_versions?created_by=dream:{d_id}"), Value::Null).await);
-    assert_eq!(adopted.len(), 1, "only the added memory changed: {adopted:?}");
+    let adopted = versions_of(
+        &fx.ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memory_versions?created_by=dream:{d_id}"),
+            Value::Null,
+        )
+        .await,
+    );
+    assert_eq!(
+        adopted.len(),
+        1,
+        "only the added memory changed: {adopted:?}"
+    );
     assert_eq!(adopted[0]["operation"], "created");
     assert_eq!(adopted[0]["path"], "/global/c.md");
 }
@@ -928,26 +1836,74 @@ async fn removed_routes_404() {
 // ---------------------------------------------------------------------------
 
 async fn seed_recall_fixture(fx: &Fx) {
-    fx.create("live", "/global/keep-it-simple.md",
-        &content_with("Keep it simple", "Remove what is not needed.", json!({"pinned": true, "priority": 10}))).await;
-    fx.create("live", "/global/other-rule.md", &content("Other rule", "Prefer concrete reports.")).await;
-    fx.create("live", "/projects/projects/a/build.md", &content("Build the project", "Run cargo build here.")).await;
-    fx.create("live", "/projects/projects/b/elsewhere.md", &content("Another project", "Not for project a.")).await;
-    fx.create("live", "/topics/hardware/usb.md", &content("Raspberry USB power", "Switching one USB port is unverified.")).await;
-    fx.create("live", "/roles/coordinator/playbook.md", &content("Coordinator playbook", "Delegate everything.")).await;
+    fx.create(
+        "live",
+        "/global/keep-it-simple.md",
+        &content_with(
+            "Keep it simple",
+            "Remove what is not needed.",
+            json!({"pinned": true, "priority": 10}),
+        ),
+    )
+    .await;
+    fx.create(
+        "live",
+        "/global/other-rule.md",
+        &content("Other rule", "Prefer concrete reports."),
+    )
+    .await;
+    fx.create(
+        "live",
+        "/projects/projects/a/build.md",
+        &content("Build the project", "Run cargo build here."),
+    )
+    .await;
+    fx.create(
+        "live",
+        "/projects/projects/b/elsewhere.md",
+        &content("Another project", "Not for project a."),
+    )
+    .await;
+    fx.create(
+        "live",
+        "/topics/hardware/usb.md",
+        &content(
+            "Raspberry USB power",
+            "Switching one USB port is unverified.",
+        ),
+    )
+    .await;
+    fx.create(
+        "live",
+        "/roles/coordinator/playbook.md",
+        &content("Coordinator playbook", "Delegate everything."),
+    )
+    .await;
 }
 
-fn oracle_recall(fx: &Fx, project: &str, role: &str, topics: &[&str], query: &str) -> (i64, recall::Recalled) {
+fn oracle_recall(
+    fx: &Fx,
+    project: &str,
+    role: &str,
+    topics: &[&str],
+    query: &str,
+) -> (i64, recall::Recalled) {
     let store = fx.oracle();
     let (revision, memories) = store.live_memories().unwrap();
-    let mirror = store.status().unwrap()["mirror_dir"].as_str().unwrap().to_owned();
+    let mirror = store.status().unwrap()["mirror_dir"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let request = recall::Request {
         project: project.into(),
         role: role.into(),
         topics: topics.iter().map(|t| (*t).to_owned()).collect(),
         query: query.into(),
     };
-    (revision, recall::recall(&memories, revision, &mirror, &request))
+    (
+        revision,
+        recall::recall(&memories, revision, &mirror, &request),
+    )
 }
 
 #[tokio::test]
@@ -956,36 +1912,120 @@ async fn recall_endpoint() {
     seed_recall_fixture(&fx).await;
     let cases = [
         (json!({}), "", "", vec![], ""),
-        (json!({"project": "/projects/a"}), "/projects/a", "", vec![], ""),
-        (json!({"project_id": "example"}), "/projects/a", "", vec![], ""),
-        (json!({"project": "/projects/a", "role": "coordinator", "topics": ["hardware"]}), "/projects/a", "coordinator", vec!["hardware"], ""),
-        (json!({"query": "raspberry usb"}), "", "", vec![], "raspberry usb"),
-        (json!({"project": "/projects/a", "query": "cargo build"}), "/projects/a", "", vec![], "cargo build"),
-        (json!({"query": "kubernetes ingress yaml"}), "", "", vec![], "kubernetes ingress yaml"),
+        (
+            json!({"project": "/projects/a"}),
+            "/projects/a",
+            "",
+            vec![],
+            "",
+        ),
+        (
+            json!({"project_id": "example"}),
+            "/projects/a",
+            "",
+            vec![],
+            "",
+        ),
+        (
+            json!({"project": "/projects/a", "role": "coordinator", "topics": ["hardware"]}),
+            "/projects/a",
+            "coordinator",
+            vec!["hardware"],
+            "",
+        ),
+        (
+            json!({"query": "raspberry usb"}),
+            "",
+            "",
+            vec![],
+            "raspberry usb",
+        ),
+        (
+            json!({"project": "/projects/a", "query": "cargo build"}),
+            "/projects/a",
+            "",
+            vec![],
+            "cargo build",
+        ),
+        (
+            json!({"query": "kubernetes ingress yaml"}),
+            "",
+            "",
+            vec![],
+            "kubernetes ingress yaml",
+        ),
     ];
     for (request, project, role, topics, query) in cases {
-        let (code, body) = fx.call("POST", "/v1/recall", "reader", request.clone()).await;
+        let (code, body) = fx
+            .call("POST", "/v1/recall", "reader", request.clone())
+            .await;
         assert_eq!(code, StatusCode::OK, "{request}: {body}");
         let (revision, expected) = oracle_recall(&fx, project, role, &topics, query);
-        assert_eq!(body["text"], expected.text.as_str(), "text equals recall::recall for {request}");
+        assert_eq!(
+            body["text"],
+            expected.text.as_str(),
+            "text equals recall::recall for {request}"
+        );
         assert_eq!(body["revision"], revision);
         assert_eq!(body["view"], expected.view);
         assert_eq!(body["pinned"], json!(expected.pinned));
         assert_eq!(body["returned"], json!(expected.returned));
         let keys: HashSet<_> = body.as_object().unwrap().keys().cloned().collect();
-        assert_eq!(keys, HashSet::from_iter(["revision", "view", "pinned", "returned", "text"].map(String::from)), "no structured memories");
+        assert_eq!(
+            keys,
+            HashSet::from_iter(
+                ["revision", "view", "pinned", "returned", "text"].map(String::from)
+            ),
+            "no structured memories"
+        );
     }
     // Sanity on the content itself, so a renderer that returned nothing would not satisfy the oracle alone.
-    let (_, start) = fx.call("POST", "/v1/recall", "reader", json!({"project": "/projects/a"})).await;
+    let (_, start) = fx
+        .call(
+            "POST",
+            "/v1/recall",
+            "reader",
+            json!({"project": "/projects/a"}),
+        )
+        .await;
     assert_eq!(start["view"], "start");
     assert_eq!(start["pinned"], json!(["/global/keep-it-simple.md"]));
-    assert!(start["text"].as_str().unwrap().contains("Remove what is not needed."));
-    assert!(!start["text"].as_str().unwrap().contains("Not for project a."));
-    let (_, task) = fx.call("POST", "/v1/recall", "reader", json!({"query": "raspberry usb"})).await;
+    assert!(
+        start["text"]
+            .as_str()
+            .unwrap()
+            .contains("Remove what is not needed.")
+    );
+    assert!(
+        !start["text"]
+            .as_str()
+            .unwrap()
+            .contains("Not for project a.")
+    );
+    let (_, task) = fx
+        .call(
+            "POST",
+            "/v1/recall",
+            "reader",
+            json!({"query": "raspberry usb"}),
+        )
+        .await;
     assert_eq!(task["view"], "task");
     assert_eq!(task["returned"], json!(["/topics/hardware/usb.md"]));
-    let (_, none) = fx.call("POST", "/v1/recall", "reader", json!({"query": "kubernetes ingress yaml"})).await;
-    assert!(none["text"].as_str().unwrap().starts_with("No memory matches \"kubernetes ingress yaml\"."));
+    let (_, none) = fx
+        .call(
+            "POST",
+            "/v1/recall",
+            "reader",
+            json!({"query": "kubernetes ingress yaml"}),
+        )
+        .await;
+    assert!(
+        none["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("No memory matches \"kubernetes ingress yaml\".")
+    );
     assert_eq!(none["returned"], json!([]));
 }
 
@@ -999,7 +2039,10 @@ async fn recall_request_validation() {
         ("mode is gone", json!({"mode": "start"})),
         ("unknown field", json!({"mystery": true})),
         ("unknown project_id", json!({"project_id": "unknown"})),
-        ("project and project_id", json!({"project_id": "example", "project": "/a"})),
+        (
+            "project and project_id",
+            json!({"project_id": "example", "project": "/a"}),
+        ),
         ("relative project", json!({"project": "relative/path"})),
         ("topics not a list", json!({"topics": "hardware"})),
         ("query not a string", json!({"query": 5})),
@@ -1017,39 +2060,77 @@ async fn recall_usage_log() {
     use std::os::unix::fs::PermissionsExt;
     let fx = Fx::new();
     seed_recall_fixture(&fx).await;
-    let (_, hook) = fx.call("POST", "/v1/recall", "reader", json!({"project_id": "example", "client": "session-start"})).await;
-    let (_, task) = fx.call("POST", "/v1/recall", "reader", json!({"query": "raspberry usb", "role": "coordinator", "topics": ["hardware"]})).await;
-    fx.call("POST", "/v1/recall", "reader", json!({"limit": 3})).await;
+    let (_, hook) = fx
+        .call(
+            "POST",
+            "/v1/recall",
+            "reader",
+            json!({"project_id": "example", "client": "session-start"}),
+        )
+        .await;
+    let (_, task) = fx
+        .call(
+            "POST",
+            "/v1/recall",
+            "reader",
+            json!({"query": "raspberry usb", "role": "coordinator", "topics": ["hardware"]}),
+        )
+        .await;
+    fx.call("POST", "/v1/recall", "reader", json!({"limit": 3}))
+        .await;
     let log = fx.tmp.path().join("recall-log.jsonl");
-    let entries: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let entries: Vec<Value> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
     assert_eq!(entries.len(), 2, "only successful recalls are logged");
     for e in &entries {
         let keys: HashSet<_> = e.as_object().unwrap().keys().cloned().collect();
         assert_eq!(
             keys,
             HashSet::from_iter(
-                ["ts", "client", "project", "query", "role", "topics", "revision", "view", "pinned", "returned", "chars"].map(String::from)
+                [
+                    "ts", "client", "project", "query", "role", "topics", "revision", "view",
+                    "pinned", "returned", "chars"
+                ]
+                .map(String::from)
             ),
             "{e}"
         );
         assert!(e["ts"].as_str().is_some_and(|t| t.contains('T')));
     }
     let (first, second) = (&entries[0], &entries[1]);
-    assert_eq!(first["client"], "session-start", "client label from the request");
+    assert_eq!(
+        first["client"], "session-start",
+        "client label from the request"
+    );
     assert_eq!(first["project"], "/projects/a", "project_id resolved");
     assert_eq!(first["view"], "start");
     assert_eq!(first["pinned"], hook["pinned"]);
     assert_eq!(first["returned"], hook["returned"]);
     assert_eq!(first["revision"], hook["revision"]);
-    assert_eq!(first["chars"], hook["text"].as_str().unwrap().chars().count());
-    assert_eq!(second["client"], "reader", "token name when there is no label");
+    assert_eq!(
+        first["chars"],
+        hook["text"].as_str().unwrap().chars().count()
+    );
+    assert_eq!(
+        second["client"], "reader",
+        "token name when there is no label"
+    );
     assert_eq!(second["query"], "raspberry usb");
     assert_eq!(second["role"], "coordinator");
     assert_eq!(second["topics"], json!(["hardware"]));
     assert_eq!(second["view"], "task");
     assert_eq!(second["returned"], task["returned"]);
-    assert_eq!(second["chars"], task["text"].as_str().unwrap().chars().count());
-    assert_eq!(std::fs::metadata(&log).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(
+        second["chars"],
+        task["text"].as_str().unwrap().chars().count()
+    );
+    assert_eq!(
+        std::fs::metadata(&log).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1059,13 +2140,30 @@ async fn recall_usage_log() {
 #[tokio::test]
 async fn http_dream_workflow() {
     let fx = Fx::new();
-    let a = fx.create("live", "/global/a.md", &content("Alpha", "alpha body")).await;
+    let a = fx
+        .create("live", "/global/a.md", &content("Alpha", "alpha body"))
+        .await;
     let a_id = a["id"].as_str().unwrap().to_owned();
-    fx.create("live", "/global/gone.md", &content("Gone", "to be removed")).await;
-    fx.ok("POST", "/v1/observations", json!({"path": "/global/obs.md", "content": content("Observed", "seen once")})).await;
+    fx.create("live", "/global/gone.md", &content("Gone", "to be removed"))
+        .await;
+    fx.ok(
+        "POST",
+        "/v1/observations",
+        json!({"path": "/global/obs.md", "content": content("Observed", "seen once")}),
+    )
+    .await;
 
-    let dream = fx.ok("POST", "/v1/dreams", json!({"sessions": [{"source": "claude", "locator": "/s/one.jsonl"}]})).await;
-    let (d_id, out) = (dream["id"].as_str().unwrap().to_owned(), dream["output_store_id"].as_str().unwrap().to_owned());
+    let dream = fx
+        .ok(
+            "POST",
+            "/v1/dreams",
+            json!({"sessions": [{"source": "claude", "locator": "/s/one.jsonl"}]}),
+        )
+        .await;
+    let (d_id, out) = (
+        dream["id"].as_str().unwrap().to_owned(),
+        dream["output_store_id"].as_str().unwrap().to_owned(),
+    );
     assert!(d_id.starts_with("drm_") && out.starts_with("memstore_"));
     assert_eq!(dream["status"], "running");
     assert_eq!(dream["sessions"].as_array().unwrap().len(), 1);
@@ -1074,47 +2172,138 @@ async fn http_dream_workflow() {
     let keys: HashSet<_> = dream.as_object().unwrap().keys().cloned().collect();
     assert_eq!(
         keys,
-        HashSet::from_iter(["id", "status", "output_store_id", "sessions", "observations", "created_at", "ended_at", "adoption"].map(String::from))
+        HashSet::from_iter(
+            [
+                "id",
+                "status",
+                "output_store_id",
+                "sessions",
+                "observations",
+                "created_at",
+                "ended_at",
+                "adoption"
+            ]
+            .map(String::from)
+        )
     );
 
     // The output store starts as a clone: same ids, paths and hashes.
-    let live_rows = fx.ok("GET", "/v1/memory_stores/live/memories", Value::Null).await;
-    let out_rows = fx.ok("GET", &format!("/v1/memory_stores/{out}/memories"), Value::Null).await;
+    let live_rows = fx
+        .ok("GET", "/v1/memory_stores/live/memories", Value::Null)
+        .await;
+    let out_rows = fx
+        .ok(
+            "GET",
+            &format!("/v1/memory_stores/{out}/memories"),
+            Value::Null,
+        )
+        .await;
     let strip = |v: &Value| -> Vec<(Value, Value, Value)> {
-        let mut rows: Vec<_> = v["data"].as_array().unwrap().iter()
-            .map(|r| (r["id"].clone(), r["path"].clone(), r["content_sha256"].clone())).collect();
+        let mut rows: Vec<_> = v["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["id"].clone(),
+                    r["path"].clone(),
+                    r["content_sha256"].clone(),
+                )
+            })
+            .collect();
         rows.sort_by_key(|r| r.0.to_string());
         rows
     };
     assert_eq!(strip(&live_rows), strip(&out_rows));
-    let empty = fx.ok("GET", &format!("/v1/dreams/{d_id}?diff=true"), Value::Null).await;
-    assert_eq!(empty["diff"], json!({"added": [], "removed": [], "changed": []}));
+    let empty = fx
+        .ok("GET", &format!("/v1/dreams/{d_id}?diff=true"), Value::Null)
+        .await;
+    assert_eq!(
+        empty["diff"],
+        json!({"added": [], "removed": [], "changed": []})
+    );
 
     // The agent edits the output store only.
-    let new_text = content("Quokkas are not a fixture", "A quokka memory added by the dream.");
-    let added = fx.create(&out, "/topics/animals/quokka.md", &new_text).await;
-    fx.update(&out, &a_id, &content("Alpha revised", "alpha body revised")).await;
-    let gone = out_rows["data"].as_array().unwrap().iter().find(|r| r["path"] == "/global/gone.md").unwrap()["id"].as_str().unwrap().to_owned();
-    fx.ok("DELETE", &format!("/v1/memory_stores/{out}/memories/{gone}"), Value::Null).await;
-    assert_eq!(fx.ok("GET", "/v1/memory_stores/live/memories", Value::Null).await, live_rows, "live untouched before adopt");
-    assert!(!fx.mnt.join("shared-agent-memory/topics/animals/quokka.md").exists());
+    let new_text = content(
+        "Quokkas are not a fixture",
+        "A quokka memory added by the dream.",
+    );
+    let added = fx
+        .create(&out, "/topics/animals/quokka.md", &new_text)
+        .await;
+    fx.update(&out, &a_id, &content("Alpha revised", "alpha body revised"))
+        .await;
+    let gone = out_rows["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["path"] == "/global/gone.md")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fx.ok(
+        "DELETE",
+        &format!("/v1/memory_stores/{out}/memories/{gone}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        fx.ok("GET", "/v1/memory_stores/live/memories", Value::Null)
+            .await,
+        live_rows,
+        "live untouched before adopt"
+    );
+    assert!(
+        !fx.mnt
+            .join("shared-agent-memory/topics/animals/quokka.md")
+            .exists()
+    );
 
-    let without = fx.ok("GET", &format!("/v1/dreams/{d_id}"), Value::Null).await;
-    assert!(without.get("diff").is_none(), "diff only when asked: {without}");
-    let with = fx.ok("GET", &format!("/v1/dreams/{d_id}?diff=true"), Value::Null).await;
+    let without = fx
+        .ok("GET", &format!("/v1/dreams/{d_id}"), Value::Null)
+        .await;
+    assert!(
+        without.get("diff").is_none(),
+        "diff only when asked: {without}"
+    );
+    let with = fx
+        .ok("GET", &format!("/v1/dreams/{d_id}?diff=true"), Value::Null)
+        .await;
     let diff = &with["diff"];
-    assert_eq!((diff["added"].as_array().unwrap().len(), diff["changed"].as_array().unwrap().len(), diff["removed"].as_array().unwrap().len()), (1, 1, 1), "{diff}");
+    assert_eq!(
+        (
+            diff["added"].as_array().unwrap().len(),
+            diff["changed"].as_array().unwrap().len(),
+            diff["removed"].as_array().unwrap().len()
+        ),
+        (1, 1, 1),
+        "{diff}"
+    );
     // Frozen shapes (design §4.1): added/removed {memory_id, path, content}; changed {memory_id, before, after}.
-    assert_eq!(diff["added"][0], json!({"memory_id": added["id"], "path": "/topics/animals/quokka.md", "content": new_text}));
-    assert_eq!(diff["removed"][0], json!({"memory_id": gone, "path": "/global/gone.md", "content": content("Gone", "to be removed")}));
-    assert_eq!(diff["changed"][0], json!({
-        "memory_id": a_id,
-        "before": {"path": "/global/a.md", "content": content("Alpha", "alpha body")},
-        "after": {"path": "/global/a.md", "content": content("Alpha revised", "alpha body revised")},
-    }));
+    assert_eq!(
+        diff["added"][0],
+        json!({"memory_id": added["id"], "path": "/topics/animals/quokka.md", "content": new_text})
+    );
+    assert_eq!(
+        diff["removed"][0],
+        json!({"memory_id": gone, "path": "/global/gone.md", "content": content("Gone", "to be removed")})
+    );
+    assert_eq!(
+        diff["changed"][0],
+        json!({
+            "memory_id": a_id,
+            "before": {"path": "/global/a.md", "content": content("Alpha", "alpha body")},
+            "after": {"path": "/global/a.md", "content": content("Alpha revised", "alpha body revised")},
+        })
+    );
 
     // The task recall cannot find it before adopt, and does after.
-    let find = || async { fx.call("POST", "/v1/recall", "reader", json!({"query": "quokkas"})).await.1 };
+    let find = || async {
+        fx.call("POST", "/v1/recall", "reader", json!({"query": "quokkas"}))
+            .await
+            .1
+    };
     assert_eq!(find().await["returned"], json!([]));
     let adopted = fx.adopt("admin", &d_id).await;
     assert_eq!(adopted.0, StatusCode::OK, "{}", adopted.1);
@@ -1123,31 +2312,76 @@ async fn http_dream_workflow() {
     assert_eq!(adopted.1["adoption"]["summary"], "Test adoption");
     assert_eq!(adopted.1["adoption"]["coverage"], "Fixtures only");
     assert_eq!(adopted.1["adoption"]["conflicts"], json!([]));
-    assert_eq!(adopted.1["adoption"]["added"], json!(["/topics/animals/quokka.md"]));
+    assert_eq!(
+        adopted.1["adoption"]["added"],
+        json!(["/topics/animals/quokka.md"])
+    );
     assert_eq!(adopted.1["adoption"]["changed"], json!(["/global/a.md"]));
     assert_eq!(adopted.1["adoption"]["removed"], json!(["/global/gone.md"]));
     let found = find().await;
     assert_eq!(found["returned"], json!(["/topics/animals/quokka.md"]));
-    assert!(found["text"].as_str().unwrap().contains("A quokka memory added by the dream."));
+    assert!(
+        found["text"]
+            .as_str()
+            .unwrap()
+            .contains("A quokka memory added by the dream.")
+    );
 
     // Live now holds the dream's work, attributed to it; the removed memory is a tombstone.
-    let live = fx.ok("GET", "/v1/memory_stores/live/memories", Value::Null).await;
-    let paths: HashSet<_> = live["data"].as_array().unwrap().iter().map(|r| r["path"].as_str().unwrap().to_owned()).collect();
-    assert_eq!(paths, HashSet::from(["/global/a.md".to_owned(), "/topics/animals/quokka.md".to_owned()]));
-    assert_eq!(fx.ok("GET", &format!("/v1/memory_stores/live/memories/{a_id}"), Value::Null).await["content"], content("Alpha revised", "alpha body revised"));
+    let live = fx
+        .ok("GET", "/v1/memory_stores/live/memories", Value::Null)
+        .await;
+    let paths: HashSet<_> = live["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        paths,
+        HashSet::from([
+            "/global/a.md".to_owned(),
+            "/topics/animals/quokka.md".to_owned()
+        ])
+    );
+    assert_eq!(
+        fx.ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memories/{a_id}"),
+            Value::Null
+        )
+        .await["content"],
+        content("Alpha revised", "alpha body revised")
+    );
     assert_ne!(added["id"], Value::Null);
-    let by_dream = versions_of(&fx.ok("GET", &format!("/v1/memory_stores/live/memory_versions?created_by=dream:{d_id}"), Value::Null).await);
+    let by_dream = versions_of(
+        &fx.ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memory_versions?created_by=dream:{d_id}"),
+            Value::Null,
+        )
+        .await,
+    );
     assert_eq!(by_dream.len(), 3);
 
     // The mirror holds the exact bytes; marker and index follow.
     let mirror = fx.mnt.join("shared-agent-memory");
-    assert_eq!(std::fs::read_to_string(mirror.join("topics/animals/quokka.md")).unwrap(), new_text);
+    assert_eq!(
+        std::fs::read_to_string(mirror.join("topics/animals/quokka.md")).unwrap(),
+        new_text
+    );
     assert!(!mirror.join("global/gone.md").exists());
-    let marker: Value = serde_json::from_str(&std::fs::read_to_string(mirror.join(".agent-memory-store")).unwrap()).unwrap();
+    let marker: Value =
+        serde_json::from_str(&std::fs::read_to_string(mirror.join(".agent-memory-store")).unwrap())
+            .unwrap();
     let status = fx.status().await;
     assert_eq!(marker["revision"], status["revision"]);
     assert_eq!(marker["store_id"], status["store_id"]);
-    assert!(std::fs::read_to_string(mirror.join("INDEX.md")).unwrap().contains("/topics/animals/quokka.md"));
+    assert!(
+        std::fs::read_to_string(mirror.join("INDEX.md"))
+            .unwrap()
+            .contains("/topics/animals/quokka.md")
+    );
     assert_eq!(status["dreams_running"], 0);
     assert_eq!(status["observations_pending"], 0);
 
@@ -1155,23 +2389,59 @@ async fn http_dream_workflow() {
     let next = fx.dream().await;
     assert_eq!(next["observations"], json!([]));
     let list = fx.ok("GET", "/v1/dreams", Value::Null).await;
-    let ids: Vec<_> = list["data"].as_array().unwrap().iter().map(|d| d["id"].clone()).collect();
+    let ids: Vec<_> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["id"].clone())
+        .collect();
     assert_eq!(ids, vec![next["id"].clone(), json!(d_id)]);
 }
 
 #[tokio::test]
 async fn adopt_is_per_memory_over_http() {
     let fx = Fx::new();
-    let x = fx.create("live", "/global/x.md", &content("X", "x body")).await["id"].as_str().unwrap().to_owned();
-    let y = fx.create("live", "/global/y.md", &content("Y", "y body")).await["id"].as_str().unwrap().to_owned();
+    let x = fx
+        .create("live", "/global/x.md", &content("X", "x body"))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let y = fx
+        .create("live", "/global/y.md", &content("Y", "y body"))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let d = fx.dream().await;
-    let (d_id, out) = (d["id"].as_str().unwrap().to_owned(), d["output_store_id"].as_str().unwrap().to_owned());
+    let (d_id, out) = (
+        d["id"].as_str().unwrap().to_owned(),
+        d["output_store_id"].as_str().unwrap().to_owned(),
+    );
     // Live changes X while the dream changes Y: no conflict; the live X is kept.
-    fx.update("live", &x, &content("X live", "x live body")).await;
-    fx.update(&out, &y, &content("Y dream", "y dream body")).await;
+    fx.update("live", &x, &content("X live", "x live body"))
+        .await;
+    fx.update(&out, &y, &content("Y dream", "y dream body"))
+        .await;
     assert_eq!(fx.adopt("admin", &d_id).await.0, StatusCode::OK);
-    assert_eq!(fx.ok("GET", &format!("/v1/memory_stores/live/memories/{x}"), Value::Null).await["content"], content("X live", "x live body"));
-    assert_eq!(fx.ok("GET", &format!("/v1/memory_stores/live/memories/{y}"), Value::Null).await["content"], content("Y dream", "y dream body"));
+    assert_eq!(
+        fx.ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memories/{x}"),
+            Value::Null
+        )
+        .await["content"],
+        content("X live", "x live body")
+    );
+    assert_eq!(
+        fx.ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memories/{y}"),
+            Value::Null
+        )
+        .await["content"],
+        content("Y dream", "y dream body")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1181,7 +2451,9 @@ async fn adopt_is_per_memory_over_http() {
 #[tokio::test]
 async fn body_limits_and_413() {
     let fx = Fx::new();
-    let m = fx.create("live", "/global/a.md", &content("Alpha", "alpha body")).await;
+    let m = fx
+        .create("live", "/global/a.md", &content("Alpha", "alpha body"))
+        .await;
     let id = m["id"].as_str().unwrap().to_owned();
     let d = fx.dream().await;
     let d_id = d["id"].as_str().unwrap().to_owned();
@@ -1200,8 +2472,24 @@ async fn body_limits_and_413() {
         assert_eq!(code, StatusCode::PAYLOAD_TOO_LARGE, "{method} {path}");
     }
     // Authentication still comes first.
-    assert_eq!(call_bytes(&fx.app, "POST", "/v1/recall", None, huge.clone()).await.0, StatusCode::UNAUTHORIZED);
-    assert_eq!(call_bytes(&fx.app, "POST", "/v1/memory_stores/live/memories", Some("reader"), huge).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(
+        call_bytes(&fx.app, "POST", "/v1/recall", None, huge.clone())
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call_bytes(
+            &fx.app,
+            "POST",
+            "/v1/memory_stores/live/memories",
+            Some("reader"),
+            huge
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
 
     // Content is limited to 102,400 bytes (a 400, not a 413), independent of the 4 MiB body limit.
     let exact = |total: usize| {
@@ -1214,16 +2502,57 @@ async fn body_limits_and_413() {
     assert_eq!(created["content_sha256"], sha256(fits.as_bytes()));
     let too_big = exact(102_401);
     assert_eq!(too_big.len(), 102_401);
-    let (code, body) = fx.call("POST", "/v1/memory_stores/live/memories", "admin", json!({"path": "/global/bigger.md", "content": too_big})).await;
+    let (code, body) = fx
+        .call(
+            "POST",
+            "/v1/memory_stores/live/memories",
+            "admin",
+            json!({"path": "/global/bigger.md", "content": too_big}),
+        )
+        .await;
     assert_invalid(&(code, body), "");
-    assert_invalid(&fx.call("POST", &format!("/v1/memory_stores/live/memories/{id}"), "admin", json!({"content": too_big})).await, "");
+    assert_invalid(
+        &fx.call(
+            "POST",
+            &format!("/v1/memory_stores/live/memories/{id}"),
+            "admin",
+            json!({"content": too_big}),
+        )
+        .await,
+        "",
+    );
     let three_mib = content("Huge", &"h".repeat(3 * 1024 * 1024));
-    let (code, _) = fx.call("POST", "/v1/memory_stores/live/memories", "admin", json!({"path": "/global/huge.md", "content": three_mib})).await;
-    assert_eq!(code, StatusCode::BAD_REQUEST, "a 3 MiB body is under the body limit");
-    let (code, _) = fx.call("POST", "/v1/observations", "admin", json!({"path": "/global/huge.md", "content": three_mib})).await;
+    let (code, _) = fx
+        .call(
+            "POST",
+            "/v1/memory_stores/live/memories",
+            "admin",
+            json!({"path": "/global/huge.md", "content": three_mib}),
+        )
+        .await;
+    assert_eq!(
+        code,
+        StatusCode::BAD_REQUEST,
+        "a 3 MiB body is under the body limit"
+    );
+    let (code, _) = fx
+        .call(
+            "POST",
+            "/v1/observations",
+            "admin",
+            json!({"path": "/global/huge.md", "content": three_mib}),
+        )
+        .await;
     assert_eq!(code, StatusCode::BAD_REQUEST);
     // Nothing from the refused requests was stored.
-    let names: Vec<_> = fx.ok("GET", "/v1/memory_stores/live/memories", Value::Null).await["data"].as_array().unwrap().iter().map(|r| r["path"].clone()).collect();
+    let names: Vec<_> = fx
+        .ok("GET", "/v1/memory_stores/live/memories", Value::Null)
+        .await["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].clone())
+        .collect();
     assert_eq!(names.len(), 2, "{names:?}");
     assert_eq!(fx.status().await["observations_pending"], 0);
 }
