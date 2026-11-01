@@ -549,7 +549,7 @@ async fn live_alias() {
     let id = created["id"].as_str().unwrap();
     let store_id = fx.status().await["store_id"].as_str().unwrap().to_owned();
     assert!(store_id.starts_with("memstore_") && store_id.len() == "memstore_".len() + 32);
-    // Reads agree through both names; the recall-only token may use either.
+    // Reads agree through both names (`reviewer` holds recall and review, which version reads need).
     for suffix in [
         "memories".to_string(),
         format!("memories/{id}"),
@@ -559,7 +559,7 @@ async fn live_alias() {
             .call(
                 "GET",
                 &format!("/v1/memory_stores/live/{suffix}"),
-                "reader",
+                "reviewer",
                 Value::Null,
             )
             .await;
@@ -567,7 +567,7 @@ async fn live_alias() {
             .call(
                 "GET",
                 &format!("/v1/memory_stores/{store_id}/{suffix}"),
-                "reader",
+                "reviewer",
                 Value::Null,
             )
             .await;
@@ -609,6 +609,15 @@ async fn live_alias() {
         )
         .await;
     assert_eq!(denied.0, StatusCode::FORBIDDEN);
+    // ... nor read its versions, through either name.
+    for name in ["live", store_id.as_str()] {
+        let path = format!("/v1/memory_stores/{name}/memory_versions");
+        assert_eq!(
+            fx.call("GET", &path, "reader", Value::Null).await.0,
+            StatusCode::FORBIDDEN,
+            "{name}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
