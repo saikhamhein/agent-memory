@@ -27,7 +27,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 | Test engineer A | `local_c79accd0-cf18-4ce5-9f59-86e28b10f1a7` | `rework/tests-a` @ `f565521`: 19 tests, 19/19 on engineer WIP, 6 mutants caught; told to adopt PR 10 block_len |
 | Engineer R (recall) | `local_6158a6a3-f625-44c2-9401-7a559884a564` | PR 9 merged |
 | Test engineer R | `local_88b6d74f-ee66-441e-a12a-cb3df7e5719c` | `rework/tests-r` @ `30114e5`: 19 tests, PR 10 block_len adopted |
-| Engineer H (HTTP API) | `local_a320fa63-05c9-4d9a-9f6a-ebad5ce08624` | PR 14 approved at e548fe2 (draft); reruns after R |
+| Engineer H (HTTP API) | `local_a320fa63-05c9-4d9a-9f6a-ebad5ce08624` | PR 14 merged |
 | Test engineer H | `local_7a6bae6a-f710-4da7-a17d-ba7c2ff467f9` | `rework/tests-h` @ `0a70203`: encodes the architect rulings; fails to compile on the integration head as intended |
 | Engineer M (migration + install) | `local_15a0c48f-71c2-43fe-8db3-cc45fdea948c` | PR 15 approved at 4445976; reruns after R, H land |
 | Test engineer M | `local_9adf3c05-b247-4bd0-97bb-f64f1214b6aa` | `rework/tests-m` @ `87ec62f` (4,000 pin budget): 13 migrate + store tests + 5 install tests, all failing on the integration head; 4 rulings asked |
@@ -36,6 +36,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Merged
 
+- PR 14 (WS-H HTTP API) → `rework/managed-agents-v2` `8fbb862`. Coordinator check at head 1eeb4eb: 64 Rust tests, clippy and fmt clean; api.rs/config.rs unchanged since the architect's e548fe2 approval.
 - PR 9 (WS-R recall) → `rework/managed-agents-v2` `ef2f07e`. Coordinator reviewed R's blocked local commit, merged in PR 16, re-ran 43 tests + clippy + fmt, pushed as `0ffb46a`, merged.
 - PR 11 (WS-A store core + mirror, architect-approved at 529c2d5) → `rework/managed-agents-v2` `76e85fd`. Coordinator check on the merged result: 23 Rust tests pass, clippy -D warnings and fmt clean; placeholders for recall.rs/api.rs/main.rs labelled with owners. Python suites are expected red until C.
 - PR 16 (cutover: save the old hook to runtime/ first; rerun update-local.sh after --migrate; doc only) → `rework/managed-agents-v2`.
