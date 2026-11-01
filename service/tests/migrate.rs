@@ -384,6 +384,37 @@ fn refuses_a_non_linear_revision_chain() {
     assert!(!db.mnt().exists());
 }
 
+/// Design §3.6 (X13): v1 cannot produce `active < max(id)`, so a store that has it was edited by hand or damaged.
+/// Migrating "the active set" would silently drop the later revisions; refusing is the only safe answer.
+#[test]
+fn refuses_active_below_max() {
+    // The later revision differs: the replay would end on a different set than `active` names.
+    let differs = plain();
+    // The later revision repeats the active set exactly: replaying all of them would reach the same memories, so
+    // only the explicit rule (not the final set comparison) can refuse it.
+    let a = mem("alpha", global(), "Alpha one");
+    let same = v1_db(
+        &[revision(T1, vec![a.clone()]), revision(T2, vec![a])],
+        &[],
+        &[],
+    );
+    for (name, db) in [("differs", differs), ("same set", same)] {
+        db.conn()
+            .execute("UPDATE state SET value=1 WHERE key='active'", [])
+            .unwrap();
+        let before = bytes(&db.db);
+        let ran = migrate(&db.db, &[]);
+        ran.assert_failed();
+        assert!(
+            ran.text().to_lowercase().contains("active"),
+            "{name}: the refusal names the active revision: {}",
+            ran.text()
+        );
+        assert_eq!(bytes(&db.db), before, "{name}: nothing changed");
+        assert!(!db.mnt().exists(), "{name}: no mirror was built");
+    }
+}
+
 #[test]
 fn dry_run_changes_nothing() {
     let keep = mem("keep-it-simple", global(), &"မ".repeat(137));
