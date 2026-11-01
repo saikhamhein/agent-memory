@@ -128,6 +128,10 @@ impl Fx {
         call(&self.app, method, path, Some(token), body).await
     }
     /// Setup call by the admin token that must succeed with 200.
+    /// POST with a raw (here: empty) body.
+    async fn call_bytes_to(&self, path: &str, token: &str, body: Vec<u8>) -> (StatusCode, Value) {
+        call_bytes(&self.app, "POST", path, Some(token), body).await
+    }
     async fn ok(&self, method: &str, path: &str, body: Value) -> Value {
         let (code, value) = self.call(method, path, "admin", body).await;
         assert_eq!(code, StatusCode::OK, "{method} {path}: {value}");
@@ -2594,8 +2598,9 @@ async fn version_reads_need_review() {
 }
 
 /// X7: a leaked secret in an observation can be removed, from `observations` and from
-/// every `dream_jobs.input` copy, pending or consumed. ASSUMPTION (sent to the architect):
-/// the route answers 200 `{id, ..}`, and a second redaction is 200 too.
+/// every `dream_jobs.input` copy, pending or consumed. Architect ruling: 200 `{id, created, body}`
+/// with body `{path: null, content: null, created_by, redacted_at, redacted_by}`; a second
+/// redaction is 200 too; the request body is empty or `{}`, any key is 400.
 #[tokio::test]
 async fn observation_redact_route() {
     let count = |fx: &Fx, table: &str, column: &str, marker: &str| -> i64 {
@@ -2675,6 +2680,15 @@ async fn observation_redact_route() {
             .await;
         assert_eq!(code, StatusCode::OK, "{marker}: {body}");
         assert_eq!(body["id"], json!(id), "{body}");
+        assert!(body["created"].is_string(), "{body}");
+        let redacted = &body["body"];
+        assert!(
+            redacted["path"].is_null() && redacted["content"].is_null(),
+            "{body}"
+        );
+        assert_eq!(redacted["created_by"], "token:admin", "{body}");
+        assert!(redacted["redacted_at"].is_string(), "{body}");
+        assert_eq!(redacted["redacted_by"], "token:maintainer", "{body}");
         assert_eq!(
             count(&fx, "observations", "body", marker),
             0,
@@ -2694,13 +2708,40 @@ async fn observation_redact_route() {
             )
             .await;
         assert_eq!(code, StatusCode::OK, "second redaction: {again}");
+        assert!(again["body"]["content"].is_null(), "{again}");
     }
+    // Empty body is fine; any key is 400 and changes nothing.
+    let (code, body) = fx
+        .call_bytes_to(
+            &format!("/v1/observations/{pending}/redact"),
+            "maintainer",
+            Vec::new(),
+        )
+        .await;
+    assert_eq!(code, StatusCode::OK, "empty body: {body}");
+    let (code, body) = fx
+        .call(
+            "POST",
+            &format!("/v1/observations/{pending}/redact"),
+            "maintainer",
+            json!({"force": true}),
+        )
+        .await;
+    assert_invalid(&(code, body), "");
     // The running dream still lists the observation by id, without the leaked text.
     let after = fx
         .ok("GET", &format!("/v1/dreams/{running_id}"), Value::Null)
         .await;
     let listed = after["observations"].as_array().unwrap();
-    assert!(listed.iter().any(|o| o["id"] == json!(pending)), "{after}");
+    let entry = listed
+        .iter()
+        .find(|o| o["id"] == json!(pending))
+        .expect("listed");
+    assert!(
+        entry["body"]["path"].is_null() && entry["body"]["content"].is_null(),
+        "{after}"
+    );
+    assert_eq!(entry["body"]["created_by"], "token:admin", "{after}");
     assert!(!after.to_string().contains("marker-pending"), "{after}");
     // Redaction is not a delete: the other observations and rows are untouched.
     assert_eq!(count(&fx, "observations", "id", "%"), 2);
