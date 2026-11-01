@@ -1542,6 +1542,32 @@ fn project_words_do_not_match() {
     );
 }
 
+/// X19 (architect, doc PR 22): the project path is out of the term-frequency filter too. Here
+/// "mesh" is in the path of 3 of the 4 candidates; if the path counted it would be a common word
+/// and be ignored, and the one memory that really is about mesh would not be found.
+#[test]
+fn project_path_is_not_in_the_frequency_filter() {
+    let mut s = Store::new();
+    for i in 0..3 {
+        s.add(
+            &format!("/projects/work/mesh/app/p{i}.md"),
+            &format!("Project note {i}"),
+            &format!("Plain project body {i}."),
+            json!({}),
+        );
+    }
+    s.add(
+        "/global/topology.md",
+        "Mesh topology notes",
+        "Plain body.",
+        json!({}),
+    );
+    assert_eq!(
+        s.recall("/work/mesh/app", "", &[], "mesh").returned,
+        ["/global/topology.md"]
+    );
+}
+
 #[test]
 fn task_finds_topic_without_flag() {
     let s = Store::fixture();
