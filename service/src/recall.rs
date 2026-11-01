@@ -5,14 +5,10 @@
 //! non-empty query is the task view: only memories that match it. Anything
 //! over a bound is listed, never dropped.
 
-use crate::model::{Kind, Memory, block_len};
+use crate::model::{Kind, Memory, absolute_path, block_len};
 use chrono::Utc;
 use regex::Regex;
-use std::{
-    collections::BTreeSet,
-    path::{Component, Path, PathBuf},
-    sync::LazyLock,
-};
+use std::{collections::BTreeSet, path::Path, sync::LazyLock};
 
 /// Characters of the whole start view, under Claude Code's 10,000-character hook cap.
 pub const START_MAX: usize = 9500;
@@ -89,7 +85,7 @@ pub fn index_md(memories: &[Memory], revision: i64, mirror_dir: &str) -> String 
 /// Neither excluded nor another project's.
 fn in_scope<'a>(memories: &'a [Memory], project: &str) -> Vec<&'a Memory> {
     let today = Utc::now().date_naive().to_string();
-    let project = project_root(project);
+    let project = absolute_path(project).ok();
     memories
         .iter()
         .filter(|m| {
@@ -226,7 +222,13 @@ fn task(memories: &[&Memory], revision: i64, query: &str) -> Recalled {
                 .filter_map(|t| t.as_str())
                 .collect::<Vec<_>>()
                 .join(" ");
-            let head = terms(&format!("{} {tags} {}", title(m), m.scope.value));
+            // A project's path words would match all of its memories.
+            let scope = if m.scope.kind == Kind::Project {
+                ""
+            } else {
+                &m.scope.value
+            };
+            let head = terms(&format!("{} {tags} {scope}", title(m)));
             (*m, head, terms(&m.body))
         })
         .collect();
@@ -343,25 +345,6 @@ fn terms(text: &str) -> BTreeSet<String> {
         .filter(|w| w.chars().count() >= 3 && !STOPWORDS.contains(w))
         .map(str::to_owned)
         .collect()
-}
-
-/// The session's project as a lexical absolute path; anything else is no project.
-fn project_root(project: &str) -> Option<PathBuf> {
-    let path = Path::new(project);
-    if !path.is_absolute() {
-        return None;
-    }
-    let mut root = PathBuf::new();
-    for c in path.components() {
-        match c {
-            Component::ParentDir => {
-                root.pop();
-            }
-            Component::CurDir => (),
-            other => root.push(other),
-        }
-    }
-    Some(root)
 }
 
 /// A project memory applies at its root or below it, by whole components.
