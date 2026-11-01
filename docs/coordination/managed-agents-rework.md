@@ -34,6 +34,16 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 | Engineer C (clients, hook, docs) | `local_111adbc3-3795-4a66-881a-f9190f3f09ac` | PR 17 merged |
 | Test engineer C | `local_51c2d84e-6cc7-487f-9294-8ccccdbd4e05` | 27 tests: `rework/tests-c` @ `eea5b60` (stub prints start + task view; hook env overrides), all failing on the integration head; open: stub start+task output, awaiting architect |
 
+## Review campaign (started 2026-11-01, on `3bdfd68`)
+
+| Reviewer | Session | Focus |
+| --- | --- | --- |
+| Review 1 | `local_468439bd-2e59-4b40-a112-732bf9532bfe` | store, migration, data safety |
+| Review 2 | `local_33b6d546-b905-477f-946d-24f8b5f4c4c9` | recall, clients, hook end to end |
+| Review 3 | `local_4af086ca-a946-4a23-91b8-80c448967abd` | security, API surface, simplicity |
+
+Then a fresh triage lead classes the findings: (a) fix before release, (b) small fix, (c) later.
+
 ## Merged
 
 - PR 17 (WS-C clients, MCP, hook, stub, skill, docs) → `rework/managed-agents-v2`. Coordinator check at head d4633e6 with a release build: 33 Python tests (28 C + 5 install), 79 Rust tests; live service untouched. All five workstreams are merged.
@@ -65,7 +75,6 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Blockers
 
-- Review sessions not started: the app starts sessions only on a message typed in the desktop app, and the user is on Remote Control. Planned reviewers: (1) store, migration and data safety; (2) recall, clients and hook end to end; (3) security, API surface and simplicity. Each mutation-checks the tests; then a fresh triage lead.
 - Review campaign note: test-C's 28 tests passed first try; the fresh-eyes review should mutation-check them.
 - Architect session's outgoing messaging paused again (2026-11-01, second time); rulings for H/test-H and the PR 10 notice undelivered. Needs the user to resume it there. The coordinator does not relay around the pause.
 - Proposed card `task_8b1e5f32`: text-only MCP recall quick win on master.
