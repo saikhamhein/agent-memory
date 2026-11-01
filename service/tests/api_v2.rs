@@ -22,7 +22,7 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     path::{Path, PathBuf},
 };
 use tempfile::TempDir;
@@ -76,14 +76,10 @@ const TOKENS: [(&str, &[Capability]); 6] = [
     ),
 ];
 
-fn config(db: &Path, mnt: &Path) -> Config {
-    // Fix round (X15, X16): the engineer deletes `projects` and `mount` from this literal.
-    let mut projects = BTreeMap::new();
-    projects.insert("example".into(), "/projects/a".into());
+fn config(db: &Path) -> Config {
     Config {
         listen: "127.0.0.1:0".parse().unwrap(),
         database: db.into(),
-        projects,
         tokens: TOKENS
             .iter()
             .map(|(name, caps)| Token {
@@ -92,7 +88,6 @@ fn config(db: &Path, mnt: &Path) -> Config {
                 capabilities: HashSet::from_iter(caps.iter().copied()),
             })
             .collect(),
-        mount: Some(mnt.into()),
     }
 }
 
@@ -115,7 +110,7 @@ impl Fx {
         Store::init(&db).unwrap();
         prepare(&db);
         let store = Store::open(&db, &mnt).unwrap();
-        let app = api::router(config(&db, &mnt), store);
+        let app = api::router(config(&db), store);
         Fx { tmp, app, db, mnt }
     }
     async fn call(
