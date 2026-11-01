@@ -11,7 +11,7 @@ import sys
 import time
 import unittest
 
-from service.tests.harness import REPO, content, sha, start_server
+from service.tests.harness import BINARY, REPO, SERVICE, content, sha, start_server  # test_install imports BINARY, SERVICE
 
 HOOK = REPO / 'hooks' / 'agent-memory-recall.py'
 START_HEADING = '# Shared agent memory — revision'
