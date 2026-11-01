@@ -6,7 +6,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Resume here (read this first after a compaction)
 
-- **Phase:** fix round. Merged into `rework/managed-agents-v2`: R (PR 24), M (PR 25), A (PR 26), H (PR 28). All five fix workstreams merged. Next (eng C, branch `claude/ws-c-fix`). M's X31 follow-up (PR 29) is merged. Then the combined check, a fresh dry run on a live-store copy with TMPDIR on disk, and the cutover per design §5 with the user's go.
+- **Phase:** fix round. Merged into `rework/managed-agents-v2`: R (PR 24), M (PR 25), A (PR 26), H (PR 28). All five fix workstreams merged. Combined check at `915d491` (release): 98 Rust tests, 51 Python tests, clippy clean, TMPDIR empty. Fresh dry run on a backup-API copy of the live store at legacy revision 12: exit 0, copy byte-identical, 25 memories, 49 versions (29 created, 16 modified, 4 deleted), five pins at 2,826 of 4,000. Next: the user's go for the cutover; then (eng C, branch `claude/ws-c-fix`). M's X31 follow-up (PR 29) is merged. Then the combined check, a fresh dry run on a live-store copy with TMPDIR on disk, and the cutover per design §5 with the user's go.
 - **Merge routine:** read the diff, check it's current with the integration head (or test a local merge), run all suites with `TMPDIR` and `CARGO_TARGET_DIR` under this worktree (`.check-*`, `.target`), then `gh pr merge N --merge --match-head-commit SHA`. Remove the check worktree with `chmod -R u+w` first, because the mirror is read-only. For C, also check that the real `~/.claude.json` `mcpServers` and `~/.codex/config.toml` are unchanged.
 - **Rules learned:**
   - The user's repo authority covers pushing and merging teammates' reviewed commits; don't ask.
