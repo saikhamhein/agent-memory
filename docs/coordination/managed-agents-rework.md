@@ -6,7 +6,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Resume here (read this first after a compaction)
 
-- **Phase:** fix round. Merged into `rework/managed-agents-v2`: R (PR 24), M (PR 25), A (PR 26), H (PR 28). Next: C (PR 27) (eng C, branch `claude/ws-c-fix`). M's X31 follow-up (PR 29) is merged. Then the combined check, a fresh dry run on a live-store copy with TMPDIR on disk, and the cutover per design §5 with the user's go.
+- **Phase:** fix round. Merged into `rework/managed-agents-v2`: R (PR 24), M (PR 25), A (PR 26), H (PR 28). All five fix workstreams merged. Next (eng C, branch `claude/ws-c-fix`). M's X31 follow-up (PR 29) is merged. Then the combined check, a fresh dry run on a live-store copy with TMPDIR on disk, and the cutover per design §5 with the user's go.
 - **Merge routine:** read the diff, check it's current with the integration head (or test a local merge), run all suites with `TMPDIR` and `CARGO_TARGET_DIR` under this worktree (`.check-*`, `.target`), then `gh pr merge N --merge --match-head-commit SHA`. Remove the check worktree with `chmod -R u+w` first, because the mirror is read-only. For C, also check that the real `~/.claude.json` `mcpServers` and `~/.codex/config.toml` are unchanged.
 - **Rules learned:**
   - The user's repo authority covers pushing and merging teammates' reviewed commits; don't ask.
@@ -99,6 +99,7 @@ Merge order: R, M and A merged; H → C next. Removed request keys are rejected 
 ## Merged
 
 - Checked: the API rejecting `limit`/`budget` is safe. The client CLI and stub accept and ignore them (design §3.3, §4.1), and `stub_forwards_recall` runs the exact loader line.
+- PR 27 (fix round, C: X1 five-tool session MCP, X3/D1 skill owns the CLI dream cycle, X4 observation evidence check and pinned-change report, D2 full review every run, the stale-dream rule, Claude Code re-registration via `claude mcp`) → `rework/managed-agents-v2`. Coordinator check at 5692b26 (release build): 51 Python tests and 97 Rust tests pass; the real `~/.claude.json` mcpServers and `~/.codex/config.toml` are unchanged; the live service is active. Note (c): `test_recall_canonicalizes_worktrees…` assumes TMPDIR is outside any git repo.
 - PR 29 (fix round, M X31: migrate tests use SealedTempDir, no leftovers) → `rework/managed-agents-v2`. Coordinator check on the merged result: 98 Rust tests, TMPDIR empty, clippy clean.
 - PR 28 (fix round, H: X7 redact route, X9 version reads need review, X11, X15/X16 no project_id/mount/projects, X31) → `rework/managed-agents-v2`. Coordinator check at 5055e15: 97 Rust tests, clippy and fmt clean.
 - PR 26 (fix round, A: X6, X7 store side, X8, X10, X12, X14, X30, X31 SealedTempDir, secure_delete) → `rework/managed-agents-v2`. Coordinator check at 1183da5: 91 Rust tests, clippy and fmt clean, TMPDIR empty.
