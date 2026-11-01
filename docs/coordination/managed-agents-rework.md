@@ -6,7 +6,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Resume here (read this first after a compaction)
 
-- **Phase:** fix round. Merged into `rework/managed-agents-v2`: R (PR 24), M (PR 25), A (PR 26 at `3f98000`). Next: H (eng H opens its PR on `claude/fix-h-api`), then C (eng C, branch `claude/ws-c-fix`), then M's small X31 follow-up. Then the combined check, a fresh dry run on a live-store copy with TMPDIR on disk, and the cutover per design §5 with the user's go.
+- **Phase:** fix round. Merged into `rework/managed-agents-v2`: R (PR 24), M (PR 25), A (PR 26), H (PR 28). Next: C (PR 27) (eng C, branch `claude/ws-c-fix`), then M's small X31 follow-up. Then the combined check, a fresh dry run on a live-store copy with TMPDIR on disk, and the cutover per design §5 with the user's go.
 - **Merge routine:** read the diff, check it's current with the integration head (or test a local merge), run all suites with `TMPDIR` and `CARGO_TARGET_DIR` under this worktree (`.check-*`, `.target`), then `gh pr merge N --merge --match-head-commit SHA`. Remove the check worktree with `chmod -R u+w` first, because the mirror is read-only. For C, also check that the real `~/.claude.json` `mcpServers` and `~/.codex/config.toml` are unchanged.
 - **Rules learned:**
   - The user's repo authority covers pushing and merging teammates' reviewed commits; don't ask.
@@ -99,6 +99,7 @@ Merge order: R, M and A merged; H → C next. Removed request keys are rejected 
 ## Merged
 
 - Checked: the API rejecting `limit`/`budget` is safe. The client CLI and stub accept and ignore them (design §3.3, §4.1), and `stub_forwards_recall` runs the exact loader line.
+- PR 28 (fix round, H: X7 redact route, X9 version reads need review, X11, X15/X16 no project_id/mount/projects, X31) → `rework/managed-agents-v2`. Coordinator check at 5055e15: 97 Rust tests, clippy and fmt clean.
 - PR 26 (fix round, A: X6, X7 store side, X8, X10, X12, X14, X30, X31 SealedTempDir, secure_delete) → `rework/managed-agents-v2`. Coordinator check at 1183da5: 91 Rust tests, clippy and fmt clean, TMPDIR empty.
 - PR 25 (fix round, M: X2 token reconcile, X5 unit disabled with the decision by user_version, X13, X15, X17) → `rework/managed-agents-v2`, merged ahead of A and H because it depends on neither. Coordinator check on the merged result: 82 Rust tests (release), 10 install tests, clippy clean; the v1 guard runs before any config write. X31 (SealedTempDir in migrate.rs) follows after A.
 - PR 24 (fix round, R: X18, X19) → `rework/managed-agents-v2`. Coordinator check at 220ee02: 81 Rust tests, clippy clean, TMPDIR left empty.
