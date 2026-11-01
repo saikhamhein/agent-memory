@@ -2,6 +2,7 @@
 //! Used by `migrate.rs` and `migrate_store.rs`. Temporary databases only.
 #![allow(dead_code)]
 
+use crate::common::SealedTempDir;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -10,7 +11,6 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
 };
-use tempfile::TempDir;
 
 /// Verbatim from the v1 `Store::init` (and `memory.py`), kept here because `Store::init` creates v2 after the rework.
 pub const V1_DDL: &str = "CREATE TABLE IF NOT EXISTS revisions (
@@ -92,7 +92,7 @@ pub fn dream(id: &str, base: i64, observations: &[&Observation], promoted: Optio
 }
 
 pub struct V1 {
-    pub dir: TempDir,
+    pub dir: SealedTempDir,
     pub db: PathBuf,
 }
 impl V1 {
@@ -110,7 +110,7 @@ impl V1 {
 /// A v1 database as the v1 service left it: revision 0 empty, then `revisions` as 1..n each with parent = id − 1,
 /// `state.active` = n. Rollbacks are just later revisions repeating an earlier body.
 pub fn v1_db(revisions: &[Revision], observations: &[Observation], dreams: &[Dream]) -> V1 {
-    let dir = TempDir::new().unwrap();
+    let dir = SealedTempDir::new();
     let db = dir.path().join("memory.sqlite3");
     let conn = Connection::open(&db).unwrap();
     conn.pragma_update(None, "journal_mode", "DELETE").unwrap();

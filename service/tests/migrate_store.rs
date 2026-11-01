@@ -1,5 +1,6 @@
 //! Workstream M acceptance tests that need the v2 library API (design §3.6 step 6, §3.5 "pending", §3.3 start view):
 //! what the migrated database looks like to `Store` and to recall.
+mod common;
 mod legacy;
 
 use agent_memory_server::{
