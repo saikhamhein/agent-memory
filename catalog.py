@@ -56,11 +56,9 @@ def main():
         except OSError as error:
             result['errors'].append({'path': str(path), 'error': str(error)})
     result['missing_since_previous_scan'] = sorted(set(old) - {f['path'] for f in result['files']})
-    stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-    text = json.dumps(result, indent=2) + '\n'
-    (out / ('catalog-' + stamp + '.json')).write_text(text)
-    temporary = out / ('latest-' + stamp + '.tmp')
-    temporary.write_text(text); temporary.replace(previous_path)
+    temporary = out / 'latest-catalog.json.tmp'
+    temporary.write_text(json.dumps(result, indent=2) + '\n')
+    temporary.replace(previous_path)
     changed = sorted((f for f in result['files'] if f['changed_since_previous_scan']), key=lambda f: -f['mtime_ns'])
     sessions = [{'source': f['provider'], 'locator': f['path'], 'sha256': f['sha256']} for f in changed[:MAX_SESSIONS]]
     (out / 'changed-sessions.json').write_text(json.dumps(sessions, indent=2) + '\n')

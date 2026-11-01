@@ -19,7 +19,7 @@ The Python suites start the release binary on a temporary store through `service
 
 ```sh
 python3 service/install-user.py --database "$PWD/memory.sqlite3"   # add --migrate --pin SLUG… once for a v1 database
-python3 service/install-mcp.py                                     # MCP adapter for Codex and Claude Code
+python3 service/install-mcp.py                                     # MCP adapter, session credential only
 ln -sfn "$PWD/hooks/agent-memory-recall.py" ~/.claude/hooks/agent-memory-recall.py
 systemctl --user is-active agent-memory && agent-memory-client status
 ```
@@ -30,21 +30,21 @@ systemctl --user is-active agent-memory && agent-memory-client status
 | --- | --- |
 | Server, client | `~/.local/bin/agent-memory-server`, `~/.local/bin/agent-memory-client` |
 | Server config and token hashes | `~/.config/agent-memory/server.toml` |
-| Read credential, maintenance credential | `~/.config/agent-memory/client.json`, `maintainer.json` (mode 0600) |
+| Session credential, maintenance credential | `~/.config/agent-memory/client.json`, `maintainer.json` (mode 0600) |
 | MCP adapter | `~/.local/share/agent-memory-mcp/` |
 | User unit | `~/.config/systemd/user/agent-memory.service` |
-| Mirror | `<database dir>/mnt/shared-agent-memory/`, or `mount` in `server.toml` |
+| Mirror | `<database dir>/mnt/shared-agent-memory/` |
 
-Each token has an explicit list of capabilities: `recall`, `observe`, `review` and `promote`. Reads of the live store need `recall`. A dream's output store needs `review`. Writes to the live store need `promote`. To keep the service running after logout, run `loginctl enable-linger "$USER"`.
+Each token has an explicit list of capabilities: `recall`, `observe`, `review` and `promote`. The session token (`agent-session`, in `client.json`) has `recall` and `observe`; it is what the hook, the loaders and MCP use. The maintenance token (`memory-maintainer`, in `maintainer.json`) has all four; only the dream uses it. Reads of the live store need `recall`. Version history and a dream's output store need `review`. Writes to the live store need `promote`. To keep the service running after logout, run `loginctl enable-linger "$USER"`.
 
 ## Client
 
-The client uses `client.json` by default. Pass `--config ~/.config/agent-memory/maintainer.json` for writes and dreams.
+The client uses `client.json` by default, which allows `status`, `recall`, `ls`, `cat` and `observe`. Every other command needs `--config ~/.config/agent-memory/maintainer.json`.
 
 | Command | Does |
 | --- | --- |
 | `status` | Revision, memory count, pinned characters, pending observations, mirror state |
-| `recall [--query Q] [--project ROOT \| --project-id ID] [--role R] [--topic T]… [--client LABEL]` | Prints the start view, or with a query, only the matches |
+| `recall [--query Q] [--project DIR] [--role R] [--topic T]… [--client LABEL]` | Prints the start view, or with a query, only the matches. A `DIR` in a Git worktree maps to the main checkout |
 | `ls [PREFIX] [--store S]`, `cat PATH\|memver_… [--store S]` | Lists memories; prints a memory or version as its exact bytes |
 | `versions [PATH] [--created-by ACTOR] [--store S]` | Version history, newest first |
 | `observe PATH FILE` | Records a candidate |
@@ -56,34 +56,32 @@ The client uses `client.json` by default. Pass `--config ~/.config/agent-memory/
 
 ## MCP tools
 
-The MCP host launches `mcp_server.py --config client.json [--maintenance-config maintainer.json]`. The adapter turns tool calls into authenticated API calls. Tools take paths, and the adapter resolves each path to an id with one list call. Recall returns text. Every other tool returns the API's JSON as text.
+The MCP host launches `mcp_server.py --config client.json`. The adapter has the session tools only, on the live store: `memory_status`, `memory_recall(query, project)`, `memory_list(path_prefix)`, `memory_read(path)` and `memory_observe(path, content)`. Pass `project` as the canonical project root, or recall returns no project memories. Recall returns text; every other tool returns the API's JSON as text. There is no maintenance mode: dreams run through the client.
 
-| Set | Tools |
-| --- | --- |
-| Read | `memory_status`, `memory_recall(query, project, role, topics)`, `memory_list(path_prefix, store)`, `memory_read(path, store)`, `memory_versions(path, created_by, store)` |
-| Maintenance (with `--maintenance-config`) | `memory_observe`, `memory_write(path, content, expected_sha256, new_path, store)` (no `expected_sha256` means create), `memory_delete`, `memory_redact`, `memory_dream_start`, `memory_dream_get`, `memory_dream_adopt`, `memory_dream_cancel` |
+`install-mcp.py` registers it for Codex and keeps one copy of the previous Codex config at `runtime/codex-config.toml`.
 
 A 409 becomes a tool error that names its type and paths and says to re-read and retry. An unreachable service is a tool error, never an empty result. If tools are missing in a desktop app after an install, restart the app.
 
 ## HTTP API
 
-Every `/v1` route needs `Authorization: Bearer TOKEN`. `/healthz` is unauthenticated and holds no data. `{store}` is `live` or a store id.
+Every `/v1` route needs `Authorization: Bearer TOKEN`. `/healthz` is unauthenticated and holds no data. `{store}` is `live` or a store id. Removed request keys are rejected.
 
 | Route | Capability | Body → result |
 | --- | --- | --- |
 | `GET /v1/status` | recall | `{store_id, revision, memories, pinned_chars, observations_pending, dreams_running, mirror_dir, mirror_stale}` |
-| `POST /v1/recall` | recall | `{project?, project_id?, role?, topics?, query?, client?}` → `{revision, view, pinned, returned, text}` |
+| `POST /v1/recall` | recall | `{project?, role?, topics?, query?, client?}` → `{revision, view, pinned, returned, text}` |
 | `GET /v1/memory_stores/{store}/memories?path_prefix=` | read | `{data: [{id, path, title, content_sha256, memory_version_id, updated_at}]}` |
 | `GET /v1/memory_stores/{store}/memories/{id}` | read | the same, plus `content` |
 | `POST /v1/memory_stores/{store}/memories` | write | `{path, content}` → memory |
 | `POST /v1/memory_stores/{store}/memories/{id}` | write | `{content?, path?, precondition?: {type: "content_sha256", content_sha256}}` → memory |
 | `DELETE /v1/memory_stores/{store}/memories/{id}?expected_content_sha256=` | write | `{type: "memory_deleted", id}` |
-| `GET /v1/memory_stores/{store}/memory_versions?memory_id=&created_by=` | read | `{data: [version]}`, newest first, without content |
-| `GET /v1/memory_stores/{store}/memory_versions/{id}` | read | version with content |
+| `GET /v1/memory_stores/{store}/memory_versions?memory_id=&created_by=` | review | `{data: [version]}`, newest first, without content |
+| `GET /v1/memory_stores/{store}/memory_versions/{id}` | review | version with content |
 | `POST /v1/memory_stores/{store}/memory_versions/{id}/redact` | promote | version |
 | `POST /v1/observations` | observe | `{path, content}` → `{id}` |
-| `POST /v1/dreams`, `GET /v1/dreams`, `GET /v1/dreams/{id}?diff=true` | review | `{sessions}` → dream; `{data: [dream]}`; dream (plus `diff`) |
-| `POST /v1/dreams/{id}/adopt` | promote | `{summary, coverage, conflicts, reviewed}` → dream |
+| `POST /v1/observations/{id}/redact` | promote | erases an observation's body everywhere it is stored |
+| `POST /v1/dreams`, `GET /v1/dreams`, `GET /v1/dreams/{id}?diff=true` | review | `{sessions: [{source, locator, sha256?}]}` → dream; `{data: [dream]}`; dream (plus `diff` while running) |
+| `POST /v1/dreams/{id}/adopt` | promote | `{summary, coverage, conflicts}` → dream |
 | `POST /v1/dreams/{id}/cancel` | review | dream |
 
 "read" means `recall` for the live store and `review` for any other store; "write" means `promote` for the live store and `review` for any other store.
@@ -92,7 +90,7 @@ Errors:
 - 400: invalid input.
 - 401 / 403: authentication or capability.
 - 404: an unknown object or route.
-- 409 `{error, type, paths?}`: `precondition_failed`, `path_exists`, `slug_exists`, `store_archived`, `pinned_budget_exceeded`, `adopt_conflict`, `observations_consumed`.
+- 409 `{error, type, paths?}`: `precondition_failed`, `path_exists`, `slug_exists`, `store_archived`, `dream_running` (`paths` names the running dream), `pinned_budget_exceeded`, `adopt_conflict`.
 - 413: a body over 4 MiB.
 
 Each recall appends a line to `recall-log.jsonl` next to the database: `ts`, `client` (the request label, else the token name), `project`, `query`, `role`, `topics`, `revision`, `view`, `pinned`, `returned`, `chars`.

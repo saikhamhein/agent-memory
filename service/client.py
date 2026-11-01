@@ -3,6 +3,7 @@
 import argparse
 import json
 from pathlib import Path
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -51,15 +52,29 @@ def q(value):
     return urllib.parse.quote(value, safe='')
 
 
+def canonical_root(path):
+    """Map a directory in a Git worktree to the same place in the main checkout; other paths are kept."""
+    try:
+        found = subprocess.run(['git', '-C', path, 'rev-parse', '--path-format=absolute', '--show-toplevel',
+                                '--git-common-dir'], capture_output=True, text=True, timeout=5).stdout.split('\n')
+    except (OSError, subprocess.SubprocessError):
+        return path
+    if len(found) < 2 or not found[1].endswith('/.git'):
+        return path
+    try:
+        inside = Path(path).resolve().relative_to(Path(found[0]).resolve())
+    except ValueError:
+        return path
+    return str(Path(found[1][:-len('/.git')]) / inside)
+
+
 def parser():
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument('--config', type=Path, default=CONFIG)
     commands = root.add_subparsers(dest='command', required=True)
     commands.add_parser('status')
     recall = commands.add_parser('recall', help='Start view without --query; matching memories with it')
-    project = recall.add_mutually_exclusive_group()
-    project.add_argument('--project', default='')
-    project.add_argument('--project-id', default='')
+    recall.add_argument('--project', default='', help='Project directory; a worktree maps to its main checkout')
     recall.add_argument('--query', default='')
     recall.add_argument('--role', default='')
     recall.add_argument('--topic', action='append', default=[])
@@ -96,9 +111,15 @@ def parser():
     show.add_argument('--diff', action='store_true')
     adopt = dream.add_parser('adopt')
     adopt.add_argument('id')
-    adopt.add_argument('review', type=Path, help='JSON {summary, coverage, conflicts, reviewed}')
+    adopt.add_argument('review', type=Path, help='JSON {summary, coverage, conflicts}')
     dream.add_parser('cancel').add_argument('id')
     return root
+
+
+def recall(api, args, query):
+    project = canonical_root(args.project) if args.project else ''
+    return api.call('POST', '/v1/recall', dict(project=project, role=args.role, topics=args.topic,
+        query=query, client=args.client))
 
 
 def run(args):
@@ -108,9 +129,7 @@ def run(args):
     if args.command == 'status':
         return api.call('GET', '/v1/status')
     if args.command == 'recall':
-        result = api.call('POST', '/v1/recall', dict(project=args.project, project_id=args.project_id,
-            role=args.role, topics=args.topic, query=args.query, client=args.client))
-        sys.stdout.write(result['text'])
+        sys.stdout.write(recall(api, args, args.query)['text'])
         return None
     if args.command == 'ls':
         return api.call('GET', f'{memories}?path_prefix={q(args.prefix)}')
@@ -158,15 +177,18 @@ def run(args):
     return api.call('POST', f'/v1/dreams/{q(args.id)}/cancel', {})
 
 
+ERRORS = (OSError, ValueError, KeyError, urllib.error.URLError)
+
+
 def main():
-    result = run(parser().parse_args())
+    try:
+        result = run(parser().parse_args())
+    except ERRORS as error:
+        print(f'Error: {error}', file=sys.stderr)
+        sys.exit(1)
     if result is not None:
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == '__main__':
-    try:
-        main()
-    except (OSError, ValueError, KeyError, urllib.error.URLError) as error:
-        print(f'Error: {error}', file=sys.stderr)
-        sys.exit(1)
+    main()

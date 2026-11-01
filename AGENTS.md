@@ -3,7 +3,7 @@
 A local memory store shared by Codex, Claude Code and DeepSeek Harness. See README.md for how it works and service/README.md for the API, install and tests.
 
 - Run the tests listed in service/README.md. They use temporary stores; never point a test at the live store.
-- The service is the only writer. Change live memories only through the API (dream adopt, or `write` with `--expected`), never by editing the database or the mirror.
+- The service is the only writer. Sessions only suggest (`observe`); only a dream changes memories (`skill/dream-memory/SKILL.md`). Never edit the database or the mirror.
 - This machine's store is `/home/sai/Projects/agent-memory/memory.sqlite3`; `/home/sai/probe/agent-memory` belongs to another PC.
 - The only recurring dream is the desktop scheduler's `daily-memory-dream` task. Its prompt is a copy of `ops/daily-memory-dream.md`; after changing that file, copy it into the task.
 
