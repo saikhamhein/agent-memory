@@ -201,8 +201,8 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
 
 1. **Candidates:** every in-scope unpinned memory plus all topic and role memories, excluding other projects, tentative and expired memories. Pinned memories are excluded because the start view already carried them.
 2. **Terms:** lowercase `\w+` tokens of at least 3 characters that are not in the frozen `STOPWORDS` list in `recall.rs` (about 60 common English words). With 4 or more candidates, a term found in more than half of them is also ignored (for example "memory", "agent", "user").
-3. **Match rule:** at least 1 distinct term in the title, tags or scope value, or at least 2 distinct terms in the body.
-4. **Ranking:** score = 3 × title/tag/scope hits + body hits. Ties sort by `priority`, then slug.
+3. **Match rule:** at least 1 distinct term in the head (the title, the tags, and the name of a topic or role memory), or at least 2 distinct terms in the body. A project memory's root path is not a head term (X19); otherwise a query word like `projects` or a repository name would match every memory of that project.
+4. **Ranking:** score = 3 × head hits + body hits. Ties sort by `priority`, then slug.
 5. **Output:** the top `SEARCH_RESULTS = 5` in full, within `TASK_BODY_BUDGET = 6000` of `block_len`. Further matches appear as `- {path} — {title}` under "More matches", at most 20 lines, then `+N more`.
 6. **No match:** the output is exactly `No memory matches "{query}".\n`. Every recall text ends with exactly one newline.
 7. **Why not BM25:** its scores have no natural cut-off, so "an unrelated query returns nothing" would need a tuned threshold. The distinct-term rule with a frequency filter is deterministic and testable.
@@ -243,7 +243,8 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
   - `pinned`: the paths in "Always apply".
   - `returned`: every path whose body is in the text, pinned included, in output order.
   - `view`: `"start"` or `"task"`.
-- **Term frequency filter** covers the title, tags, scope value and body.
+- **Term frequency filter** covers the head and the body.
+- **Project matching inside `recall()`** uses `model::absolute_path`, and an error means no project (X18). There is no separate `project_root`.
 - **Tokens.** `\w+` is the Rust regex UTS#18 class, which includes the Mn and Mc marks, so Burmese runs stay whole tokens. Python's `re` `\w` splits them, which is one more reason recall is rendered only in Rust.
 - **Expiry** is compared against the UTC date.
 
