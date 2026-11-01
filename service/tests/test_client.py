@@ -82,6 +82,7 @@ class ClientTests(unittest.TestCase):
         self.server.seed('/global/keep.md', 'Keep', pinned=True)
         _, env = self.server.home()
         note = self.file('n.md', content('N'))
+        output = self.server.api('POST', '/v1/dreams', {'sessions': []})[1]['output_store_id']  # a real non-live store
 
         def session(*args):
             return self.server.client(*args, role=None, env=env)
@@ -91,7 +92,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(session('observe', '/global/n.md', note).returncode, 0)
         for args in (('write', '/global/n.md', note), ('rm', '/global/keep.md'), ('versions',),
                      ('redact', 'memver_' + '0' * 32), ('dream', 'start'), ('dream', 'show'),
-                     ('ls', '--store', 'memstore_' + '0' * 32)):
+                     ('ls', '--store', output)):
             result = session(*args)
             self.assertNotEqual(result.returncode, 0, args)
             self.assertIn('403', result.stderr, args)
