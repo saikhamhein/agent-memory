@@ -29,13 +29,14 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 | Test engineer R | `local_88b6d74f-ee66-441e-a12a-cb3df7e5719c` | `rework/tests-r` @ `30114e5`: 19 tests, PR 10 block_len adopted |
 | Engineer H (HTTP API) | `local_a320fa63-05c9-4d9a-9f6a-ebad5ce08624` | PR 14 merged |
 | Test engineer H | `local_7a6bae6a-f710-4da7-a17d-ba7c2ff467f9` | `rework/tests-h` @ `0a70203`: encodes the architect rulings; fails to compile on the integration head as intended |
-| Engineer M (migration + install) | `local_15a0c48f-71c2-43fe-8db3-cc45fdea948c` | PR 15 approved at 4445976; reruns after R, H land |
+| Engineer M (migration + install) | `local_15a0c48f-71c2-43fe-8db3-cc45fdea948c` | PR 15 merged |
 | Test engineer M | `local_9adf3c05-b247-4bd0-97bb-f64f1214b6aa` | `rework/tests-m` @ `87ec62f` (4,000 pin budget): 13 migrate + store tests + 5 install tests, all failing on the integration head; 4 rulings asked |
 | Engineer C (clients, hook, docs) | `local_111adbc3-3795-4a66-881a-f9190f3f09ac` | 28/28 on a preview build (A + R + H heads); PR after R, H land |
 | Test engineer C | `local_51c2d84e-6cc7-487f-9294-8ccccdbd4e05` | 27 tests: `rework/tests-c` @ `eea5b60` (stub prints start + task view; hook env overrides), all failing on the integration head; open: stub start+task output, awaiting architect |
 
 ## Merged
 
+- PR 15 (WS-M migration + install) → `rework/managed-agents-v2`. Coordinator check at head 4b243e4 (release): 79 Rust tests, 5 install tests (sandboxed HOME, fake systemctl), clippy and fmt clean; M's files unchanged since the architect's 4445976 approval; live service untouched.
 - PR 14 (WS-H HTTP API) → `rework/managed-agents-v2` `8fbb862`. Coordinator check at head 1eeb4eb: 64 Rust tests, clippy and fmt clean; api.rs/config.rs unchanged since the architect's e548fe2 approval.
 - PR 9 (WS-R recall) → `rework/managed-agents-v2` `ef2f07e`. Coordinator reviewed R's blocked local commit, merged in PR 16, re-ran 43 tests + clippy + fmt, pushed as `0ffb46a`, merged.
 - PR 11 (WS-A store core + mirror, architect-approved at 529c2d5) → `rework/managed-agents-v2` `76e85fd`. Coordinator check on the merged result: 23 Rust tests pass, clippy -D warnings and fmt clean; placeholders for recall.rs/api.rs/main.rs labelled with owners. Python suites are expected red until C.
