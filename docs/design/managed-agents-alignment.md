@@ -529,7 +529,7 @@ pub fn index_md(memories: &[Memory], revision: i64, mirror_dir: &str) -> String;
 ```
 
 **MCP tools (C).** Paths are resolved to ids with one list call.
-- **The only tool set** (session credential): `memory_status`; `memory_recall(query="", project="", role="", topics=[])` (text only); `memory_list(path_prefix="/")`; `memory_read(path)` (live store, current content only); `memory_observe(path, content)`.
+- **The only tool set** (session credential): `memory_status`; `memory_recall(query="", project="")` (text only; the agent passes the canonical project root, X20; `role` and `topics` dropped, X25); `memory_list(path_prefix="/")`; `memory_read(path)` (live store, current content only); `memory_observe(path, content)`.
 - There is no maintenance mode and no `--maintenance-config`. Maintenance goes through the client CLI with `maintainer.json` (§3.4).
 - A 409 becomes a ToolError that names its type and paths and says to re-read and retry.
 
@@ -733,7 +733,13 @@ Steps marked (Δn) are the v2 triage's runbook deltas.
 
       If it fails after the commit, the service is left stopped **and disabled**. Then either rerun `install-user.py` without `--migrate` or roll back. Never `systemctl --user start` it by hand.
    5. Run `update-local.sh` again. Now that the store is v2, it gets past the guard and installs the MCP adapter (registering `client.json`, the `agent-session` token, only) and the hook link (Δ4).
-   6. Re-register Claude Code's `shared_memory` server without `--maintenance-config`, using the mechanism WS-C verified (Δ4). It changes the user's configuration, so it needs the same go.
+   6. Claude Code's `shared_memory` server is re-registered by `install-mcp.py` in step 3.5, using the documented CLI (Δ4). The script:
+      - checks `claude mcp get shared_memory`;
+      - refuses an entry that isn't ours;
+      - does nothing when the entry already matches;
+      - otherwise runs `claude mcp remove --scope user`, then `claude mcp add --scope user … --config client.json`.
+
+      It never edits `~/.claude.json` by hand. This changes the user's configuration, so it is covered by the same go. Afterwards, check `claude mcp get shared_memory`. Open sessions need `/mcp reconnect` or a restart.
    7. Verify (Δ5):
       - `status`: the memory count matches the pre-cutover store, pinned characters are shown, and `mirror_stale` is false;
       - `server.toml` lists `agent-session` with exactly `recall` and `observe`, and no `agent-recall`;
