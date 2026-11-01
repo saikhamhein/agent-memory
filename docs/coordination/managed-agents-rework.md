@@ -60,6 +60,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 - Architect ruling (no contract change): A's PR may carry owner-labelled placeholders `recall.rs` (R), `api.rs` cut to `/healthz` + `/v1/status` (H), `main.rs` cut to init/serve/backup/check (M); owners replace them wholesale. A must not touch `config.rs`, and the integration branch must build and pass `cargo test` at A's head. On merge: check placeholders are labelled and the integration head builds.
 - Coordinator ruling: test-M `replays_history` expects 6 versions, not 7 (its own lineages sum to 6). Corrects an arithmetic error; loosens nothing.
 - 2026-11-01 user: repo authority was granted at session start; the coordinator reviews and pushes or merges a teammate's blocked commit itself and does not ask. Memory revision 11 (`coordinate-a-team-playbook` item 10).
+- 2026-11-01 dry run (integration head 83d8090, release binary) on a sqlite3 backup-API copy of the live store at legacy revision 11: exit 0, copy byte-identical afterwards, 25 memories, versions 29 created / 11 modified / 4 deleted, revision 44, pinned_chars 626 with `--pin keep-it-simple`. Proposed pins: keep-it-simple, direct-concrete-communication, research-unfamiliar-before-relying, autonomy-within-scope, investigate-before-asking (about 2,826 of 4,000); waiting on architect.
 
 ## Blockers
 
