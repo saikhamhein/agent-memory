@@ -29,30 +29,44 @@ fn pending_observations_carry_over() {
     let db = v1_db(
         &[revision(T1, vec![mem("alpha", global(), "Alpha")])],
         &[consumed.clone(), pending.clone(), in_unpromoted.clone()],
-        &[dream("dream-promoted", 0, &[&consumed], Some(1)), dream("dream-open", 1, &[&in_unpromoted], None)],
+        &[
+            dream("dream-promoted", 0, &[&consumed], Some(1)),
+            dream("dream-open", 1, &[&in_unpromoted], None),
+        ],
     );
     migrate(&db.db, &[]).assert_ok();
     let mut store = Store::open(&db.db, &db.mnt()).unwrap();
     let started: Value = store.dream_start(&json!([]), "test").unwrap();
     // Pending = not in the input of any promoted legacy dream (an unpromoted legacy dream consumed nothing).
-    let listed = started["observations"].as_array().expect("dream lists its observations");
+    let listed = started["observations"]
+        .as_array()
+        .expect("dream lists its observations");
     let text = serde_json::to_string(listed).unwrap();
     assert_eq!(listed.len(), 2, "{text}");
-    assert!(text.contains("obs-pending") && text.contains("obs-unpromoted"), "{text}");
+    assert!(
+        text.contains("obs-pending") && text.contains("obs-unpromoted"),
+        "{text}"
+    );
     assert!(!text.contains("obs-consumed"), "{text}");
     // The rows themselves are untouched, consumed or not.
-    let count: i64 = db.conn().query_row("SELECT COUNT(*) FROM observations", [], |r| r.get(0)).unwrap();
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM observations", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(count, 3);
 }
 
 #[test]
 fn pinned_memories_appear_in_every_start_view() {
     let db = v1_db(
-        &[revision(T1, vec![
-            mem("keep-it-simple", global(), "Keep it simple"),
-            mem("proj-rule", project("/home/sai/Projects/x"), "Project rule"),
-            mem("plain", global(), "Not pinned"),
-        ])],
+        &[revision(
+            T1,
+            vec![
+                mem("keep-it-simple", global(), "Keep it simple"),
+                mem("proj-rule", project("/home/sai/Projects/x"), "Project rule"),
+                mem("plain", global(), "Not pinned"),
+            ],
+        )],
         &[],
         &[],
     );
@@ -62,18 +76,38 @@ fn pinned_memories_appear_in_every_start_view() {
     let mirror = db.mirror().display().to_string();
     for (label, req) in [
         ("no project", request("", "", &[])),
-        ("other project", request("/home/sai/Projects/other", "", &[])),
+        (
+            "other project",
+            request("/home/sai/Projects/other", "", &[]),
+        ),
         ("a role", request("", "coordinator", &[])),
         ("topics", request("", "", &["hardware", "ui"])),
     ] {
         let recalled = recall::recall(&memories, revision, &mirror, &req);
-        assert!(recalled.pinned.contains(&"/global/keep-it-simple.md".to_string()), "{label}: {:?}", recalled.pinned);
+        assert!(
+            recalled
+                .pinned
+                .contains(&"/global/keep-it-simple.md".to_string()),
+            "{label}: {:?}",
+            recalled.pinned
+        );
         assert!(recalled.text.contains("Keep it simple"), "{label}");
-        assert!(!recalled.pinned.iter().any(|p| p.contains("plain")), "{label}: unpinned memory listed as pinned");
-        assert!(!recalled.pinned.iter().any(|p| p.contains("proj-rule")), "{label}: other project's memory");
+        assert!(
+            !recalled.pinned.iter().any(|p| p.contains("plain")),
+            "{label}: unpinned memory listed as pinned"
+        );
+        assert!(
+            !recalled.pinned.iter().any(|p| p.contains("proj-rule")),
+            "{label}: other project's memory"
+        );
     }
     for project in ["/home/sai/Projects/x", "/home/sai/Projects/x/sub/dir"] {
         let recalled = recall::recall(&memories, revision, &mirror, &request(project, "", &[]));
-        assert!(recalled.pinned.contains(&"/projects/home/sai/Projects/x/proj-rule.md".to_string()), "{project}");
+        assert!(
+            recalled
+                .pinned
+                .contains(&"/projects/home/sai/Projects/x/proj-rule.md".to_string()),
+            "{project}"
+        );
     }
 }

@@ -44,7 +44,11 @@ pub struct Revision {
 }
 /// The memories of one v1 revision, numbered 1.. by position in the `v1_db` call.
 pub fn revision(created: &str, memories: Vec<Value>) -> Revision {
-    Revision { created: created.into(), reason: format!("Revision at {created}"), memories }
+    Revision {
+        created: created.into(),
+        reason: format!("Revision at {created}"),
+        memories,
+    }
 }
 #[derive(Clone)]
 pub struct Observation {
@@ -80,8 +84,10 @@ pub fn dream(id: &str, base: i64, observations: &[&Observation], promoted: Optio
         base,
         input: json!({"base": base, "memories": [], "observations": seen}),
         promoted,
-        proposal: promoted.map(|_| json!({"dream_id": id, "base_revision": base, "memories": [],
-            "summary": "s", "coverage": "c", "conflicts": [], "reviewed": true})),
+        proposal: promoted.map(|_| {
+            json!({"dream_id": id, "base_revision": base, "memories": [],
+            "summary": "s", "coverage": "c", "conflicts": [], "reviewed": true})
+        }),
     }
 }
 
@@ -111,7 +117,12 @@ pub fn v1_db(revisions: &[Revision], observations: &[Observation], dreams: &[Dre
     conn.execute_batch(V1_DDL).unwrap();
     conn.execute(
         "INSERT INTO revisions VALUES (0,NULL,?1,?2,?3,?4)",
-        params!["2026-10-01T00:00:00+00:00", "Empty initial store", "[]", sha256(b"[]")],
+        params![
+            "2026-10-01T00:00:00+00:00",
+            "Empty initial store",
+            "[]",
+            sha256(b"[]")
+        ],
     )
     .unwrap();
     for (i, r) in revisions.iter().enumerate() {
@@ -119,18 +130,40 @@ pub fn v1_db(revisions: &[Revision], observations: &[Observation], dreams: &[Dre
         let body = encode(&Value::Array(r.memories.clone()));
         conn.execute(
             "INSERT INTO revisions VALUES (?1,?2,?3,?4,?5,?6)",
-            params![id, id - 1, r.created, r.reason, body, sha256(body.as_bytes())],
+            params![
+                id,
+                id - 1,
+                r.created,
+                r.reason,
+                body,
+                sha256(body.as_bytes())
+            ],
         )
         .unwrap();
     }
-    conn.execute("INSERT INTO state VALUES ('active',?1)", [revisions.len() as i64]).unwrap();
+    conn.execute(
+        "INSERT INTO state VALUES ('active',?1)",
+        [revisions.len() as i64],
+    )
+    .unwrap();
     for o in observations {
-        conn.execute("INSERT INTO observations VALUES (?1,?2,?3)", params![o.id, o.created, encode(&o.body)]).unwrap();
+        conn.execute(
+            "INSERT INTO observations VALUES (?1,?2,?3)",
+            params![o.id, o.created, encode(&o.body)],
+        )
+        .unwrap();
     }
     for d in dreams {
         conn.execute(
             "INSERT INTO dreams VALUES (?1,?2,?3,?4,?5,?6)",
-            params![d.id, d.created, d.base, encode(&d.input), d.promoted, d.proposal.as_ref().map(encode)],
+            params![
+                d.id,
+                d.created,
+                d.base,
+                encode(&d.input),
+                d.promoted,
+                d.proposal.as_ref().map(encode)
+            ],
         )
         .unwrap();
     }
@@ -171,8 +204,15 @@ pub fn bytes(path: &Path) -> Vec<u8> {
 pub fn legacy_dump(db: &Path) -> String {
     let conn = Connection::open(db).unwrap();
     let mut out = String::new();
-    for (table, order) in [("revisions", "id"), ("state", "key"), ("observations", "id"), ("dreams", "id")] {
-        let mut stmt = conn.prepare(&format!("SELECT * FROM {table} ORDER BY {order}")).unwrap();
+    for (table, order) in [
+        ("revisions", "id"),
+        ("state", "key"),
+        ("observations", "id"),
+        ("dreams", "id"),
+    ] {
+        let mut stmt = conn
+            .prepare(&format!("SELECT * FROM {table} ORDER BY {order}"))
+            .unwrap();
         let columns = stmt.column_count();
         let mut rows = stmt.query([]).unwrap();
         while let Some(row) = rows.next().unwrap() {
@@ -196,16 +236,28 @@ impl Ran {
         format!("{}\n{}", self.stdout, self.stderr)
     }
     pub fn assert_ok(&self) -> &Self {
-        assert!(self.status.success(), "expected success, got {:?}\n{}", self.status, self.text());
+        assert!(
+            self.status.success(),
+            "expected success, got {:?}\n{}",
+            self.status,
+            self.text()
+        );
         self
     }
     pub fn assert_failed(&self) -> &Self {
-        assert!(!self.status.success(), "expected failure, got success\n{}", self.text());
+        assert!(
+            !self.status.success(),
+            "expected failure, got success\n{}",
+            self.text()
+        );
         self
     }
 }
 pub fn server(args: &[&str]) -> Ran {
-    let out = Command::new(env!("CARGO_BIN_EXE_agent-memory-server")).args(args).output().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_agent-memory-server"))
+        .args(args)
+        .output()
+        .unwrap();
     Ran {
         status: out.status,
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -218,8 +270,16 @@ pub fn migrate(db: &Path, extra: &[&str]) -> Ran {
     let mut args = vec!["migrate", "--database", db.to_str().unwrap()];
     args.extend_from_slice(extra);
     let ran = server(&args);
-    assert!(!ran.stderr.contains("unrecognized subcommand"), "no `migrate` subcommand:\n{}", ran.stderr);
-    assert!(!ran.stderr.contains("unexpected argument"), "migrate rejected its arguments:\n{}", ran.stderr);
+    assert!(
+        !ran.stderr.contains("unrecognized subcommand"),
+        "no `migrate` subcommand:\n{}",
+        ran.stderr
+    );
+    assert!(
+        !ran.stderr.contains("unexpected argument"),
+        "migrate rejected its arguments:\n{}",
+        ran.stderr
+    );
     ran
 }
 
@@ -295,7 +355,9 @@ pub fn versions(conn: &Connection) -> Vec<Version> {
 
 /// Inverse of §3.6 for one stored file: `(v1 object, pinned)`. Independent of the implementation under test.
 pub fn to_v1(path: &str, content: &str) -> (Value, bool) {
-    let rest = content.strip_prefix("---\n").expect("content starts with frontmatter");
+    let rest = content
+        .strip_prefix("---\n")
+        .expect("content starts with frontmatter");
     let end = rest.find("\n---\n").expect("frontmatter is closed");
     let mut object = json_text(&rest[..end]);
     let body = &rest[end + "\n---\n".len()..];
@@ -312,7 +374,10 @@ pub fn to_v1(path: &str, content: &str) -> (Value, bool) {
     };
     let pinned = object.as_object_mut().unwrap().remove("pinned") == Some(Value::Bool(true));
     for forbidden in ["id", "scope", "body"] {
-        assert!(object.get(forbidden).is_none(), "frontmatter must not carry {forbidden}");
+        assert!(
+            object.get(forbidden).is_none(),
+            "frontmatter must not carry {forbidden}"
+        );
     }
     object["id"] = json!(slug.strip_suffix(".md").unwrap());
     object["scope"] = scope;
@@ -326,11 +391,20 @@ pub fn expected_content(v1: &Value) -> String {
     for key in ["id", "scope", "body"] {
         object.remove(key);
     }
-    format!("---\n{}\n---\n{}", encode(&meta), v1["body"].as_str().unwrap())
+    format!(
+        "---\n{}\n---\n{}",
+        encode(&meta),
+        v1["body"].as_str().unwrap()
+    )
 }
 
 /// What the pinned budget counts for one memory (design §3.1): the characters of the block recall prints for it,
 /// `### {title} [{path}]\n{body}\n\n` with the body's trailing whitespace trimmed. For a `mem()` memory in `/global/`.
 pub fn block_len(id: &str, body: &str) -> usize {
-    format!("### Title of {id} [/global/{id}.md]\n{}\n\n", body.trim_end()).chars().count()
+    format!(
+        "### Title of {id} [/global/{id}.md]\n{}\n\n",
+        body.trim_end()
+    )
+    .chars()
+    .count()
 }
