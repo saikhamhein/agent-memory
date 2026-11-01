@@ -1,7 +1,9 @@
 //! Workstream M acceptance tests (design §3.6, §4.3 "M"): `agent-memory-server migrate` on real v1 databases.
 //! Black box: the real binary, plus direct SQLite and file inspection. Temporary databases only.
+mod common;
 mod legacy;
 
+use common::assert_no_leftovers;
 use legacy::*;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt};
@@ -627,6 +629,19 @@ fn pin_aborts_on_unknown_or_unpinnable_slug() {
         assert!(ran.text().contains(slug), "{}", ran.text());
         assert_eq!(bytes(&db.db), before, "--pin {slug}: nothing changes");
     }
+}
+
+/// X31: the mirror `migrate` builds is read-only (0555), so a bare `TempDir` cannot delete it and leaks the whole
+/// directory on every passing run. Dropping a migrated `V1` must leave nothing behind.
+#[test]
+fn migrated_store_leaves_nothing_behind() {
+    let db = plain();
+    let root = db.dir.path().to_owned();
+    migrate(&db.db, &[]).assert_ok();
+    assert!(db.mirror().exists(), "the mirror was built");
+    drop(db);
+    assert!(!root.exists(), "{} was not removed", root.display());
+    assert_no_leftovers(&root);
 }
 
 #[test]
