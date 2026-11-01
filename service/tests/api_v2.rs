@@ -77,6 +77,7 @@ const TOKENS: [(&str, &[Capability]); 6] = [
 ];
 
 fn config(db: &Path, mnt: &Path) -> Config {
+    // Fix round (X15, X16): the engineer deletes `projects` and `mount` from this literal.
     let mut projects = BTreeMap::new();
     projects.insert("example".into(), "/projects/a".into());
     Config {
@@ -356,14 +357,14 @@ async fn capability_matrix() {
                 "GET",
                 format!("{live}/memory_versions"),
                 Value::Null,
-                Need::Recall,
+                Need::Review,
             ),
             (
                 "live version",
                 "GET",
                 format!("{live}/memory_versions/{old}"),
                 Value::Null,
-                Need::Recall,
+                Need::Review,
             ),
             (
                 "live create",
@@ -1920,13 +1921,6 @@ async fn recall_endpoint() {
             "",
         ),
         (
-            json!({"project_id": "example"}),
-            "/projects/a",
-            "",
-            vec![],
-            "",
-        ),
-        (
             json!({"project": "/projects/a", "role": "coordinator", "topics": ["hardware"]}),
             "/projects/a",
             "coordinator",
@@ -2038,11 +2032,6 @@ async fn recall_request_validation() {
         ("budget is gone", json!({"budget": 1000})),
         ("mode is gone", json!({"mode": "start"})),
         ("unknown field", json!({"mystery": true})),
-        ("unknown project_id", json!({"project_id": "unknown"})),
-        (
-            "project and project_id",
-            json!({"project_id": "example", "project": "/a"}),
-        ),
         ("relative project", json!({"project": "relative/path"})),
         ("topics not a list", json!({"topics": "hardware"})),
         ("query not a string", json!({"query": 5})),
@@ -2065,7 +2054,7 @@ async fn recall_usage_log() {
             "POST",
             "/v1/recall",
             "reader",
-            json!({"project_id": "example", "client": "session-start"}),
+            json!({"project": "/projects/a", "client": "session-start"}),
         )
         .await;
     let (_, task) = fx
@@ -2105,7 +2094,7 @@ async fn recall_usage_log() {
         first["client"], "session-start",
         "client label from the request"
     );
-    assert_eq!(first["project"], "/projects/a", "project_id resolved");
+    assert_eq!(first["project"], "/projects/a", "project as sent");
     assert_eq!(first["view"], "start");
     assert_eq!(first["pinned"], hook["pinned"]);
     assert_eq!(first["returned"], hook["returned"]);
@@ -2555,4 +2544,260 @@ async fn body_limits_and_413() {
         .collect();
     assert_eq!(names.len(), 2, "{names:?}");
     assert_eq!(fx.status().await["observations_pending"], 0);
+}
+
+// ---------------------------------------------------------------------------
+// Fix round (docs/coordination/v2-review-triage.md, WS-H)
+// ---------------------------------------------------------------------------
+
+/// X9: history includes deleted memories, so a recall token may not read versions
+/// (§4.1: version reads always need `review`).
+#[tokio::test]
+async fn version_reads_need_review() {
+    let fx = Fx::new();
+    let gone = fx
+        .create("live", "/global/gone.md", &content("Gone", "deleted later"))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fx.ok(
+        "DELETE",
+        &format!("/v1/memory_stores/live/memories/{gone}"),
+        Value::Null,
+    )
+    .await;
+    let versions = versions_of(
+        &fx.ok(
+            "GET",
+            &format!("/v1/memory_stores/live/memory_versions?memory_id={gone}"),
+            Value::Null,
+        )
+        .await,
+    );
+    let version = versions[0]["id"].as_str().unwrap().to_owned();
+    let paths = [
+        "/v1/memory_stores/live/memory_versions".to_string(),
+        format!("/v1/memory_stores/live/memory_versions?memory_id={gone}"),
+        format!("/v1/memory_stores/live/memory_versions/{version}"),
+    ];
+    for token in ["reader", "maintainer"] {
+        for path in &paths {
+            let (code, body) = fx.call("GET", path, token, Value::Null).await;
+            assert_eq!(code, StatusCode::FORBIDDEN, "{token} GET {path}: {body}");
+        }
+    }
+    for path in &paths {
+        let (code, body) = fx.call("GET", path, "reviewer", Value::Null).await;
+        assert_eq!(code, StatusCode::OK, "reviewer GET {path}: {body}");
+    }
+}
+
+/// X7: a leaked secret in an observation can be removed, from `observations` and from
+/// every `dream_jobs.input` copy, pending or consumed. ASSUMPTION (sent to the architect):
+/// the route answers 200 `{id, ..}`, and a second redaction is 200 too.
+#[tokio::test]
+async fn observation_redact_route() {
+    let count = |fx: &Fx, table: &str, column: &str, marker: &str| -> i64 {
+        rusqlite::Connection::open(&fx.db)
+            .unwrap()
+            .query_row(
+                &format!("SELECT count(*) FROM {table} WHERE {column} LIKE ?1"),
+                [format!("%{marker}%")],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let fx = Fx::new();
+    let observe = |marker: &'static str| {
+        let fx = &fx;
+        async move {
+            fx.ok(
+                "POST",
+                "/v1/observations",
+                json!({"path": format!("/global/{marker}.md"),
+                       "content": content("Observed", &format!("leaked {marker} text"))}),
+            )
+            .await["id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        }
+    };
+    // `consumed` goes through an adopted dream; `pending` is still waiting for one.
+    let consumed = observe("marker-consumed").await;
+    let dream = fx.dream().await;
+    assert_eq!(
+        fx.adopt("admin", dream["id"].as_str().unwrap()).await.0,
+        StatusCode::OK
+    );
+    let pending = observe("marker-pending").await;
+    let running = fx.dream().await;
+    let running_id = running["id"].as_str().unwrap().to_owned();
+    assert_eq!(count(&fx, "observations", "body", "marker-"), 2);
+    assert_eq!(count(&fx, "dream_jobs", "input", "marker-pending"), 1);
+
+    for token in ["reader", "observer", "reviewonly", "reviewer"] {
+        let (code, body) = fx
+            .call(
+                "POST",
+                &format!("/v1/observations/{pending}/redact"),
+                token,
+                json!({}),
+            )
+            .await;
+        assert_eq!(code, StatusCode::FORBIDDEN, "{token}: {body}");
+    }
+    assert_eq!(
+        count(&fx, "observations", "body", "marker-pending"),
+        1,
+        "refused calls change nothing"
+    );
+    let (code, body) = fx
+        .call(
+            "POST",
+            "/v1/observations/obs_unknown/redact",
+            "maintainer",
+            json!({}),
+        )
+        .await;
+    assert_eq!(code, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["type"], "not_found", "{body}");
+
+    for (id, marker) in [(&pending, "marker-pending"), (&consumed, "marker-consumed")] {
+        let (code, body) = fx
+            .call(
+                "POST",
+                &format!("/v1/observations/{id}/redact"),
+                "maintainer",
+                json!({}),
+            )
+            .await;
+        assert_eq!(code, StatusCode::OK, "{marker}: {body}");
+        assert_eq!(body["id"], json!(id), "{body}");
+        assert_eq!(
+            count(&fx, "observations", "body", marker),
+            0,
+            "{marker} still in observations"
+        );
+        assert_eq!(
+            count(&fx, "dream_jobs", "input", marker),
+            0,
+            "{marker} still in dream_jobs.input"
+        );
+        let (code, again) = fx
+            .call(
+                "POST",
+                &format!("/v1/observations/{id}/redact"),
+                "maintainer",
+                json!({}),
+            )
+            .await;
+        assert_eq!(code, StatusCode::OK, "second redaction: {again}");
+    }
+    // The running dream still lists the observation by id, without the leaked text.
+    let after = fx
+        .ok("GET", &format!("/v1/dreams/{running_id}"), Value::Null)
+        .await;
+    let listed = after["observations"].as_array().unwrap();
+    assert!(listed.iter().any(|o| o["id"] == json!(pending)), "{after}");
+    assert!(!after.to_string().contains("marker-pending"), "{after}");
+    // Redaction is not a delete: the other observations and rows are untouched.
+    assert_eq!(count(&fx, "observations", "id", "%"), 2);
+}
+
+/// X15: `project_id` and the `[projects]` table are gone; a request that sends one is refused
+/// like any other unknown field, and nothing is logged.
+#[tokio::test]
+async fn recall_rejects_project_id() {
+    let fx = Fx::new();
+    seed_recall_fixture(&fx).await;
+    for (name, body) in [
+        ("configured id", json!({"project_id": "example"})),
+        ("unknown id", json!({"project_id": "unknown"})),
+        (
+            "with project",
+            json!({"project_id": "example", "project": "/projects/a"}),
+        ),
+    ] {
+        let (code, response) = fx.call("POST", "/v1/recall", "reader", body).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "{name}: {response}");
+        assert_invalid(&(code, response), "");
+    }
+    assert!(!fx.tmp.path().join("recall-log.jsonl").exists());
+}
+
+/// X15, X16: `mount` and `projects` are not config keys; the mirror is always `<database dir>/mnt`.
+#[test]
+fn config_has_no_mount_or_projects() {
+    let dir = TempDir::new().unwrap();
+    let load = |name: &str, extra: &str| {
+        let text = format!(
+            "listen = \"127.0.0.1:8787\"\ndatabase = \"{}\"\n{extra}\n\n[[tokens]]\nname = \"t\"\nsha256 = \"{}\"\ncapabilities = [\"recall\"]\n",
+            dir.path().join("memory.sqlite3").display(),
+            sha256(b"t"),
+        );
+        let path = dir.path().join(format!("{name}.toml"));
+        std::fs::write(&path, text).unwrap();
+        Config::load(&path)
+            .map(|_| ())
+            .map_err(|e| format!("{e:#}"))
+    };
+    load("plain", "").expect("a config without either key loads");
+    for (name, extra, key) in [
+        ("mount", "mount = \"/somewhere/else\"", "mount"),
+        (
+            "projects",
+            "[projects]\nexample = \"/projects/a\"",
+            "projects",
+        ),
+    ] {
+        let err = load(name, extra).expect_err(name);
+        assert!(
+            err.contains(key),
+            "{name}: the message names the key: {err}"
+        );
+    }
+}
+
+/// X31: a passing run of this suite leaves nothing in `TMPDIR`. The test re-runs the other
+/// tests of this binary with `TMPDIR` pointing at a fresh directory and lists what remains.
+#[test]
+fn api_v2_leaves_nothing_in_tmpdir() {
+    fn unseal(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            return;
+        };
+        if meta.is_dir() {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+            for entry in std::fs::read_dir(path).into_iter().flatten().flatten() {
+                unseal(&entry.path());
+            }
+        }
+    }
+    let scratch = TempDir::new().unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--skip", "api_v2_leaves_nothing_in_tmpdir"])
+        .env("TMPDIR", scratch.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    let mut leftovers: Vec<_> = std::fs::read_dir(scratch.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    leftovers.sort();
+    unseal(scratch.path());
+    assert!(
+        leftovers.is_empty(),
+        "{} entries left in TMPDIR: {leftovers:?}",
+        leftovers.len()
+    );
+    assert!(
+        status.success(),
+        "the inner run of the suite failed: {status}"
+    );
 }
