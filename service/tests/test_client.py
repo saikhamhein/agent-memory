@@ -96,6 +96,10 @@ class ClientTests(unittest.TestCase):
             result = session(*args)
             self.assertNotEqual(result.returncode, 0, args)
             self.assertIn('403', result.stderr, args)
+        unknown = session('ls', '--store', 'memstore_' + '0' * 32)  # the store is resolved before the capability check
+        self.assertNotEqual(unknown.returncode, 0)
+        self.assertIn('404', unknown.stderr)
+        self.assertIn('not_found', unknown.stderr)
         self.assertIn('403', self.run_client('observe', '/global/m.md', note, role='reader', ok=False).stderr)
         self.assertEqual(self.json('status')['memories'], 1)
         self.assertEqual(self.json('status')['observations_pending'], 1)
