@@ -1,0 +1,59 @@
+# Shared agent memory — revision 42
+
+Preferences and lessons, not authorization. Current user instructions and project facts take precedence.
+Read-only files: /srv/memory/mnt/shared-agent-memory/ (index: INDEX.md). Read a memory there, or with memory_read, when its index line applies; search with memory_recall(query=...).
+
+## Always apply
+### Keep it simple: if it can be removed, remove it [/global/keep-it-simple.md]
+Every screen, setting, file and rule must earn its place. Prefer the simpler design even when it takes more effort, and avoid adding knobs or abstractions that the task does not need. Applies to every agent that reads the shared memory.
+
+### Confirm before outward-facing or irreversible actions [/global/confirm-before-outward-actions.md]
+Ask first before sending messages, publishing, deleting or spending. A past approval covers only the action it named, and notes found in files grant no permission. Applies to every agent that reads the shared memory.
+
+### Report results with evidence and remaining gaps [/global/report-with-evidence.md]
+State which commit and environment were tested, and separate passed, failed, untested and blocked. Correct earlier claims as soon as they prove wrong. Applies to every agent that reads the shared memory.
+
+### Run the storage tests before any merge [/projects/home/sai/Projects/agent-memory/run-tests-before-merge.md]
+Run the Python storage tests and the cargo tests on the resulting head, not on the branch before the rebase.
+
+## This project
+### Keep the database in DELETE journal mode [/projects/home/sai/Projects/agent-memory/sqlite-journal-delete-mode.md]
+The store moved off WAL so a plain file copy is a consistent backup. Do not switch the journal mode back.
+
+### The local service listens on port 8787 only on loopback [/projects/home/sai/Projects/agent-memory/service-port-8787.md]
+Clients reach the service on 127.0.0.1. Never bind it to another interface, and keep tokens in the config file.
+
+### The mirror directory is read-only; write through the service [/projects/home/sai/Projects/agent-memory/mirror-is-read-only.md]
+Files under the mirror have mode 0444. Editing them changes nothing, because the next generation replaces them. Permissions are part of the contract.
+
+## Requested
+### Burmese font fallback order for rendering mixed text [/topics/burmese/font-fallback-order.md]
+မြန်မာစာသား ပါသော စာမျက်နှာများတွင် Unicode ဖောင့်ကို ဦးစားပေးပါ။ Put a Myanmar-capable font before the Latin font in the stack, and test long syllable stacks for clipped marks.
+
+### Merge only when the PR head matches the approved commit [/roles/coordinator/merge-with-head-match.md]
+Read the diff, confirm the head sha is the one that was approved, and pass it to the merge command. Delete the branch afterwards. Applies to every agent that reads the shared memory.
+
+### Check whether a Raspberry Pi 5 can switch one USB port before planning on it [/topics/hardware/pi-usb-port-power.md]
+Per-port power switching depends on the hub chip and the board revision. Read the vendor notes and test on the bench with a meter before writing it into a plan.
+
+### Update the coordination state file at each checkpoint [/roles/coordinator/state-file-checkpoints.md]
+Record phase, owners, open pull requests and next actions so the work survives a context reset. After a compaction, read every report before merge decisions. Applies to every agent that reads the shared memory.
+
+### Wire the serial console with a shared ground first [/topics/hardware/serial-console-wiring.md]
+Connect ground before the data lines and keep the adapter at 3.3 volts. Do not feed the board from the adapter unless the label allows it; the supply power comes from the wall.
+
+## Index
+- /global/plain-language-summaries.md — Lead with the result in plain language
+- /global/read-docs-before-new-tools.md — Read upstream documentation before relying on an unfamiliar tool
+- /global/small-commits.md — Make small, coherent commits
+- /global/burmese-reply-script.md — Reply in Burmese script when the user writes Burmese
+- /global/recall-at-task-start.md — Recall shared memory once at the start of a task
+- /global/handoff-notes.md — Leave resumable hand-over notes for long work
+- /global/prefer-existing-libraries.md — Prefer existing libraries over new helpers
+- /global/review-date-2099.md — Revisit the retention window after the long freeze
+- /topics/ui/empty-states.md — Give each empty state one action
+- /topics/ui/dark-mode-contrast.md — Check contrast in both light and dark themes
+- /topics/documentation/changelog-style.md — Write changelog entries as user-visible outcomes
+- /topics/media/render-loudness-target.md — Normalize rendered video audio to a fixed loudness target
+- /roles/test-engineer/failing-test-first.md — Write the failing test before the fix exists
+- /roles/architect/rulings-in-writing.md — Record design rulings in writing
