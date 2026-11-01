@@ -83,11 +83,12 @@ Triage: 47 findings, 7 (a), 24 (b), 16 (c), in `docs/coordination/v2-review-tria
 | M migration + install | eng M | test M | `rework/tests-fix-m` @ `0337498` (6 install + 1 migrate failing on 1b7abfe) |
 | C clients, hook, dream docs | eng C | test C | `rework/tests-fix-c` |
 
-Merge order: A → H and R → M → C. Removed request keys are rejected with 400. The stale-dream rule is the architect's call.
+Merge order: R and M merged; A → H → C next. Removed request keys are rejected with 400. The stale-dream rule is the architect's call.
 
 ## Merged
 
 - Checked: the API rejecting `limit`/`budget` is safe. The client CLI and stub accept and ignore them (design §3.3, §4.1), and `stub_forwards_recall` runs the exact loader line.
+- PR 25 (fix round, M: X2 token reconcile, X5 unit disabled with the decision by user_version, X13, X15, X17) → `rework/managed-agents-v2`, merged ahead of A and H because it depends on neither. Coordinator check on the merged result: 82 Rust tests (release), 10 install tests, clippy clean; the v1 guard runs before any config write. X31 (SealedTempDir in migrate.rs) follows after A.
 - PR 24 (fix round, R: X18, X19) → `rework/managed-agents-v2`. Coordinator check at 220ee02: 81 Rust tests, clippy clean, TMPDIR left empty.
 - PR 21 (fix-round contract: X1–X14, the stale-dream rule in the skill (cancel a dream running over 1 h, otherwise report), installer disable plus user_version, token reconcile, §5 Δ1–Δ8) → `rework/managed-agents-v2` `fdc326a`.
 - PR 20 (triage) → `rework/managed-agents-v2` `1b7abfe`.
