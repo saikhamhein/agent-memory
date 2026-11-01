@@ -45,6 +45,9 @@ fn connect(path: &Path, flags: OpenFlags) -> Result<Connection> {
     let db = Connection::open_with_flags(path, flags)?;
     db.busy_timeout(Duration::from_secs(10))?;
     db.pragma_update(None, "foreign_keys", true)?;
+    // Zero deleted content, so redact and purge leave no bytes in the file
+    // (ON, not FAST: FAST leaves traces on freelist pages).
+    db.pragma_update(None, "secure_delete", true)?;
     Ok(db)
 }
 
