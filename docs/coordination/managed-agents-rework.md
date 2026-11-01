@@ -120,12 +120,10 @@ Merge order: A → H and R → M → C. Removed request keys are rejected with 4
 - 2026-11-01 user product ruling: ordinary sessions read and suggest only. The default MCP install gets recall and observe under an observe-only credential; the maintenance credential goes only to the daily dream; corrections become observations applied by the next dream. The architect is preparing the doc PR. The user chose to keep the live v1 MCP registration (maintainer tools) unchanged until cutover.
 - Coordinator ruling on S2 (should pinned changes need the user's request?): no. The user's standing instruction is that dreams run fully autonomously and never leave proposals for approval. So the daily dream may change pinned memories only on evidence of the user's own words, and reports every pinned change (§3.5).
 - Architect ruling: A's fix PR carries the minimal edits to 7 api_v2 tests that send `reviewed` or start a second dream, so the integration branch stays green at A's head.
+- Sent after the user's message: test C's brief (with PR 21–23 rulings) and the test M ruling (a pre-commit failure restores the old service and re-enables the unit).
 
 ## Blockers
 
-- Waiting for the user's next message to resume cross-session messages. Queued sends:
-  - test C: its fix-round brief (WS-C tests per the triage, branch `rework/tests-fix-c`);
-  - test M: ruling on point 1, that a pre-commit failure restarts the old service and re-enables the unit, i.e. back to the prior state, as the test assumes.
 - Test engineer C's fix-round brief was not delivered: the app pauses cross-session messages after 10 in a row with no user message. Resend it after the user's next message.
 - Review campaign note: test-C's 28 tests passed first try; the fresh-eyes review should mutation-check them.
 - Architect session's outgoing messaging paused again (2026-11-01, second time); rulings for H/test-H and the PR 10 notice undelivered. Needs the user to resume it there. The coordinator does not relay around the pause.
