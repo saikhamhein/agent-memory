@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import sqlite3
@@ -93,7 +94,10 @@ args = sys.argv[1:]
 with open({events!r}, 'a') as log:
     log.write('systemctl ' + ' '.join(args) + '\\n')
 assert args[0] == '--user', args
-action, active, pidfile = args[1], state / 'active', state / 'pid'
+action, active, pidfile, enabled = args[1], state / 'active', state / 'pid', state / 'enabled'
+failing = state / 'fail' / 'systemctl'  # fail_tool: empty file = every action, else the one named action
+if failing.exists() and failing.read_text() in ('', action):
+    sys.exit(1)
 
 def stop_server():
     if not pidfile.exists():
@@ -114,6 +118,10 @@ def stop_server():
 
 if action == 'is-active':
     sys.exit(0 if active.exists() else 3)
+if action == 'enable':
+    enabled.write_text('1')
+if action == 'disable':
+    enabled.unlink(missing_ok=True)
 if action == 'stop':
     stop_server()
     active.unlink(missing_ok=True)
@@ -129,13 +137,24 @@ elif action in ('start', 'restart'):
 '''
 
 # Records every server invocation; at `migrate` it also records which files already exist under runtime/ (the backup).
+# With state/crash-after-commit it runs the real migrate and then exits non-zero, as if the process died after COMMIT.
 FAKE_SERVER = '''#!/bin/sh
 echo "binary $*" >> {events}
 if [ "$1" = migrate ]; then
   echo "runtime-files-at-migrate: $(find {runtime} -type f 2>/dev/null | sort | tr '\\n' ' ')" >> {events}
+  if [ -e {state}/crash-after-commit ]; then
+    {real} "$@"
+    status=$?
+    [ $status -eq 0 ] && status=70
+    exit $status
+  fi
 fi
 exec {real} "$@"
 '''
+FAKE_TOOL = '''#!/bin/sh
+echo "{name} $*" >> {events}
+if [ -e {state}/fail/{name} ]; then exit 1; fi
+{body}'''
 
 
 class Sandbox:
@@ -150,7 +169,7 @@ class Sandbox:
         self.events_file, self.fakebin = root / 'events.log', root / 'fakebin'
         self.database = self.repo / 'memory.sqlite3'
         self.runtime = self.repo / 'runtime'
-        for directory in (self.repo, self.home, self.state, self.fakebin):
+        for directory in (self.repo, self.home, self.state, self.state / 'fail', self.fakebin):
             directory.mkdir(parents=True)
         self.events_file.touch()
         service = self.repo / 'service'
@@ -158,7 +177,8 @@ class Sandbox:
         (service / 'install-mcp.py').write_text('print("install-mcp stub")\n')  # the real one needs uv and network
         self.wrapper = service / 'target/release/agent-memory-server'
         self.wrapper.parent.mkdir(parents=True)
-        self.write_tool(self.wrapper, FAKE_SERVER.format(events=self.events_file, runtime=self.runtime, real=BINARY))
+        self.write_tool(self.wrapper, FAKE_SERVER.format(events=self.events_file, runtime=self.runtime, real=BINARY,
+                                                         state=self.state))
         script = SERVICE.parent / 'update-local.sh'
         if script.exists():
             shutil.copyfile(script, self.repo / 'update-local.sh')
@@ -167,13 +187,12 @@ class Sandbox:
         self.write_tool(self.fakebin / 'systemctl', FAKE_SYSTEMCTL.format(
             python=python, state=str(self.state), home=str(self.home), events=str(self.events_file),
             wrapper=str(self.wrapper)))
-        self.write_tool(self.fakebin / 'systemd-analyze', '#!/bin/sh\necho "systemd-analyze $*" >> %s\n' % self.events_file)
-        self.write_tool(self.fakebin / 'cargo', '#!/bin/sh\necho "cargo $*" >> %s\n' % self.events_file)
-        self.write_tool(self.fakebin / 'git', '#!/bin/sh\necho "git $*" >> %s\n'
-                        'case "$1 $2" in "branch --show-current") echo master;; "rev-parse --short") echo abc1234;; esac\n'
-                        % self.events_file)
-        self.write_tool(self.fakebin / 'python3', '#!/bin/sh\necho "python3 $*" >> %s\nexec %s "$@"\n'
-                        % (self.events_file, python))
+        for name, body in (('systemd-analyze', ''),
+                           ('cargo', ''),
+                           ('git', 'case "$1 $2" in "branch --show-current") echo master;; "rev-parse --short") echo abc1234;; esac\n'),
+                           ('python3', 'exec %s "$@"\n' % python)):
+            self.write_tool(self.fakebin / name, FAKE_TOOL.format(name=name, events=self.events_file, state=self.state,
+                                                                  body=body))
         self.env = dict(os.environ, HOME=str(self.home), PATH=f'{self.fakebin}:{os.environ["PATH"]}')
         for name in ('CODEX_HOME', 'XDG_CONFIG_HOME'):
             self.env.pop(name, None)
@@ -192,7 +211,8 @@ class Sandbox:
             'capabilities = ["recall", "observe", "review", "promote"]\n')
         for name, token in (('client.json', reader), ('maintainer.json', maintainer)):
             (config / name).write_text(json.dumps({'url': f'http://127.0.0.1:{port}', 'token': token}))
-        (self.state / 'active').write_text('1')  # the previous version of the service is running
+        (self.state / 'active').write_text('1')  # the previous version of the service is running ...
+        (self.state / 'enabled').write_text('1')  # ... and enabled, so it starts at login
 
     @staticmethod
     def write_tool(path, text):
@@ -206,6 +226,17 @@ class Sandbox:
                 os.kill(int(pidfile.read_text()), 9)
             except ProcessLookupError:
                 pass
+
+    def fail_tool(self, name, action=''):
+        """Make a fake system tool exit 1 (systemctl: only for `action`, if given). It still logs the call."""
+        (self.state / 'fail' / name).write_text(action)
+
+    def crash_after_commit(self):
+        """`agent-memory-server migrate` runs for real, commits, then exits non-zero."""
+        (self.state / 'crash-after-commit').touch()
+
+    def unit_enabled(self):
+        return (self.state / 'enabled').exists()
 
     def events(self):
         return self.events_file.read_text().splitlines()
@@ -222,6 +253,21 @@ class Sandbox:
 
     def install(self, *extra):
         return self.run(sys.executable, str(self.repo / 'service/install-user.py'), '--database', str(self.database), *extra)
+
+    def fresh_config(self):
+        """No config yet, as on a first install. The installer writes listen = 127.0.0.1:8787, which is the live
+        service's port on this machine, so the sandbox's copy of the installer gets a private port instead."""
+        for path in (self.home / '.config/agent-memory').iterdir():
+            path.unlink()
+        script = self.repo / 'service/install-user.py'
+        text = script.read_text()
+        self.test.assertIn('127.0.0.1:8787', text)
+        script.write_text(text.replace('127.0.0.1:8787', f'127.0.0.1:{free_port()}'))
+        self.test.assertNotIn('8787', script.read_text())
+
+    def config(self):
+        import tomllib
+        return tomllib.loads((self.home / '.config/agent-memory/server.toml').read_text())
 
     def migrated_database(self, revisions):
         v1_database(self.database, revisions)
@@ -289,7 +335,41 @@ class InstallMigrationGuardTests(unittest.TestCase):
         self.assertTrue(self.box.service_active())
         self.assertEqual(user_version(backups[0]), 0, 'the backup stays a v1 database')
 
-    def test_install_migrate_failure_restores_everything(self):
+    def migrate_index(self):
+        events = self.box.events()
+        return events, next(i for i, e in enumerate(events) if e.startswith('binary migrate'))
+
+    def assert_v1_stays_off(self, events, migrate):
+        """After the commit nothing may start, restart or enable the unit: the old binary would serve a v2 store."""
+        later = [e for e in events[migrate + 1:]
+                 if e.startswith(('systemctl --user start', 'systemctl --user restart', 'systemctl --user enable'))]
+        self.assertEqual(later, [])
+        self.assertFalse(self.box.service_active())
+        self.assertFalse(self.box.unit_enabled(), 'the next login must not start the old binary')
+
+    def test_migrate_commits_then_fails_keeps_v1_off(self):
+        v1_database(self.box.database, REVISIONS)
+        self.box.crash_after_commit()
+        ran = self.box.install('--migrate')
+        self.assertNotEqual(ran.returncode, 0, ran.stdout)
+        self.assertIn('rerun install-user.py or roll back', ran.stdout + ran.stderr)
+        self.assertEqual(user_version(self.box.database), 2, 'the migration did commit')
+        events, migrate = self.migrate_index()
+        self.assertIn('systemctl --user disable agent-memory.service', events[:migrate])
+        self.assert_v1_stays_off(events, migrate)
+
+    def test_failure_after_migration_leaves_unit_disabled(self):
+        v1_database(self.box.database, REVISIONS)
+        self.box.fail_tool('systemd-analyze')
+        ran = self.box.install('--migrate')
+        self.assertNotEqual(ran.returncode, 0, ran.stdout)
+        self.assertEqual(user_version(self.box.database), 2)
+        events, migrate = self.migrate_index()
+        self.assertIn('systemctl --user disable agent-memory.service', events[:migrate])
+        self.assertTrue([e for e in events[migrate:] if e.startswith('systemd-analyze')], 'the failing step ran')
+        self.assert_v1_stays_off(events, migrate)
+
+    def test_failure_before_commit_restarts_v1(self):
         v1_database(self.box.database, OFFENDING)
         before = self.box.database.read_bytes()
         ran = self.box.install('--migrate')
@@ -297,7 +377,84 @@ class InstallMigrationGuardTests(unittest.TestCase):
         self.assertIn('machine learning', ran.stdout + ran.stderr, 'the offender is shown to the user')
         self.assertEqual(self.box.database.read_bytes(), before)
         self.assertEqual(self.box.installed(), [])
+        events, migrate = self.migrate_index()
+        self.assertIn('systemctl --user disable agent-memory.service', events[:migrate])
         self.assertTrue(self.box.service_active(), 'the stopped service is started again')
+        self.assertTrue(self.box.unit_enabled(), 'and is enabled again, as it was found')
+
+
+SESSION = {'name': 'agent-session', 'capabilities': ['recall', 'observe']}
+MAINTAINER = ['recall', 'observe', 'review', 'promote']
+V1_PROJECTS = '[projects]\nagent-memory = "/home/someone/Projects/agent-memory"\n'
+
+
+class TokenReconcileTests(unittest.TestCase):
+    """Design §3.6: every install leaves an agent-session token and no agent-recall token or [projects]."""
+
+    def setUp(self):
+        self.box = Sandbox(self)
+        self.box.migrated_database(REVISIONS)
+        self.config_dir = self.box.home / '.config/agent-memory'
+
+    def token(self, config, name):
+        return next((t for t in config['tokens'] if t['name'] == name), None)
+
+    def assert_reconciled(self, config):
+        self.assertEqual(sorted(t['name'] for t in config['tokens']), ['agent-session', 'memory-maintainer'])
+        self.assertEqual(self.token(config, 'agent-session')['capabilities'], ['recall', 'observe'])
+        self.assertEqual(self.token(config, 'memory-maintainer')['capabilities'], MAINTAINER)
+        self.assertNotIn('projects', config)
+        client = json.loads((self.config_dir / 'client.json').read_text())
+        self.assertEqual(hashlib.sha256(client['token'].encode()).hexdigest(),
+                         self.token(config, 'agent-session')['sha256'], 'client.json holds the session token')
+
+    def test_existing_config_gets_session_token(self):
+        server = self.config_dir / 'server.toml'
+        server.write_text(server.read_text().replace('[[tokens]]', V1_PROJECTS + '\n[[tokens]]', 1))
+        old = {name: (self.config_dir / name).read_bytes() for name in ('server.toml', 'client.json', 'maintainer.json')}
+        old_maintainer = self.box.config()['tokens'][1]
+        self.assertEqual(old_maintainer['name'], 'memory-maintainer')
+        self.assertIn('projects', self.box.config(), 'the fixture is v1-shaped')
+        ran = self.box.install()
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        config = self.box.config()
+        self.assert_reconciled(config)
+        self.assertEqual(self.token(config, 'memory-maintainer'), old_maintainer, 'the maintainer token is untouched')
+        self.assertEqual((self.config_dir / 'maintainer.json').read_bytes(), old['maintainer.json'])
+        self.assertNotEqual((self.config_dir / 'client.json').read_bytes(), old['client.json'])
+        # server.toml and client.json were copied to runtime/ first, private, byte for byte.
+        saved = [path for path in self.box.runtime.iterdir() if path.is_file()]
+        for name in ('server.toml', 'client.json'):
+            copies = [path for path in saved if path.read_bytes() == old[name]]
+            self.assertEqual(len(copies), 1, f'one backup of {name} among {saved}')
+            self.assertEqual(copies[0].stat().st_mode & 0o777, 0o600)
+        # A second run changes nothing: no new token, no new backup.
+        before = {path.name: path.read_bytes() for path in self.config_dir.iterdir()}
+        backups = sorted(path.name for path in self.box.runtime.iterdir())
+        again = self.box.install()
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertEqual({path.name: path.read_bytes() for path in self.config_dir.iterdir()}, before)
+        self.assertEqual(sorted(path.name for path in self.box.runtime.iterdir()), backups)
+
+    def test_fresh_install_mints_session_token(self):
+        self.box.fresh_config()
+        ran = self.box.install()
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        config = self.box.config()
+        self.assert_reconciled(config)
+        maintainer = json.loads((self.config_dir / 'maintainer.json').read_text())
+        self.assertEqual(hashlib.sha256(maintainer['token'].encode()).hexdigest(),
+                         self.token(config, 'memory-maintainer')['sha256'])
+        for name in ('server.toml', 'client.json', 'maintainer.json'):
+            self.assertEqual((self.config_dir / name).stat().st_mode & 0o777, 0o600, name)
+        self.assertTrue(self.box.service_active())
+
+    def test_token_subcommand_removed(self):
+        ran = subprocess.run([str(BINARY), 'token'], capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(ran.returncode, 0, ran.stdout)
+        self.assertIn('unrecognized subcommand', ran.stderr)
+        helped = subprocess.run([str(BINARY), '--help'], capture_output=True, text=True, timeout=30)
+        self.assertIsNone(re.search(r'^\s+token\b', helped.stdout, re.M), helped.stdout)
 
 
 class UpdateLocalTests(unittest.TestCase):
