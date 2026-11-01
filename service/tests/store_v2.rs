@@ -2296,7 +2296,7 @@ fn temp_store_leaves_nothing() {
 // so redacted and purged text does not survive in the database file's free pages.
 #[test]
 fn secure_delete_leaves_no_trace() {
-    let mut ts = TempStore::new();
+    let ts = TempStore::new();
     let live = ts.live();
     let (n_version, n_obs, n_cancel, n_adopt) = (
         "NEEDLE-VERSION-5521",
