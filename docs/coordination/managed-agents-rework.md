@@ -119,12 +119,12 @@ Merge order: A → H and R → M → C. Removed request keys are rejected with 4
 - 2026-11-01 dry run (integration head 83d8090, release binary) on a sqlite3 backup-API copy of the live store at legacy revision 11: exit 0, copy byte-identical afterwards, 25 memories, versions 29 created / 11 modified / 4 deleted, revision 44, pinned_chars 626 with `--pin keep-it-simple`. Proposed pins: keep-it-simple, direct-concrete-communication, research-unfamiliar-before-relying, autonomy-within-scope, investigate-before-asking (about 2,826 of 4,000). Architect agreed. Re-run: pinned_chars 2,826 (block_len). A real migration of a second scratch copy served on a spare port gives: no-project start view 4,543 chars (5 pinned in full + 13 index lines; other projects excluded); custom-lora-mesh start 7,630 chars (5 pinned + 5 project in full, 15 lines); `kubernetes ingress yaml` → exactly `No memory matches`; hardware query → 1,126 chars of matching topics only.
 - 2026-11-01 user product ruling: ordinary sessions read and suggest only. The default MCP install gets recall and observe under an observe-only credential; the maintenance credential goes only to the daily dream; corrections become observations applied by the next dream. The architect is preparing the doc PR. The user chose to keep the live v1 MCP registration (maintainer tools) unchanged until cutover.
 - Coordinator ruling on S2 (should pinned changes need the user's request?): no. The user's standing instruction is that dreams run fully autonomously and never leave proposals for approval. So the daily dream may change pinned memories only on evidence of the user's own words, and reports every pinned change (§3.5).
+- Architect ruling: A's fix PR carries the minimal edits to 7 api_v2 tests that send `reviewed` or start a second dream, so the integration branch stays green at A's head.
 
 ## Blockers
 
 - Waiting for the user's next message to resume cross-session messages. Queued sends:
   - test C: its fix-round brief (WS-C tests per the triage, branch `rework/tests-fix-c`);
-  - test H: its open questions are settled by PR 22 (redact returns `{id, created, body}`) and PR 21 (removed keys give 400); X19 is on test R's branch;
   - test M: ruling on point 1, that a pre-commit failure restarts the old service and re-enables the unit, i.e. back to the prior state, as the test assumes.
 - Test engineer C's fix-round brief was not delivered: the app pauses cross-session messages after 10 in a row with no user message. Resend it after the user's next message.
 - Review campaign note: test-C's 28 tests passed first try; the fresh-eyes review should mutation-check them.
