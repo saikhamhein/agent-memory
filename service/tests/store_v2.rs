@@ -1904,6 +1904,7 @@ fn archived_output_store_purged() {
         let dream = start(&mut ts, json!([]));
         let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
         let in_store = "SELECT COUNT(*) FROM memories WHERE store_id=?1";
+        let cloned_version = id(&data(&ts.store.versions(&out, None, None).unwrap())[0]);
         assert_eq!(
             count(&ts, in_store, &[&out]),
             1,
@@ -1928,6 +1929,8 @@ fn archived_output_store_purged() {
             "adopted={adopted}"
         );
         not_found(ts.store.get(&out, &id(&a)));
+        not_found(ts.store.version(&out, &cloned_version));
+        assert!(data(&ts.store.list(&out, "/").unwrap()).is_empty());
         // The diff only exists while the dream runs.
         invalid(ts.store.dream(&did, true));
         let ended = ts.store.dream(&did, false).unwrap();
@@ -1996,8 +1999,17 @@ fn observation_redact_nulls_every_copy() {
 
     let redacted = ts.store.redact_observation(&oid, "token:admin").unwrap();
     assert_eq!(str_of(&redacted, "id"), oid);
-    assert!(redacted["redacted_at"].is_string());
-    assert_eq!(str_of(&redacted, "redacted_by"), "token:admin");
+    assert!(redacted["created"].is_string());
+    // The body column is NOT NULL, so the body keeps its shape with the content gone
+    // and records who redacted it; who made the observation is kept.
+    let gone = &redacted["body"];
+    assert!(
+        gone["path"].is_null() && gone["content"].is_null(),
+        "{gone}"
+    );
+    assert_eq!(str_of(gone, "created_by"), ACTOR);
+    assert!(gone["redacted_at"].is_string());
+    assert_eq!(str_of(gone, "redacted_by"), "token:admin");
     // No copy of the body is left in either table.
     assert_eq!(
         count(
@@ -2015,14 +2027,15 @@ fn observation_redact_nulls_every_copy() {
         ),
         0
     );
-    // The id and time survive; the body is null; other observations are untouched.
+    // The id and time survive; every copy carries the same redacted body; other
+    // observations are untouched.
     for d in [&ended, &running] {
         let view = ts.store.dream(str_of(d, "id"), false).unwrap();
         let carried = view["observations"].as_array().unwrap();
         assert_eq!(carried.len(), 1);
         assert_eq!(str_of(&carried[0], "id"), oid);
         assert!(carried[0]["created"].is_string());
-        assert!(carried[0]["body"].is_null(), "{}", carried[0]);
+        assert_eq!(carried[0]["body"], *gone, "{}", carried[0]);
     }
     assert_eq!(
         count(
@@ -2032,6 +2045,9 @@ fn observation_redact_nulls_every_copy() {
         ),
         1
     );
+    // Redacting again is a no-op: same result, nothing rewritten.
+    let again = ts.store.redact_observation(&oid, "token:other").unwrap();
+    assert_eq!(again, redacted);
     not_found(
         ts.store
             .redact_observation("00000000000000000000000000000000", "token:admin"),
@@ -2230,6 +2246,11 @@ fn adopt_body_has_no_reviewed() {
     let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
     set_content(&mut ts, &out, &x, "x by the dream", "dream:agent");
     let body = json!({"summary": "s", "coverage": "c", "conflicts": []});
+    // A caller that still sends the old flag is told so (400), and nothing happens.
+    let mut old_style = body.clone();
+    old_style["reviewed"] = json!(true);
+    invalid(ts.store.dream_adopt(&did, &old_style, "token:admin"));
+    assert_eq!(dream_status(&ts, &did), "running");
     let done = ts.store.dream_adopt(&did, &body, "token:admin").unwrap();
     assert_eq!(str_of(&done, "status"), "completed");
     assert!(done["adoption"].get("reviewed").is_none(), "{done}");
