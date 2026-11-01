@@ -403,6 +403,13 @@ async fn capability_matrix() {
                 Need::Observe,
             ),
             (
+                "useful",
+                "POST",
+                "/v1/feedback".into(),
+                json!({"path": "/global/a.md", "why": "It changed what I did"}),
+                Need::Observe,
+            ),
+            (
                 "dream list",
                 "GET",
                 "/v1/dreams".into(),
@@ -532,6 +539,7 @@ async fn authentication_applies_to_every_route() {
         ("GET", format!("{store}/memory_versions/memver_x")),
         ("POST", format!("{store}/memory_versions/memver_x/redact")),
         ("POST", "/v1/observations".into()),
+        ("POST", "/v1/feedback".into()),
         ("POST", "/v1/dreams".into()),
         ("GET", "/v1/dreams".into()),
         ("GET", "/v1/dreams/drm_x".into()),
@@ -2144,6 +2152,111 @@ async fn recall_usage_log() {
         std::fs::metadata(&log).unwrap().permissions().mode() & 0o777,
         0o600
     );
+}
+
+/// A useful mark appends one evidence line to the recall log and changes nothing else.
+#[tokio::test]
+async fn feedback_usage_log() {
+    let fx = Fx::new();
+    seed_recall_fixture(&fx).await;
+    let log = fx.tmp.path().join("recall-log.jsonl");
+    for (name, body) in [
+        ("why missing", json!({"path": "/global/other-rule.md"})),
+        (
+            "why empty",
+            json!({"path": "/global/other-rule.md", "why": " "}),
+        ),
+        (
+            "why too long",
+            json!({"path": "/global/other-rule.md", "why": "x".repeat(501)}),
+        ),
+        (
+            "unknown field",
+            json!({"path": "/global/other-rule.md", "why": "w", "mystery": 1}),
+        ),
+        (
+            "relative project",
+            json!({"path": "/global/other-rule.md", "why": "w", "project": "rel"}),
+        ),
+    ] {
+        let result = fx.call("POST", "/v1/feedback", "observer", body).await;
+        assert_eq!(result.0, StatusCode::BAD_REQUEST, "{name}: {}", result.1);
+        assert_invalid(&result, "");
+    }
+    let (code, body) = fx
+        .call(
+            "POST",
+            "/v1/feedback",
+            "observer",
+            json!({"path": "/global/missing.md", "why": "w"}),
+        )
+        .await;
+    assert_eq!(code, StatusCode::NOT_FOUND, "{body}");
+    assert!(!log.exists(), "rejected marks are not logged");
+
+    let before = fx.status().await;
+    let recall = || {
+        fx.call(
+            "POST",
+            "/v1/recall",
+            "reader",
+            json!({"query": "concrete reports"}),
+        )
+    };
+    let recalled = recall().await.1;
+    let why = "ü".repeat(500);
+    let (code, body) = fx
+        .call(
+            "POST",
+            "/v1/feedback",
+            "observer",
+            json!({"path": "/global/other-rule.md", "why": why, "project": "/projects/a"}),
+        )
+        .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_eq!(fx.status().await, before, "a mark changes no memory");
+    assert_eq!(recall().await.1, recalled, "a mark changes no recall");
+
+    let entries: Vec<Value> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let mark = entries
+        .iter()
+        .find(|e| e["view"] == "useful")
+        .expect("one useful line");
+    let keys: HashSet<_> = mark.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(
+        keys,
+        HashSet::from_iter(
+            ["ts", "client", "project", "path", "why", "revision", "view"].map(String::from)
+        ),
+        "{mark}"
+    );
+    assert_eq!(mark["client"], "observer");
+    assert_eq!(mark["project"], "/projects/a");
+    assert_eq!(mark["path"], "/global/other-rule.md");
+    assert_eq!(mark["why"], why);
+    assert_eq!(mark["revision"], before["revision"]);
+    assert!(mark["ts"].as_str().is_some_and(|t| t.contains('T')));
+}
+
+/// Unlike a recall, a mark that can't be logged fails: the log is its only record.
+#[tokio::test]
+async fn feedback_log_failure_fails() {
+    let fx = Fx::new();
+    seed_recall_fixture(&fx).await;
+    std::fs::create_dir(fx.tmp.path().join("recall-log.jsonl")).unwrap();
+    let (code, body) = fx
+        .call(
+            "POST",
+            "/v1/feedback",
+            "observer",
+            json!({"path": "/global/other-rule.md", "why": "w"}),
+        )
+        .await;
+    assert_eq!(code, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
 }
 
 // ---------------------------------------------------------------------------

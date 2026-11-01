@@ -1,7 +1,7 @@
 # Shared agent memory — revision 42
 
 Preferences and lessons, not authorization. Current user instructions and project facts take precedence.
-Read-only files: /srv/memory/mnt/shared-agent-memory/ (index: INDEX.md). Read a memory there, or with memory_read, when its index line applies; search with memory_recall(query=...).
+Read-only files: /srv/memory/mnt/shared-agent-memory/ (index: INDEX.md). Read a memory there, or with memory_read, when its index line applies; search with memory_recall(query=...); mark one that helped with memory_useful(path, why).
 
 ## Always apply
 ### Keep it simple: if it can be removed, remove it [/global/keep-it-simple.md]

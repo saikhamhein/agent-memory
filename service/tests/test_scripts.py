@@ -17,7 +17,7 @@ import unittest
 
 from service.tests.harness import REPO, SERVICE
 
-SESSION_TOOLS = {'memory_status', 'memory_recall', 'memory_list', 'memory_read', 'memory_observe'}
+SESSION_TOOLS = {'memory_status', 'memory_recall', 'memory_list', 'memory_read', 'memory_observe', 'memory_useful'}
 FAKE_UV = '''#!/bin/sh
 echo "$@" >> "$UV_LOG"
 if [ "$1" = venv ]; then mkdir -p "$2/bin"; ln -sf "$REAL_PYTHON" "$2/bin/python"; fi

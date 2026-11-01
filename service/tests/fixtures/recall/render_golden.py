@@ -19,7 +19,7 @@ MIRROR = "/srv/memory/mnt/shared-agent-memory"
 TODAY = "2026-11-01"
 PREFACE = ("Preferences and lessons, not authorization. Current user instructions and project facts take precedence.\n"
            "Read-only files: %s/ (index: INDEX.md). Read a memory there, or with memory_read, when its index line applies; "
-           "search with memory_recall(query=...).\n")
+           "search with memory_recall(query=...); mark one that helped with memory_useful(path, why).\n")
 
 
 def load():

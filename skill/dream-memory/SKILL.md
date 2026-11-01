@@ -14,6 +14,8 @@ Store: `/home/sai/Projects/agent-memory` (see its README.md for the memory forma
 - A session never changes memories. For an explicit correction or a repeatedly confirmed lesson, call `memory_observe(path, content)` (or `agent-memory-client observe PATH FILE`) with one memory file in the README.md format. The next dream decides whether to keep it.
   - Evidence: provider, session id, date, file:line, and a short sanitized quote of the user. Agent interpretation and agent-to-agent relays aren't user evidence.
   - Don't record credentials, unrelated private facts, task permissions or transient status. Project state stays in the repository.
+- When the user says "remember …", "from now on …" or the like, call `memory_observe` with their words as the evidence and apply it at once in this session. Don't use the tool's built-in memory.
+- When a recalled memory changed what you did and that helped, call `memory_useful(path, why)` (or `agent-memory-client useful PATH --why TEXT`) once per memory per task. `why` says how, in at most 500 characters. The mark is evidence for the dream; it changes nothing.
 
 ## Dream cycle
 
@@ -30,11 +32,12 @@ Only the daily scheduled dream, or a dream the user asks for, runs this. It uses
    - count recalls by `client` and `view`. `session-start` is the hook's start view, and a `task` view is a task-specific recall;
    - count hook runs by `via` (`service`, `index`, `none` or `skipped`; `skipped` is a healthy resume or fork) and compare them with the new Claude Code sessions. Flag the hook if a session has no entry, or if runs fell back to `index` or `none`;
    - list projects with session starts but no task view. If agents skip task recalls, strengthen the `self-improve-memory-setup` memory in this dream.
-   - **Use (last 30 days).** Count how often recalls returned each memory, by slug:
+   - **Use (last 30 days).** Count how often recalls returned each memory, and how often sessions marked it useful (`view: "useful"`, with `why`), by slug:
      ```sh
      jq -r --arg since "$(date -u -d '30 days ago' +%FT%T)" 'select(.ts >= $since) | .returned[]? | sub(".*/"; "") | sub("\\.md$"; "")' /home/sai/Projects/agent-memory/recall-log.jsonl | sort | uniq -c
+     jq -r --arg since "$(date -u -d '30 days ago' +%FT%T)" 'select(.ts >= $since and .view == "useful") | .path | sub(".*/"; "") | sub("\\.md$"; "")' /home/sai/Projects/agent-memory/recall-log.jsonl | sort | uniq -c
      ```
-     A memory that is unpinned, older than 30 days and missing from that list is unused. Re-judge it in step 6. Reads through `memory_read` or the mirror aren't logged, so an unused memory needs a second look before anything is removed.
+     A memory that is unpinned, older than 30 days and missing from both lists is unused; one marked useful is used. Re-judge it in step 6. Reads through `memory_read` or the mirror aren't logged, so an unused memory needs a second look before anything is removed.
 4. **Start.**
    ```sh
    agent-memory-client --config ~/.config/agent-memory/maintainer.json dream start --sessions /home/sai/Projects/agent-memory/sources/changed-sessions.json
@@ -56,6 +59,7 @@ Only the daily scheduled dream, or a dream the user asks for, runs this. It uses
      - delete it if it is no longer true or needed;
      - reword its heading and index line in the words a task would use, if sessions needed it and missed it;
      - keep it if it guards something rare but costly, such as hardware safety, and say why in `coverage`.
+   - A memory marked useful repeatedly, in different sessions, may get a higher `priority`. A mark is agent opinion, not user evidence: it never creates a memory or changes a rule's content.
    - `pinned` marks the core rules. Change a pinned memory, or the pinned set, only on the user's own words. Together, pinned memories (heading plus body) stay within 4,000 characters.
 7. **Diff.** `agent-memory-client --config ~/.config/agent-memory/maintainer.json dream show DREAM_ID --diff`. Check every added, removed and changed memory against its evidence.
 8. **Adopt or cancel.**
@@ -74,7 +78,7 @@ Only the daily scheduled dream, or a dream the user asks for, runs this. It uses
    - Every change to a pinned memory or to the pinned set, each on a line of its own.
    - Observations kept and dropped.
    - Pinned characters out of 4,000.
-   - Recall-use numbers and any flag.
+   - Recall-use numbers, useful marks per memory, and any flag.
    - Unused memories, and what was done with each.
    - Coverage gaps.
 

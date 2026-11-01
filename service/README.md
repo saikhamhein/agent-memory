@@ -39,7 +39,7 @@ Each token has an explicit list of capabilities: `recall`, `observe`, `review` a
 
 ## Client
 
-The client uses `client.json` by default, which allows `status`, `recall`, `ls`, `cat` and `observe`. Every other command needs `--config ~/.config/agent-memory/maintainer.json`.
+The client uses `client.json` by default, which allows `status`, `recall`, `ls`, `cat`, `observe` and `useful`. Every other command needs `--config ~/.config/agent-memory/maintainer.json`.
 
 | Command | Does |
 | --- | --- |
@@ -48,6 +48,7 @@ The client uses `client.json` by default, which allows `status`, `recall`, `ls`,
 | `ls [PREFIX] [--store S]`, `cat PATH\|memver_… [--store S]` | Lists memories; prints a memory or version as its exact bytes |
 | `versions [PATH] [--created-by ACTOR] [--store S]` | Version history, newest first |
 | `observe PATH FILE` | Records a candidate |
+| `useful PATH --why TEXT` | Marks a recalled memory that helped |
 | `write PATH FILE [--expected SHA] [--to NEW] [--store S]` | Creates; with `--expected`, updates or renames |
 | `rm PATH [--expected SHA] [--store S]`, `redact ID` | Deletes a memory; erases an old version's content (`memver_…`) or an observation's body |
 | `dream start [--sessions FILE]`, `dream show [ID] [--diff]`, `dream adopt ID REVIEW.json`, `dream cancel ID` | The dream cycle |
@@ -56,7 +57,7 @@ The client uses `client.json` by default, which allows `status`, `recall`, `ls`,
 
 ## MCP tools
 
-The MCP host launches `mcp_server.py --config client.json`. The adapter has the session tools only, on the live store: `memory_status`, `memory_recall(query, project)`, `memory_list(path_prefix)`, `memory_read(path)` and `memory_observe(path, content)`. Pass `project` as the canonical project root, or recall returns no project memories. Recall returns text; every other tool returns the API's JSON as text. There is no maintenance mode: dreams run through the client.
+The MCP host launches `mcp_server.py --config client.json`. The adapter has the session tools only, on the live store: `memory_status`, `memory_recall(query, project)`, `memory_list(path_prefix)`, `memory_read(path)`, `memory_observe(path, content)` and `memory_useful(path, why)`. Pass `project` as the canonical project root, or recall returns no project memories. Recall returns text; every other tool returns the API's JSON as text. There is no maintenance mode: dreams run through the client.
 
 `install-mcp.py` registers it with `codex mcp` and `claude mcp --scope user` (never by editing `~/.claude.json`), leaves a matching entry alone, replaces an older one of its own, refuses an unrelated one, and keeps one copy of the previous Codex config at `runtime/codex-config.toml`. New sessions pick it up; an open one needs `/mcp reconnect`.
 
@@ -79,6 +80,7 @@ Every `/v1` route needs `Authorization: Bearer TOKEN`. `/healthz` is unauthentic
 | `GET /v1/memory_stores/{store}/memory_versions/{id}` | review | version with content |
 | `POST /v1/memory_stores/{store}/memory_versions/{id}/redact` | promote | version |
 | `POST /v1/observations` | observe | `{path, content}` → `{id}` |
+| `POST /v1/feedback` | observe | `{path, why, project?}` → the log line; 404 unless `path` is a live memory, `why` 1–500 characters |
 | `POST /v1/observations/{id}/redact` | promote | erases an observation's body everywhere it is stored |
 | `POST /v1/dreams`, `GET /v1/dreams`, `GET /v1/dreams/{id}?diff=true` | review | `{sessions: [{source, locator, sha256?}]}` → dream; `{data: [dream]}`; dream (plus `diff` while running) |
 | `POST /v1/dreams/{id}/adopt` | promote | `{summary, coverage, conflicts}` → dream |
@@ -93,7 +95,7 @@ Errors:
 - 409 `{error, type, paths?}`: `precondition_failed`, `path_exists`, `slug_exists`, `store_archived`, `dream_running` (`paths` names the running dream), `pinned_budget_exceeded`, `adopt_conflict`.
 - 413: a body over 4 MiB.
 
-Each recall appends a line to `recall-log.jsonl` next to the database: `ts`, `client` (the request label, else the token name), `project`, `query`, `role`, `topics`, `revision`, `view`, `pinned`, `returned`, `chars`.
+Each recall appends a line to `recall-log.jsonl` next to the database: `ts`, `client` (the request label, else the token name), `project`, `query`, `role`, `topics`, `revision`, `view`, `pinned`, `returned`, `chars`. Each `/v1/feedback` call appends `ts`, `client` (the token name), `project`, `path`, `why`, `revision` and `view: "useful"`; unlike a recall, it fails if the line can't be written. Neither changes memories or recall.
 
 ## Backup and moving to the Pi
 

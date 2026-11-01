@@ -58,6 +58,8 @@ agent-memory-client observe /global/check-evidence.md lesson.md
 
 A candidate is never recalled. The next dream checks it against the user's own words and keeps or drops it.
 
+When a recalled memory changed what a session did and helped, the session marks it with MCP `memory_useful(path, why)` or `agent-memory-client useful PATH --why TEXT`. The mark is a line in the recall log and changes nothing; the dream counts it as use and may raise the memory's `priority`, never its content.
+
 Record explicit corrections and well-supported lessons, with evidence: provider, session, date, file:line, and a short sanitized quote. Agent interpretation isn't user evidence. Don't record credentials, private unrelated facts, task permissions or transient status; keep project state in the repository.
 
 ## Dreams

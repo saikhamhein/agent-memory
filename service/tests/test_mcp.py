@@ -14,7 +14,7 @@ from mcp.client.stdio import stdio_client
 from mcp.types import TextContent
 from service.tests.harness import SERVICE, content, project_path, sha, start_server
 
-SESSION_TOOLS = {'memory_status', 'memory_recall', 'memory_list', 'memory_read', 'memory_observe'}
+SESSION_TOOLS = {'memory_status', 'memory_recall', 'memory_list', 'memory_read', 'memory_observe', 'memory_useful'}
 REMOVED_TOOLS = {'memory_versions', 'memory_write', 'memory_delete', 'memory_redact', 'memory_dream_start',
     'memory_dream_get', 'memory_dream_adopt', 'memory_dream_cancel', 'memory_dream', 'memory_get_dream',
     'memory_validate', 'memory_diff', 'memory_promote', 'memory_rollback', 'memory_export'}
@@ -62,10 +62,12 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             tools = {t.name: t for t in (await session.list_tools()).tools}
             self.assertEqual(set(tools), SESSION_TOOLS)
             self.assertFalse(set(tools) & REMOVED_TOOLS)
-            for name in SESSION_TOOLS - {'memory_observe'}:
+            for name in SESSION_TOOLS - {'memory_observe', 'memory_useful'}:
                 self.assertTrue(tools[name].annotations.readOnlyHint, name)
-            self.assertFalse(tools['memory_observe'].annotations.readOnlyHint)
-            self.assertFalse(tools['memory_observe'].annotations.destructiveHint)
+            for name in ('memory_observe', 'memory_useful'):
+                self.assertFalse(tools[name].annotations.readOnlyHint, name)
+                self.assertFalse(tools[name].annotations.destructiveHint, name)
+            self.assertEqual(set(tools['memory_useful'].inputSchema['properties']), {'path', 'why'})
             # X25: role and topics are gone; X15: so are project_id, limit and budget.
             self.assertEqual(set(tools['memory_recall'].inputSchema['properties']), {'query', 'project'})
             status = payload(await session.call_tool('memory_status', {}))
@@ -117,12 +119,29 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
                          ('/global/candidate.md', candidate, 'token:agent-session'))
         self.assertEqual(self.server.api('GET', '/v1/status')[1]['memories'], 1)  # the live store is unchanged
 
+    async def test_useful_marks_a_live_memory_only(self):
+        self.server.seed('/global/existing.md', 'Existing')
+        async with self.session() as session:
+            marked = await session.call_tool('memory_useful', {'path': '/global/existing.md', 'why': 'Saved a retry'})
+            self.assertFalse(marked.isError, marked.content)
+            self.assertIsNone(marked.structuredContent)
+            self.assertEqual(payload(marked)['path'], '/global/existing.md')
+            self.assertIn('404', error_text(await session.call_tool('memory_useful',
+                {'path': '/global/missing.md', 'why': 'w'})))
+        [mark] = self.server.recall_entries()
+        self.assertEqual((mark['view'], mark['client'], mark['path'], mark['why']),
+                         ('useful', 'agent-session', '/global/existing.md', 'Saved a retry'))
+
     async def test_a_credential_without_observe_is_refused_by_the_service(self):
+        self.server.seed('/global/existing.md', 'Existing')
         async with self.session(credential='reader') as session:
             message = error_text(await session.call_tool('memory_observe',
                 {'path': '/global/o.md', 'content': content('O')}))
             self.assertIn('403', message)
             self.assertNotIn('fixture-reader', message)
+            self.assertIn('403', error_text(await session.call_tool('memory_useful',
+                {'path': '/global/existing.md', 'why': 'w'})))
+        self.assertEqual(self.server.recall_entries(), [])
         self.assertEqual(self.server.api('GET', '/v1/status')[1]['observations_pending'], 0)
 
     async def test_recall_with_project_finds_project_memories(self):
@@ -143,7 +162,8 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             self.server.stop()
             for name, args in [('memory_recall', {}), ('memory_recall', {'query': 'keep'}),
                                ('memory_status', {}), ('memory_list', {}), ('memory_read', {'path': '/global/keep.md'}),
-                               ('memory_observe', {'path': '/global/x.md', 'content': content('X')})]:
+                               ('memory_observe', {'path': '/global/x.md', 'content': content('X')}),
+                               ('memory_useful', {'path': '/global/keep.md', 'why': 'w'})]:
                 result = await session.call_tool(name, args)
                 self.assertIn('unreachable', error_text(result), name)
                 self.assertNotIn('No memory matches', error_text(result))

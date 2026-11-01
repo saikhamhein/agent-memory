@@ -65,7 +65,8 @@ def create_server(api: MemoryAPI) -> FastMCP:
         'core rules, this project\'s memories and an index. During a task, call memory_recall with a query and '
         'project set to the canonical project root (the main checkout, not a worktree), or memory_read a path '
         'from the index when its line applies. Sessions never change memories: for an explicit user correction '
-        'or a repeatedly confirmed lesson, record a candidate with memory_observe; the daily dream decides. '
+        'or a repeatedly confirmed lesson, record a candidate with memory_observe; when a recalled memory '
+        'helped, mark it with memory_useful. The daily dream decides. '
         'This adapter talks only to its configured memory API.'
     ))
     tool = lambda annotations: server.tool(annotations=annotations, structured_output=False)
@@ -104,6 +105,12 @@ def create_server(api: MemoryAPI) -> FastMCP:
         """Record a candidate memory: a path plus Markdown with JSON frontmatter, whose evidence cites the user's
         own words (provider, session, date, file:line, short quote). It is never recalled until a dream keeps it."""
         return text(await api.call('POST', '/v1/observations', dict(path=path, content=content), path))
+
+    @tool(APPEND)
+    async def memory_useful(path: str, why: str) -> str:
+        """Mark a recalled memory that changed what you did and helped, once per memory per task. why: how it
+        helped, at most 500 characters. The mark is evidence for the dream; it changes no memory."""
+        return text(await api.call('POST', '/v1/feedback', dict(path=path, why=why), path))
 
     return server
 

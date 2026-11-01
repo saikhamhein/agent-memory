@@ -167,6 +167,7 @@ pub fn router(config: Config, store: Store) -> Router {
         .route("/v1/status", get(status))
         .route("/v1/recall", post(recall))
         .route("/v1/observations", post(observe))
+        .route("/v1/feedback", post(feedback))
         .route("/v1/observations/{id}/redact", post(redact_observation))
         .route("/v1/dreams", post(dream_start).get(dreams))
         .route("/v1/dreams/{id}", get(dream))
@@ -199,7 +200,7 @@ async fn required(app: &App, request: &mut Request) -> std::result::Result<Capab
         .map_or("", |m| m.as_str());
     Ok(match (&method, route) {
         (&Method::GET, "/v1/status") | (&Method::POST, "/v1/recall") => Capability::Recall,
-        (&Method::POST, "/v1/observations") => Capability::Observe,
+        (&Method::POST, "/v1/observations" | "/v1/feedback") => Capability::Observe,
         // History includes deleted memories, so even live versions need review.
         (
             &Method::GET,
@@ -321,7 +322,6 @@ fn log_recall(
     revision: i64,
     result: &recall::Recalled,
 ) {
-    use std::{io::Write, os::unix::fs::OpenOptionsExt};
     let entry = json!({
         "ts": chrono::Utc::now().to_rfc3339(),
         "client": client,
@@ -335,15 +335,65 @@ fn log_recall(
         "returned": result.returned,
         "chars": result.text.chars().count(),
     });
-    let written = std::fs::OpenOptions::new()
+    if let Err(e) = append_log(path, &entry) {
+        eprintln!("Recall log write failed: {e}");
+    }
+}
+
+/// Appends one line to `recall-log.jsonl`.
+fn append_log(path: &std::path::Path, entry: &Value) -> std::io::Result<()> {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    std::fs::OpenOptions::new()
         .append(true)
         .create(true)
         .mode(0o600)
         .open(path)
-        .and_then(|mut f| f.write_all(format!("{entry}\n").as_bytes()));
-    if let Err(e) = written {
-        eprintln!("Recall log write failed: {e}");
+        .and_then(|mut f| f.write_all(format!("{entry}\n").as_bytes()))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Useful {
+    path: String,
+    why: String,
+    #[serde(default)]
+    project: String,
+}
+
+/// A session's "this memory helped" mark: evidence in the recall log for the dream to weigh.
+/// It changes no memory; the log line is its only record, so a failed write fails the request.
+async fn feedback(
+    State(app): State<App>,
+    Extension(Client(token)): Extension<Client>,
+    body: Bytes,
+) -> Reply {
+    let mut u: Useful = parse(&body)?;
+    let why = u.why.trim().to_owned();
+    if why.is_empty() || why.chars().count() > 500 {
+        return Err(Error::Invalid("why must be 1 to 500 characters".into()).into());
     }
+    if !u.project.is_empty() {
+        u.project = absolute_path(&u.project)?.to_string_lossy().into_owned();
+    }
+    let log = app.config.database.with_file_name("recall-log.jsonl");
+    app.json(move |s| {
+        let (revision, memories) = s.live_memories()?;
+        if !memories.iter().any(|m| m.path == u.path) {
+            return Err(Error::NotFound);
+        }
+        let entry = json!({
+            "ts": chrono::Utc::now().to_rfc3339(),
+            "client": token,
+            "project": u.project,
+            "path": u.path,
+            "why": why,
+            "revision": revision,
+            "view": "useful",
+        });
+        append_log(&log, &entry)?;
+        Ok(entry)
+    })
+    .await
 }
 
 #[derive(Deserialize)]
