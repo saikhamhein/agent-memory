@@ -30,4 +30,5 @@ Short, past tense, for a phone; no questions, no "proposed" or "suggested" items
 - observations kept and dropped;
 - pinned characters out of 4,000;
 - coverage gaps;
-- recall-use numbers and any flag.
+- recall-use numbers and any flag;
+- unused memories and what was done with each.
