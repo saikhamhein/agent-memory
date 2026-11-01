@@ -42,6 +42,9 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 | Review 2 | `local_33b6d546-b905-477f-946d-24f8b5f4c4c9` | recall, clients, hook end to end |
 | Review 3 | `local_4af086ca-a946-4a23-91b8-80c448967abd` | security, API surface, simplicity |
 
+Reports:
+- Review 3 done: 1 blocker (default MCP install registers the maintainer token for every session, so any injected session can write, delete, redact or adopt live memory), 7 should-fix, 8 later, 14 removable items. File: `/tmp/claude-1000/-home-sai-Projects-agent-memory--claude-worktrees-sleepy-antonelli-01c285/ec71ef4b-fcb2-4f2d-9792-397bfe038dc0/scratchpad/review-security-api-simplicity.md`, with a copy in the shared notes folder. The coordinator found the same blocker independently and asked the user whether ordinary sessions should be read-and-suggest only.
+
 Then a fresh triage lead classes the findings: (a) fix before release, (b) small fix, (c) later.
 
 ## Merged
