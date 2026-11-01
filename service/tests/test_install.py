@@ -118,6 +118,8 @@ def stop_server():
 
 if action == 'is-active':
     sys.exit(0 if active.exists() else 3)
+if action == 'is-enabled':
+    sys.exit(0 if enabled.exists() else 1)
 if action == 'enable':
     enabled.write_text('1')
 if action == 'disable':
@@ -363,6 +365,7 @@ class InstallMigrationGuardTests(unittest.TestCase):
         self.box.fail_tool('systemd-analyze')
         ran = self.box.install('--migrate')
         self.assertNotEqual(ran.returncode, 0, ran.stdout)
+        self.assertIn('rerun install-user.py or roll back', ran.stdout + ran.stderr)
         self.assertEqual(user_version(self.box.database), 2)
         events, migrate = self.migrate_index()
         self.assertIn('systemctl --user disable agent-memory.service', events[:migrate])
