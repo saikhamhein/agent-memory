@@ -10,8 +10,12 @@ import secrets
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
+import tomllib
+
+URL = 'http://127.0.0.1:8787'
 
 
 def atomic_copy(source, target, mode):
@@ -42,31 +46,104 @@ def systemctl(*args):
     return subprocess.run(['systemctl', '--user', *args, 'agent-memory.service'], check=True)
 
 
-def migrate_store(binary, database, pins):
-    """Stop the service, back up, then migrate v1 to v2 (design §3.6).
+def unit_is(state):
+    return subprocess.run(['systemctl', '--user', state, '--quiet', 'agent-memory.service'],
+                          capture_output=True).returncode == 0
 
-    On failure the store is unchanged (migration is one transaction) and a
-    service that was running is started again. On success it stays stopped
-    until the caller restarts it with the new binary."""
-    active = subprocess.run(['systemctl', '--user', 'is-active', '--quiet',
-                             'agent-memory.service'], capture_output=True).returncode == 0
+
+STOPPED = ('The store is migrated to v2, but the install did not finish. agent-memory.service is stopped and '
+           'disabled so the old binary cannot serve it. To recover, rerun install-user.py or roll back; '
+           'the store is v2, so rerun without --migrate.')
+
+
+def migrate_store(binary, database, pins):
+    """Stop and disable the service, back up, then migrate v1 to v2 (design §3.6).
+
+    The outcome is read from the store's user_version, not the exit code: before the commit the store is
+    unchanged (migration is one transaction) and the old service is put back as it was. After the commit the
+    service stays stopped and disabled, so the v1 binary never serves a v2 store; only main() enables it,
+    once the new binary and unit are installed."""
+    active, enabled = unit_is('is-active'), unit_is('is-enabled')
     if active:
         systemctl('stop')
+    if enabled:
+        systemctl('disable')
     try:
         runtime = database.parent / 'runtime'
         runtime.mkdir(mode=0o700, exist_ok=True)
-        stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-        backup = runtime / f'pre-v2-{stamp}.sqlite3'
+        backup = runtime / f'pre-v2-{stamp()}.sqlite3'
         # `backup` refuses to overwrite and runs integrity_check on the copy.
         subprocess.run([str(binary), 'backup', '--database', str(database), '--output', str(backup)],
                        check=True)
         pin_args = [arg for pin in pins for arg in ('--pin', pin)]
         subprocess.run([str(binary), 'migrate', '--database', str(database), *pin_args], check=True)
     except BaseException:
+        if schema_version(database) >= 2:
+            print(STOPPED, file=sys.stderr)
+            raise
+        if enabled:
+            systemctl('enable')
         if active:
             systemctl('start')
         raise
     return backup
+
+
+def stamp():
+    return datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+
+
+def toml_string(value):
+    # JSON strings are valid TOML basic strings for ordinary Linux paths and names.
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def render_server(listen, database, tokens):
+    text = f'listen = {toml_string(listen)}\ndatabase = {toml_string(database)}\n'
+    for token in tokens:
+        text += (f'\n[[tokens]]\nname = {toml_string(token["name"])}\nsha256 = {toml_string(token["sha256"])}\n'
+                 f'capabilities = {json.dumps(token["capabilities"])}\n')
+    return text
+
+
+def credentials(url, token):
+    return json.dumps({'url': url, 'token': token}, indent=2) + '\n'
+
+
+def digest(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def reconcile_tokens(server_text, client_text):
+    """Token reconcile (design §3.6): `agent-session` = [recall, observe] in client.json, no `agent-recall`,
+    no `[projects]`; every other token is kept as it is. Returns the new (server.toml, client.json) texts."""
+    config = tomllib.loads(server_text)
+    unknown = sorted(set(config) - {'listen', 'database', 'tokens', 'projects'})
+    if unknown:
+        raise ValueError(f'server.toml has unknown keys {unknown}; remove them and rerun')
+    client = json.loads(client_text) if client_text else {}
+    secret = client.get('token', '')
+    tokens = config.get('tokens', [])
+    if not any(t['name'] == 'agent-session' and t['sha256'] == digest(secret) for t in tokens):
+        secret = secrets.token_hex(32)
+    session = {'name': 'agent-session', 'sha256': digest(secret), 'capabilities': ['recall', 'observe']}
+    kept = [t for t in tokens if t['name'] not in ('agent-session', 'agent-recall')]
+    return (render_server(config['listen'], config['database'], [session, *kept]),
+            credentials(client.get('url', URL), secret))
+
+
+def write_config(files, runtime):
+    """Back up each file that changes to runtime/, then replace it atomically. Unchanged files are left alone."""
+    suffix = stamp()
+    for path, text in files.items():
+        if path.exists():
+            if path.read_text() == text:
+                continue
+            runtime.mkdir(mode=0o700, exist_ok=True)
+            private_file(runtime / f'{path.name}.{suffix}', path.read_text())
+        with tempfile.NamedTemporaryFile('w', dir=path.parent, delete=False) as temporary:  # created 0600
+            temporary.write(text)
+        Path(temporary.name).replace(path)
 
 
 def main():
@@ -96,33 +173,40 @@ def main():
     for directory in (bin_dir, config_dir, unit_dir):
         directory.mkdir(parents=True, exist_ok=True)
     config_dir.chmod(0o700)
-    server = config_dir / 'server.toml'
-    if not server.exists():
+    server, client = config_dir / 'server.toml', config_dir / 'client.json'
+    files = {}
+    if server.exists():
+        server_text = server.read_text()
+        if Path(tomllib.loads(server_text)['database']).resolve() != database:
+            parser.error('Existing config points to a different database; no changes installed')
+    else:
         if any((config_dir / name).exists() for name in ('client.json', 'maintainer.json')):
             parser.error('Client credentials already exist without a server config; reconcile them before installing')
-        reader, maintainer = secrets.token_hex(32), secrets.token_hex(32)
-        # JSON strings are valid TOML basic strings for ordinary Linux paths.
-        text = ('listen = "127.0.0.1:8787"\n'
-                f'database = {json.dumps(str(database), ensure_ascii=False)}\n\n'
-                '[projects]\n'
-                f'agent-memory = {json.dumps(str(source.parent), ensure_ascii=False)}\n\n'
-                '[[tokens]]\nname = "agent-recall"\n'
-                f'sha256 = "{hashlib.sha256(reader.encode()).hexdigest()}"\n'
-                'capabilities = ["recall"]\n\n'
-                '[[tokens]]\nname = "memory-maintainer"\n'
-                f'sha256 = "{hashlib.sha256(maintainer.encode()).hexdigest()}"\n'
-                'capabilities = ["recall", "observe", "review", "promote"]\n')
-        private_file(server, text)
-        for name, token in [('client.json', reader), ('maintainer.json', maintainer)]:
-            private_file(config_dir / name, json.dumps({'url': 'http://127.0.0.1:8787', 'token': token}, indent=2) + '\n')
-    else:
-        import tomllib
-        existing = tomllib.loads(server.read_text())
-        if Path(existing['database']).resolve() != database:
-            parser.error('Existing config points to a different database; no changes installed')
+        maintainer = secrets.token_hex(32)
+        files[config_dir / 'maintainer.json'] = credentials(URL, maintainer)
+        server_text = render_server('127.0.0.1:8787', database, [{
+            'name': 'memory-maintainer', 'sha256': digest(maintainer),
+            'capabilities': ['recall', 'observe', 'review', 'promote']}])
+    try:
+        files[server], files[client] = reconcile_tokens(server_text, client.read_text() if client.exists() else None)
+    except ValueError as error:
+        parser.error(str(error))
     if args.migrate:
         backup = migrate_store(binary, database, args.pin)
         print(f'Migrated to v2; backup at {backup}')
+    try:
+        install(binary, source, server, files, database.parent / 'runtime', bin_dir, unit_dir)
+    except BaseException:
+        if args.migrate:
+            print(STOPPED, file=sys.stderr)
+        raise
+    start(bin_dir)
+    print('Installed and started agent-memory.service on http://127.0.0.1:8787')
+    print('Credentials are in ~/.config/agent-memory (not printed).')
+
+
+def install(binary, source, server, files, runtime, bin_dir, unit_dir):
+    write_config(files, runtime)
     # Validate before replacing a running binary or its unit.
     subprocess.run([str(binary), 'check', '--config', str(server)], check=True)
     atomic_copy(binary, bin_dir / 'agent-memory-server', 0o755)
@@ -130,8 +214,12 @@ def main():
     atomic_copy(source / 'deploy/agent-memory.user.service', unit_dir / 'agent-memory.service', 0o644)
     subprocess.run(['systemd-analyze', '--user', 'verify', str(unit_dir / 'agent-memory.service')], check=True)
     subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True)
-    subprocess.run(['systemctl', '--user', 'enable', 'agent-memory.service'], check=True)
-    subprocess.run(['systemctl', '--user', 'restart', 'agent-memory.service'], check=True)
+
+
+def start(bin_dir):
+    # Enabling comes only now, after the binary and unit that can serve a v2 store are installed.
+    systemctl('enable')
+    systemctl('restart')
     for _ in range(30):
         check = subprocess.run([str(bin_dir / 'agent-memory-client'), 'status'], capture_output=True, text=True)
         if check.returncode == 0:
@@ -140,8 +228,6 @@ def main():
         time.sleep(0.1)
     else:
         raise RuntimeError('Service did not become ready: ' + check.stderr)
-    print('Installed and started agent-memory.service on http://127.0.0.1:8787')
-    print('Credentials are in ~/.config/agent-memory (not printed).')
 
 
 if __name__ == '__main__':
