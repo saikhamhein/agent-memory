@@ -5,15 +5,16 @@ mod common;
 
 use agent_memory_server::{model, recall, store::Store};
 use common::*;
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     fs,
-    os::unix::io::AsRawFd,
+    os::unix::{fs::PermissionsExt, io::AsRawFd},
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
     thread,
+    time::{Duration, Instant},
 };
 
 /// `model::PINNED_BUDGET`, design §3.1.
@@ -75,7 +76,7 @@ fn start(ts: &mut TempStore, sessions: Value) -> Value {
     ts.store.dream_start(&sessions, "token:review").unwrap()
 }
 fn review(summary: &str) -> Value {
-    json!({"summary": summary, "coverage": "fixtures only", "conflicts": [], "reviewed": true})
+    json!({"summary": summary, "coverage": "fixtures only", "conflicts": []})
 }
 fn adopt(ts: &mut TempStore, dream: &str) -> agent_memory_server::Result<Value> {
     ts.store.dream_adopt(dream, &review("test"), "token:admin")
@@ -1123,7 +1124,9 @@ fn dream_start_freezes_and_clones() {
     );
     assert_eq!(str_of(&ts.store.dreams().unwrap()["data"][0], "id"), did);
 
-    // Limits on sessions; a rejected start creates nothing.
+    // Limits on sessions; a rejected start creates nothing. (Only one dream runs at a
+    // time, so end this one first.)
+    ts.store.dream_cancel(&did, "token:review").unwrap();
     let dreams = data(&ts.store.dreams().unwrap()).len();
     let numbered = |n: usize| -> Value {
         (0..n)
@@ -1141,7 +1144,10 @@ fn dream_start_freezes_and_clones() {
             .dream_start(&json!([{"source": "claude"}]), "token:review"),
     );
     assert_eq!(data(&ts.store.dreams().unwrap()).len(), dreams);
-    start(&mut ts, numbered(100));
+    let hundred = start(&mut ts, numbered(100));
+    ts.store
+        .dream_cancel(&id(&hundred), "token:review")
+        .unwrap();
     start(&mut ts, json!([]));
     assert_eq!(data(&ts.store.dreams().unwrap()).len(), dreams + 2);
 }
@@ -1460,18 +1466,16 @@ fn adopt_gates_and_observations() {
     set_content(&mut ts, &out, &x, "x by the dream", "dream:agent");
     let revision = status_u64(&ts, "revision");
 
-    // The review gates: reviewed, summary, coverage, resolved conflicts.
+    // The review gates: summary, coverage, resolved conflicts.
     let good = review("A summary");
     let broken = [
-        json!({"summary": "s", "coverage": "c", "conflicts": []}),
-        json!({"summary": "s", "coverage": "c", "conflicts": [], "reviewed": false}),
-        json!({"coverage": "c", "conflicts": [], "reviewed": true}),
-        json!({"summary": "  ", "coverage": "c", "conflicts": [], "reviewed": true}),
-        json!({"summary": "s", "conflicts": [], "reviewed": true}),
-        json!({"summary": "s", "coverage": "c", "reviewed": true}),
-        json!({"summary": "s", "coverage": "c", "conflicts": "none", "reviewed": true}),
-        json!({"summary": "s", "coverage": "c", "conflicts": [{"status": "open"}], "reviewed": true}),
-        json!({"summary": "s", "coverage": "c", "conflicts": [{"status": "resolved"}, {"status": "open"}], "reviewed": true}),
+        json!({"coverage": "c", "conflicts": []}),
+        json!({"summary": "  ", "coverage": "c", "conflicts": []}),
+        json!({"summary": "s", "conflicts": []}),
+        json!({"summary": "s", "coverage": "c"}),
+        json!({"summary": "s", "coverage": "c", "conflicts": "none"}),
+        json!({"summary": "s", "coverage": "c", "conflicts": [{"status": "open"}]}),
+        json!({"summary": "s", "coverage": "c", "conflicts": [{"status": "resolved"}, {"status": "open"}]}),
     ];
     for r in &broken {
         invalid(ts.store.dream_adopt(&did, r, "token:admin"));
@@ -1486,28 +1490,21 @@ fn adopt_gates_and_observations() {
     // The dream must be running.
     invalid(ts.store.dream_adopt(&did, &good, "token:admin"));
 
-    // Observations: two dreams over the same pending observation; only the first
-    // adopted one may consume it.
+    // Observations stay pending until a dream that carries them is adopted.
     let (mut ts, _live, _x, _y) = xy();
     let o = ts
         .store
         .observe("/global/obs.md", &text("obs", "lesson"), ACTOR)
         .unwrap();
     let first = start(&mut ts, json!([]));
-    let second = start(&mut ts, json!([]));
-    for d in [&first, &second] {
-        assert!(d["observations"].to_string().contains(str_of(&o, "id")));
-    }
+    assert!(first["observations"].to_string().contains(str_of(&o, "id")));
     assert_eq!(status_u64(&ts, "observations_pending"), 1);
     adopt(&mut ts, &id(&first)).unwrap();
     assert_eq!(status_u64(&ts, "observations_pending"), 0);
-    let revision = status_u64(&ts, "revision");
-    conflict(adopt(&mut ts, &id(&second)), "observations_consumed");
-    assert_eq!(dream_status(&ts, &id(&second)), "running");
-    assert_eq!(status_u64(&ts, "revision"), revision);
     // A dream started after the adoption no longer carries it.
     let third = start(&mut ts, json!([]));
     assert!(third["observations"].as_array().unwrap().is_empty());
+    ts.store.dream_cancel(&id(&third), "token:review").unwrap();
     // A cancelled dream consumes nothing.
     let o2 = ts
         .store
@@ -1713,6 +1710,17 @@ fn generation_of(dir: &fs::File) -> i64 {
     ))
 }
 
+/// The whole swap test must finish well inside this, even if the writer dies.
+const DEADLINE: Duration = Duration::from_secs(30);
+
+/// Sets the flag when dropped, so the reader loop ends when the writer scope unwinds.
+struct StopReader<'a>(&'a AtomicBool);
+impl Drop for StopReader<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
 #[test]
 fn mirror_swap_atomic() {
     // Linux only: the reader pins a generation with an open directory descriptor, so
@@ -1724,12 +1732,17 @@ fn mirror_swap_atomic() {
     let base = status_u64(&ts, "revision") as i64;
     let link = ts.link();
     let done = AtomicBool::new(false);
+    let started = Instant::now();
     let expected = |tick: i64| seeded("/global/k.md", &format!("tick-{tick}"));
 
     let reads = thread::scope(|scope| {
         let reader = scope.spawn(|| {
             let (mut reads, mut last) = (0u32, 0i64);
             while !done.load(Ordering::Acquire) || reads == 0 {
+                assert!(
+                    started.elapsed() < DEADLINE,
+                    "no result within {DEADLINE:?}: did the writer die?"
+                );
                 let dir = fs::File::open(&link).expect("the symlink must always resolve");
                 let generation = generation_of(&dir);
                 let at = |name: &str| format!("/proc/self/fd/{}/{name}", dir.as_raw_fd());
@@ -1770,11 +1783,13 @@ fn mirror_swap_atomic() {
             }
             reads
         });
+        // However the writer ends, even by panicking, the reader must be told to stop.
+        let _stop = StopReader(&done);
         let mut current = k;
         for tick in 1..=200 {
             current = set_content(&mut ts, &live, &current, &format!("tick-{tick}"), ACTOR);
         }
-        done.store(true, Ordering::Release);
+        drop(_stop);
         reader.join().unwrap()
     });
     assert!(reads > 0, "the reader never read a complete generation");
@@ -1823,4 +1838,558 @@ fn mirror_failure_keeps_commit() {
         ["/global/a.md", "/global/b.md", "/global/c.md"]
     );
     assert_mirror(&ts);
+}
+
+// ---- v2 fix round (docs/coordination/v2-review-triage.md, WS-A) ----------
+
+/// `SELECT COUNT(*)` on the temporary database, read-only and out of band.
+fn count(ts: &TempStore, sql: &str, args: &[&str]) -> i64 {
+    Connection::open_with_flags(&ts.db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .unwrap()
+        .query_row(sql, rusqlite::params_from_iter(args), |r| r.get(0))
+        .unwrap()
+}
+
+// X6: one valid path that is a file and another that needs a directory of the same
+// name wedge the mirror for good (EEXIST on every later write).
+#[test]
+fn path_md_middle_segment_rejected() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    seed(&mut ts.store, "/projects/a/b.md", "a file");
+    let needs_dir = "/projects/a/b.md/c.md";
+    assert!(model::validate_path(needs_dir).is_err());
+    invalid(
+        ts.store
+            .create(&live, needs_dir, &seeded(needs_dir, "x"), ACTOR),
+    );
+    assert_eq!(ts.store.status().unwrap()["mirror_stale"], false);
+    assert_eq!(status_u64(&ts, "memories"), 1);
+    // The store keeps working, and the mirror with it.
+    seed(&mut ts.store, "/projects/a/d.md", "next");
+    assert_mirror(&ts);
+
+    // No segment but the last may end in `.md`, in any layout and any position.
+    for path in [
+        "/projects/a.md/b/c.md",
+        "/projects/a/b.md/c/d.md",
+        "/projects/x/.md/y.md",
+        "/topics/t.md/x.md",
+        "/roles/r.md/x.md",
+    ] {
+        assert!(model::validate_path(path).is_err(), "{path}");
+        invalid(ts.store.create(&live, path, &seeded(path, "x"), ACTOR));
+    }
+    // Look-alikes are fine.
+    for path in [
+        "/projects/a/b.mdx/c.md",
+        "/projects/a/md/c.md",
+        "/projects/a/b.md.d/c.md",
+        "/projects/a/amd/c.md",
+    ] {
+        model::validate_path(path).unwrap_or_else(|e| panic!("{path}: {e:?}"));
+    }
+    assert_eq!(status_u64(&ts, "memories"), 2);
+}
+
+// X7: a leaked secret must be removable. Every dream clones live into an output
+// store; once the dream ends the clone is purged.
+#[test]
+fn archived_output_store_purged() {
+    const MARKER: &str = "LEAKED-MARKER-7f3a9c";
+    for adopted in [false, true] {
+        let mut ts = TempStore::new();
+        let live = ts.live();
+        let a = seed(&mut ts.store, "/global/a.md", &format!("holds {MARKER}"));
+        let dream = start(&mut ts, json!([]));
+        let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
+        let in_store = "SELECT COUNT(*) FROM memories WHERE store_id=?1";
+        let cloned_version = id(&data(&ts.store.versions(&out, None, None).unwrap())[0]);
+        assert_eq!(
+            count(&ts, in_store, &[&out]),
+            1,
+            "the clone exists while running"
+        );
+        if adopted {
+            set_content(&mut ts, &out, &a, "changed by the dream", "dream:agent");
+            adopt(&mut ts, &did).unwrap();
+        } else {
+            ts.store.dream_cancel(&did, "token:review").unwrap();
+        }
+
+        // Nothing of the clone is left: no memories, no versions, no marker.
+        assert_eq!(count(&ts, in_store, &[&out]), 0, "adopted={adopted}");
+        assert_eq!(
+            count(
+                &ts,
+                "SELECT COUNT(*) FROM memory_versions WHERE store_id=?1",
+                &[&out]
+            ),
+            0,
+            "adopted={adopted}"
+        );
+        not_found(ts.store.get(&out, &id(&a)));
+        not_found(ts.store.version(&out, &cloned_version));
+        assert!(data(&ts.store.list(&out, "/").unwrap()).is_empty());
+        // The diff only exists while the dream runs.
+        invalid(ts.store.dream(&did, true));
+        let ended = ts.store.dream(&did, false).unwrap();
+        assert_eq!(
+            str_of(&ended, "status"),
+            if adopted { "completed" } else { "canceled" }
+        );
+        // Writes to the ended store are still refused.
+        conflict(
+            ts.store
+                .create(&out, "/global/late.md", &text("late", "x"), ACTOR),
+            "store_archived",
+        );
+        // Live history is untouched; an adoption keeps what it applied.
+        if adopted {
+            let by_dream = ts
+                .store
+                .versions(&live, None, Some(&format!("dream:{did}")))
+                .unwrap();
+            assert_eq!(data(&by_dream).len(), 1);
+            assert!(!ended["adoption"].is_null());
+        } else {
+            assert!(str_of(&get(&ts, &id(&a)), "content").contains(MARKER));
+        }
+        assert_eq!(status_u64(&ts, "memories"), 1);
+    }
+
+    // Repeated daily dreams do not grow the database by one clone each.
+    let mut ts = TempStore::new();
+    seed(&mut ts.store, "/global/a.md", "alpha");
+    seed(&mut ts.store, "/global/b.md", "beta");
+    for _ in 0..3 {
+        let dream = start(&mut ts, json!([]));
+        ts.store.dream_cancel(&id(&dream), "token:review").unwrap();
+    }
+    assert_eq!(count(&ts, "SELECT COUNT(*) FROM memories", &[]), 2);
+    assert_eq!(count(&ts, "SELECT COUNT(*) FROM memory_versions", &[]), 2);
+}
+
+// X7: observation bodies are copied into every dream's frozen input; redact removes
+// every copy.
+#[test]
+fn observation_redact_nulls_every_copy() {
+    const MARKER: &str = "OBS-SECRET-LEAK-42";
+    let mut ts = TempStore::new();
+    seed(&mut ts.store, "/global/a.md", "alpha");
+    let observed = ts
+        .store
+        .observe(
+            "/global/obs.md",
+            &text("obs", &format!("lesson with {MARKER}")),
+            ACTOR,
+        )
+        .unwrap();
+    let oid = id(&observed);
+    // Two dreams carry it: one ended, one still running.
+    let ended = start(&mut ts, json!([]));
+    assert!(ended["observations"].to_string().contains(MARKER));
+    ts.store.dream_cancel(&id(&ended), "token:review").unwrap();
+    let running = start(&mut ts, json!([]));
+    assert!(running["observations"].to_string().contains(MARKER));
+    let other = ts
+        .store
+        .observe("/global/other.md", &text("other", "harmless"), ACTOR)
+        .unwrap();
+
+    let redacted = ts.store.redact_observation(&oid, "token:admin").unwrap();
+    assert_eq!(str_of(&redacted, "id"), oid);
+    assert!(redacted["created"].is_string());
+    // The body column is NOT NULL, so the body keeps its shape with the content gone
+    // and records who redacted it; who made the observation is kept.
+    let gone = &redacted["body"];
+    assert!(
+        gone["path"].is_null() && gone["content"].is_null(),
+        "{gone}"
+    );
+    assert_eq!(str_of(gone, "created_by"), ACTOR);
+    assert!(gone["redacted_at"].is_string());
+    assert_eq!(str_of(gone, "redacted_by"), "token:admin");
+    // No copy of the body is left in either table.
+    assert_eq!(
+        count(
+            &ts,
+            "SELECT COUNT(*) FROM observations WHERE instr(coalesce(body,''), ?1)>0",
+            &[MARKER]
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            &ts,
+            "SELECT COUNT(*) FROM dream_jobs WHERE instr(input, ?1)>0",
+            &[MARKER]
+        ),
+        0
+    );
+    // The id and time survive; every copy carries the same redacted body; other
+    // observations are untouched.
+    for d in [&ended, &running] {
+        let view = ts.store.dream(str_of(d, "id"), false).unwrap();
+        let carried = view["observations"].as_array().unwrap();
+        assert_eq!(carried.len(), 1);
+        assert_eq!(str_of(&carried[0], "id"), oid);
+        assert!(carried[0]["created"].is_string());
+        assert_eq!(carried[0]["body"], *gone, "{}", carried[0]);
+    }
+    assert_eq!(
+        count(
+            &ts,
+            "SELECT COUNT(*) FROM observations WHERE id=?1 AND body IS NOT NULL",
+            &[str_of(&other, "id")]
+        ),
+        1
+    );
+    // Redacting again is a no-op: same result, nothing rewritten.
+    let again = ts.store.redact_observation(&oid, "token:other").unwrap();
+    assert_eq!(again, redacted);
+    not_found(
+        ts.store
+            .redact_observation("00000000000000000000000000000000", "token:admin"),
+    );
+}
+
+// X10: at most one running dream; a crashed run is cleared by cancelling it.
+#[test]
+fn one_running_dream() {
+    let mut ts = TempStore::new();
+    seed(&mut ts.store, "/global/a.md", "alpha");
+    let first = start(&mut ts, json!([]));
+    let dreams = data(&ts.store.dreams().unwrap()).len();
+    let stores = count(&ts, "SELECT COUNT(*) FROM stores", &[]);
+
+    let paths = conflict(
+        ts.store.dream_start(&json!([]), "token:review"),
+        "dream_running",
+    );
+    assert_eq!(paths, [id(&first)], "the 409 names the running dream");
+    assert_eq!(data(&ts.store.dreams().unwrap()).len(), dreams);
+    assert_eq!(count(&ts, "SELECT COUNT(*) FROM stores", &[]), stores);
+    assert_eq!(status_u64(&ts, "dreams_running"), 1);
+
+    // Cancel clears it; so does adopt.
+    ts.store.dream_cancel(&id(&first), "token:review").unwrap();
+    let second = start(&mut ts, json!([]));
+    conflict(
+        ts.store.dream_start(&json!([]), "token:review"),
+        "dream_running",
+    );
+    adopt(&mut ts, &id(&second)).unwrap();
+    let third = start(&mut ts, json!([]));
+    assert_eq!(status_u64(&ts, "dreams_running"), 1);
+    ts.store.dream_cancel(&id(&third), "token:review").unwrap();
+    assert_eq!(status_u64(&ts, "dreams_running"), 0);
+}
+
+// X12: an escaped JSON key is still the `pinned` key. Counting by raw bytes missed it.
+#[test]
+fn escaped_pinned_key_counts() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let path = "/global/esc.md";
+    let body = body_costing(path, PINNED_BUDGET, "e");
+    let escaped =
+        render(&frontmatter("esc", &pinned()), &body).replace("\"pinned\"", "\"\\u0070inned\"");
+    assert!(escaped.contains("\\u0070inned") && !escaped.contains("\"pinned\""));
+    ts.store.create(&live, path, &escaped, ACTOR).unwrap();
+    assert_eq!(status_u64(&ts, "pinned_chars") as usize, PINNED_BUDGET);
+    // The budget is full, so any further pinned memory is refused.
+    let more = "/global/more.md";
+    conflict(
+        ts.store
+            .create(&live, more, &content("more", "x", &pinned()), ACTOR),
+        "pinned_budget_exceeded",
+    );
+    // A memory that only mentions the word is not pinned.
+    seed(
+        &mut ts.store,
+        "/global/mention.md",
+        "the \"pinned\" flag keeps a rule in the start view",
+    );
+    assert_eq!(status_u64(&ts, "pinned_chars") as usize, PINNED_BUDGET);
+}
+
+/// Credentials that must never be stored, one per format the triage names (X8).
+fn credentials() -> Vec<(&'static str, String)> {
+    let hex64 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    vec![
+        (
+            "slack",
+            "xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx".into(),
+        ),
+        ("google", format!("AIza{}", &"SyA1b2C3".repeat(5)[..35])),
+        (
+            "github fine-grained",
+            format!("github_pat_{}_{}", "A1b2C3d4E5f6G7h8I9j0K1", &"x9Z".repeat(20)[..59]),
+        ),
+        (
+            "jwt",
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c".into(),
+        ),
+        (
+            "bearer",
+            "Authorization: Bearer 3f9a1c5e7b2d4f6a8c0e1b3d5f7a9c2e".into(),
+        ),
+        ("labelled 64-hex", format!("encryption_key: {hex64}")),
+    ]
+}
+
+// X8: one credential check on every stored string, and closed `sessions` items.
+#[test]
+fn credential_check_everywhere() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let found = credentials();
+    for (format, secret) in &found {
+        let note = format!("note: {secret} end");
+        // Memory content: body, and a frontmatter string.
+        invalid(
+            ts.store
+                .create(&live, "/global/leak.md", &text("leak", &note), ACTOR),
+        );
+        let in_evidence = content(
+            "leak",
+            "fine",
+            &json!({"evidence": [{"source": "s", "locator": "l", "note": note}]}),
+        );
+        invalid(
+            ts.store
+                .create(&live, "/global/leak.md", &in_evidence, ACTOR),
+        );
+        // Observations.
+        invalid(
+            ts.store
+                .observe("/global/obs.md", &text("obs", &note), ACTOR),
+        );
+        // Dream sessions.
+        for field in ["locator", "source"] {
+            let mut session = json!({"source": "claude", "locator": "/tmp/s.jsonl"});
+            session[field] = json!(note);
+            invalid(ts.store.dream_start(&json!([session]), "token:review"));
+        }
+        assert_eq!(format_count(&ts), (0, 0, 0), "{format}: nothing was stored");
+    }
+    // Sessions carry only source, locator and sha256.
+    let hex = sha256(b"s");
+    ts.store
+        .dream_start(
+            &json!([{"source": "claude", "locator": "/tmp/s.jsonl", "sha256": hex}]),
+            "token:review",
+        )
+        .map(|d| {
+            ts.store
+                .dream_cancel(str_of(&d, "id"), "token:review")
+                .unwrap()
+        })
+        .unwrap();
+    invalid(ts.store.dream_start(
+        &json!([{"source": "claude", "locator": "/tmp/s.jsonl", "note": "extra"}]),
+        "token:review",
+    ));
+    // Look-alikes are fine: a content hash with no label, and ordinary prose.
+    for harmless in [
+        format!("commit hash {}", sha256(b"x")),
+        "Bearer of bad news".to_owned(),
+        "the key is under the mat".to_owned(),
+    ] {
+        seed(
+            &mut ts.store,
+            &format!(
+                "/global/ok-{}.md",
+                sha256(harmless.as_bytes())[..8].to_owned()
+            ),
+            &harmless,
+        );
+    }
+
+    // The adopt review: summary, coverage and conflicts.
+    let dream = start(&mut ts, json!([]));
+    let did = id(&dream);
+    for (format, secret) in &found {
+        let note = format!("note: {secret} end");
+        let mut variants = Vec::new();
+        for field in ["summary", "coverage"] {
+            let mut r = review("fine");
+            r[field] = json!(note);
+            variants.push(r);
+        }
+        let mut r = review("fine");
+        r["conflicts"] = json!([{"status": "resolved", "note": note}]);
+        variants.push(r);
+        for r in variants {
+            invalid(ts.store.dream_adopt(&did, &r, "token:admin"));
+            assert_eq!(dream_status(&ts, &did), "running", "{format}");
+        }
+    }
+    adopt(&mut ts, &did).unwrap();
+}
+
+/// (memories, observations, dreams) stored so far; the harmless ones are not counted.
+fn format_count(ts: &TempStore) -> (i64, i64, i64) {
+    (
+        count(ts, "SELECT COUNT(*) FROM memories", &[]),
+        count(ts, "SELECT COUNT(*) FROM observations", &[]),
+        count(ts, "SELECT COUNT(*) FROM dream_jobs", &[]),
+    )
+}
+
+// X14: the adopt body is `{summary, coverage, conflicts}`; `reviewed` gates nothing.
+#[test]
+fn adopt_body_has_no_reviewed() {
+    let (mut ts, _live, x, _y) = xy();
+    let dream = start(&mut ts, json!([]));
+    let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
+    set_content(&mut ts, &out, &x, "x by the dream", "dream:agent");
+    let body = json!({"summary": "s", "coverage": "c", "conflicts": []});
+    // A caller that still sends the old flag is told so (400), and nothing happens.
+    let mut old_style = body.clone();
+    old_style["reviewed"] = json!(true);
+    invalid(ts.store.dream_adopt(&did, &old_style, "token:admin"));
+    assert_eq!(dream_status(&ts, &did), "running");
+    let done = ts.store.dream_adopt(&did, &body, "token:admin").unwrap();
+    assert_eq!(str_of(&done, "status"), "completed");
+    assert!(done["adoption"].get("reviewed").is_none(), "{done}");
+    assert_eq!(
+        str_of(&get(&ts, &id(&x)), "content"),
+        seeded("/global/x.md", "x by the dream")
+    );
+}
+
+// X31: the shared temp dir helper leaves nothing behind, even around a sealed mirror.
+#[test]
+fn temp_store_leaves_nothing() {
+    let (path, mnt) = {
+        let mut ts = TempStore::new();
+        seed(&mut ts.store, "/topics/t/a.md", "alpha");
+        seed(&mut ts.store, "/global/b.md", "beta");
+        assert_eq!(
+            tree(&ts.link())["topics/"].0,
+            0o555,
+            "the mirror is sealed while the store lives"
+        );
+        (ts.path().to_owned(), ts.mnt.clone())
+    };
+    assert!(!mnt.exists() && !path.exists(), "{path:?} was left behind");
+    assert_no_leftovers(&path);
+
+    let sealed = {
+        let dir = SealedTempDir::new();
+        let sealed = dir.path().join("a/b");
+        fs::create_dir_all(&sealed).unwrap();
+        fs::write(sealed.join("f"), "x").unwrap();
+        fs::set_permissions(sealed.join("f"), fs::Permissions::from_mode(0o444)).unwrap();
+        for d in [&sealed, &dir.path().join("a")] {
+            fs::set_permissions(d, fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        dir.path().to_owned()
+    };
+    assert_no_leftovers(&sealed);
+    assert!(!sealed.exists());
+}
+
+// Coordinator ruling: the store opens every connection with `PRAGMA secure_delete = ON`,
+// so redacted and purged text does not survive in the database file's free pages.
+#[test]
+fn secure_delete_leaves_no_trace() {
+    let ts = TempStore::new();
+    let live = ts.live();
+    let (n_version, n_obs, n_cancel, n_adopt) = (
+        "NEEDLE-VERSION-5521",
+        "NEEDLE-OBSERVATION-5522",
+        "NEEDLE-CANCELED-DREAM-5523",
+        "NEEDLE-ADOPTED-DREAM-5524",
+    );
+    let has = |needle: &str| {
+        let bytes = fs::read(&ts.db).unwrap();
+        bytes.windows(needle.len()).any(|w| w == needle.as_bytes())
+    };
+    // Every write goes through one extra handle that is closed before the file is read.
+    let mut store = ts.open();
+
+    // A secret in an old version, then redacted.
+    let a = store
+        .create(
+            &live,
+            "/global/a.md",
+            &seeded("/global/a.md", &format!("old text {n_version}")),
+            ACTOR,
+        )
+        .unwrap();
+    store
+        .update(
+            &live,
+            &id(&a),
+            Some(&seeded("/global/a.md", "new text")),
+            None,
+            None,
+            ACTOR,
+        )
+        .unwrap();
+    // A secret in an observation, copied into a dream's frozen input, then redacted.
+    let o = store
+        .observe(
+            "/global/obs.md",
+            &text("obs", &format!("lesson {n_obs}")),
+            ACTOR,
+        )
+        .unwrap();
+    // A secret that exists only in a dream's output store, which is then purged by a
+    // cancel, and one that is purged by an adopt after being deleted in the output.
+    let canceled = store.dream_start(&json!([]), "token:review").unwrap();
+    store
+        .create(
+            str_of(&canceled, "output_store_id"),
+            "/global/leak.md",
+            &seeded("/global/leak.md", &format!("only in the clone {n_cancel}")),
+            "dream:agent",
+        )
+        .unwrap();
+    // Before anything is removed, the file really does hold the text.
+    drop(store);
+    for needle in [n_version, n_obs, n_cancel] {
+        assert!(has(needle), "{needle} should be in the file before removal");
+    }
+    let mut store = ts.open();
+    store
+        .dream_cancel(str_of(&canceled, "id"), "token:review")
+        .unwrap();
+    let adopted = store.dream_start(&json!([]), "token:review").unwrap();
+    let out = str_of(&adopted, "output_store_id").to_owned();
+    let temp = store
+        .create(
+            &out,
+            "/global/temp.md",
+            &seeded(
+                "/global/temp.md",
+                &format!("created then deleted {n_adopt}"),
+            ),
+            "dream:agent",
+        )
+        .unwrap();
+    store.delete(&out, &id(&temp), None, "dream:agent").unwrap();
+    store
+        .dream_adopt(str_of(&adopted, "id"), &review("s"), "token:admin")
+        .unwrap();
+    let old_version = data(&store.versions(&live, Some(&id(&a)), None).unwrap())
+        .last()
+        .map(id)
+        .unwrap();
+    store.redact(&live, &old_version, "token:admin").unwrap();
+    store.redact_observation(&id(&o), "token:admin").unwrap();
+    drop(store);
+
+    for needle in [n_version, n_obs, n_cancel, n_adopt] {
+        assert!(!has(needle), "{needle} is still in the database file");
+    }
+    // The journal sidecar is gone too, and nothing else was lost.
+    assert!(!ts.db.with_extension("sqlite3-journal").exists());
+    assert_eq!(
+        get(&ts, &id(&a))["content"],
+        seeded("/global/a.md", "new text")
+    );
 }
