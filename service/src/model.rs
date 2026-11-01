@@ -187,6 +187,7 @@ static SECRETS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)[?&](?:x-amz-signature|access_token|api_key|password|pwd)=[^\s&]+",
         r#"(?i)\b(?:password|api[_ -]?key|secret[_ -]?key)\s*[:=]\s*["']?[A-Za-z0-9/+_.-]{8,}"#,
         r"\bxox[abposr]-[A-Za-z0-9-]{10,}",
+        r"\bxapp-\d-[A-Za-z0-9-]{10,}",
         r"\bAIza[0-9A-Za-z_-]{35}",
         r"\bgithub_pat_[A-Za-z0-9_]{20,}",
         r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
@@ -198,6 +199,8 @@ static SECRETS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
+// Formats follow gitleaks (config/gitleaks.toml, MIT): Slack xox?-/xapp-, GCP AIza,
+// github_pat_, JWT; Bearer and labelled 64-hex are ours.
 /// Refuses text that looks like a credential. Every string the store keeps
 /// passes through it.
 pub fn check_secrets(text: &str) -> Result<()> {
