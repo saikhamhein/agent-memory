@@ -4,6 +4,7 @@ Standard library only, so these also run without the MCP virtual environment.
 """
 import json
 import os
+import re
 import socket
 import shutil
 import subprocess
@@ -11,7 +12,8 @@ import sys
 import time
 import unittest
 
-from service.tests.harness import BINARY, REPO, SERVICE, content, sha, start_server  # test_install imports BINARY, SERVICE
+from service.tests.harness import (BINARY, REPO, SERVICE, content, project_path, repo_with_worktree, sha,  # noqa: F401
+                                   start_server)  # test_install imports BINARY and SERVICE from here
 
 HOOK = REPO / 'hooks' / 'agent-memory-recall.py'
 START_HEADING = '# Shared agent memory — revision'
@@ -75,39 +77,113 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(self.json('ls')['data'], [])
         self.assertEqual(self.json('versions')['data'][0]['operation'], 'deleted')
 
-    def test_reader_can_read_but_not_write(self):
+    def test_session_token_reads_and_suggests_only(self):
+        """Without --config the client uses client.json: the agent-session token (recall + observe)."""
         self.server.seed('/global/keep.md', 'Keep', pinned=True)
+        _, env = self.server.home()
         note = self.file('n.md', content('N'))
-        self.assertEqual(self.json('status', role='reader')['revision'], 1)
-        self.assertEqual(self.json('ls', role='reader')['data'][0]['path'], '/global/keep.md')
-        self.assertIn('Check existing evidence', self.run_client('cat', '/global/keep.md', role='reader').stdout)
-        self.assertIn('403', self.run_client('write', '/global/n.md', note, role='reader', ok=False).stderr)
-        self.assertIn('403', self.run_client('rm', '/global/keep.md', role='reader', ok=False).stderr)
-        self.assertIn('403', self.run_client('observe', '/global/n.md', note, role='reader', ok=False).stderr)
-        self.assertIn('403', self.run_client('dream', 'start', role='reader', ok=False).stderr)
+
+        def session(*args):
+            return self.server.client(*args, role=None, env=env)
+        self.assertEqual(json.loads(session('status').stdout)['revision'], 1)
+        self.assertEqual(json.loads(session('ls').stdout)['data'][0]['path'], '/global/keep.md')
+        self.assertIn('Check existing evidence', session('cat', '/global/keep.md').stdout)
+        self.assertEqual(session('observe', '/global/n.md', note).returncode, 0)
+        for args in (('write', '/global/n.md', note), ('rm', '/global/keep.md'), ('versions',),
+                     ('redact', 'memver_' + '0' * 32), ('dream', 'start'), ('dream', 'show'),
+                     ('ls', '--store', 'memstore_' + '0' * 32)):
+            result = session(*args)
+            self.assertNotEqual(result.returncode, 0, args)
+            self.assertIn('403', result.stderr, args)
+        self.assertIn('403', self.run_client('observe', '/global/m.md', note, role='reader', ok=False).stderr)
         self.assertEqual(self.json('status')['memories'], 1)
+        self.assertEqual(self.json('status')['observations_pending'], 1)
 
     def test_dream_workflow(self):
         self.server.seed('/global/existing.md', 'Existing', 'Original body.')
-        self.run_client('observe', '/global/candidate.md', self.file('c.md', content('Candidate')), role='observer')
+        self.run_client('observe', '/global/candidate.md', self.file('c.md', content('Candidate')), role='agent-session')
         sessions = self.file('sessions.json', json.dumps([{'source': 'claude-code', 'locator': '/x/a.jsonl'}]))
         started = self.json('dream', 'start', '--sessions', sessions)
         self.assertEqual((started['status'], len(started['observations']), len(started['sessions'])), ('running', 1, 1))
         output = started['output_store_id']
+        # X10: one running dream; the 409 names it so a stale run can be found and cancelled.
+        clash = self.run_client('dream', 'start', ok=False)
+        self.assertIn('dream_running', clash.stderr)
+        self.assertIn(started['id'], clash.stderr)
         added = self.file('z.md', content('Zebrafish husbandry', 'Zebrafish tanks need weekly water changes.'))
         self.run_client('write', '/global/zebrafish.md', added, '--store', output)
         shown = self.json('dream', 'show', started['id'], '--diff')
         self.assertEqual([m['path'] for m in shown['diff']['added']], ['/global/zebrafish.md'])
         self.assertIn(started['id'], [d['id'] for d in self.json('dream', 'show')['data']])
-        review = self.file('review.json', json.dumps(dict(summary='Add zebrafish', coverage='client test',
-                                                          conflicts=[], reviewed=True)))
-        self.assertEqual(self.json('dream', 'adopt', started['id'], review)['status'], 'completed')
+        # X14: the review is {summary, coverage, conflicts}; a `reviewed` key is rejected.
+        stale = self.file('old-review.json', json.dumps(dict(summary='s', coverage='c', conflicts=[], reviewed=True)))
+        self.assertIn('400', self.run_client('dream', 'adopt', started['id'], stale, ok=False).stderr)
+        review = self.file('review.json', json.dumps(dict(summary='Add zebrafish', coverage='client test', conflicts=[])))
+        done = self.json('dream', 'adopt', started['id'], review)
+        self.assertEqual((done['status'], done['adoption']['summary']), ('completed', 'Add zebrafish'))
+        # X7: the output store is purged when the dream ends, so no leaked secret survives in it.
+        self.assertIn('400', self.run_client('dream', 'show', started['id'], '--diff', ok=False).stderr)
+        self.assertEqual(self.json('ls', '--store', output)['data'], [])
+        self.run_client('cat', '/global/zebrafish.md', '--store', output, ok=False)
         self.assertIn('Zebrafish tanks need weekly water changes.', self.run_client('recall', '--query', 'zebrafish husbandry').stdout)
         self.run_client('dream', 'adopt', started['id'], review, ok=False)  # only a running dream can be adopted
         second = self.json('dream', 'start')
-        self.assertEqual(second['observations'], [])
+        self.assertEqual(second['observations'], [])  # adopted: the observation is no longer pending
         self.assertEqual(self.json('dream', 'cancel', second['id'])['status'], 'canceled')
         self.assertEqual(self.json('dream', 'show', second['id'])['status'], 'canceled')
+        self.assertEqual(self.json('ls', '--store', second['output_store_id'])['data'], [])
+
+    def test_dream_cycle_with_nothing_to_change_is_cancelled(self):
+        self.server.seed('/global/existing.md', 'Existing')
+        started = self.json('dream', 'start')
+        self.assertEqual(started['observations'], [])
+        shown = self.json('dream', 'show', started['id'], '--diff')
+        self.assertEqual(shown['diff'], {'added': [], 'removed': [], 'changed': []})
+        self.assertEqual(self.json('status')['dreams_running'], 1)
+        self.json('dream', 'cancel', started['id'])
+        self.assertEqual(self.json('status')['dreams_running'], 0)
+        self.assertEqual(self.json('dream', 'start')['status'], 'running')  # the slot is free again
+
+    def test_stale_dream_is_found_cancelled_and_replaced(self):
+        """A run that died leaves a running dream; the 409 names it so the next run can cancel it (X10)."""
+        stale = self.json('dream', 'start')
+        clash = self.run_client('dream', 'start', ok=False)
+        [named] = re.findall(r'drm_[0-9a-f]{32}', clash.stderr)
+        self.assertEqual(named, stale['id'])
+        shown = self.json('dream', 'show', named)
+        self.assertEqual(shown['status'], 'running')
+        self.assertTrue(shown['created_at'])  # what the skill compares with "more than an hour ago"
+        self.json('dream', 'cancel', named)
+        fresh = self.json('dream', 'start')
+        self.assertNotEqual(fresh['id'], stale['id'])
+        self.assertEqual(self.json('status')['dreams_running'], 1)
+
+    def test_recall_canonicalizes_worktrees_and_has_no_project_id(self):
+        _, env = self.server.home()
+        repo, worktree = repo_with_worktree(self.server.root, env)
+        (worktree / 'sub').mkdir()
+        self.server.seed(project_path(repo, 'repo-rule'), 'Repo rule', 'Repo root rule text.')
+        self.server.seed(project_path(repo / 'sub', 'sub-rule'), 'Sub rule', 'Subdirectory rule text.')
+
+        def recall(project):
+            result = self.server.client('recall', '--project', project, role=None, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout, self.server.recall_entries()[-1]['project']
+        text, logged = recall(str(worktree))  # a linked worktree maps to its main checkout
+        self.assertEqual(logged, str(repo))
+        self.assertIn('Repo root rule text.', text)
+        self.assertNotIn('Subdirectory rule text.', text)
+        text, logged = recall(str(worktree / 'sub'))  # the same relative directory in the main checkout
+        self.assertEqual(logged, str(repo / 'sub'))
+        self.assertIn('Subdirectory rule text.', text)
+        self.assertIn('Repo root rule text.', text)
+        text, logged = recall(str(repo))
+        self.assertEqual(logged, str(repo))
+        plain = self.server.root / 'not-a-repo'
+        plain.mkdir()
+        self.assertEqual(recall(str(plain))[1], str(plain))  # a non-git path is sent unchanged
+        gone = self.server.client('recall', '--project-id', 'agent-memory', role=None, env=env)
+        self.assertEqual(gone.returncode, 2)
 
     def test_recall_prints_the_start_view_and_ignores_old_flags(self):
         self.server.seed('/global/keep.md', 'Keep it simple', 'Remove what is not needed.', pinned=True)
@@ -141,14 +217,8 @@ class HookTests(unittest.TestCase):
         self.server = start_server(self)
         self.server.seed('/global/keep.md', 'Keep it simple', 'Remove what is not needed.', pinned=True)
         self.home, self.env = self.server.home()
-        git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@t']
-        self.repo = (self.server.root / 'checkout').resolve()
-        subprocess.run([*git, 'init', '-q', str(self.repo)], check=True, env=self.env)
-        subprocess.run([*git, '-C', str(self.repo), 'commit', '-q', '--allow-empty', '-m', 'x'], check=True, env=self.env)
-        self.worktree = self.repo.parent / 'worktree'
-        subprocess.run([*git, '-C', str(self.repo), 'worktree', 'add', '-q', str(self.worktree)], check=True, env=self.env)
-        segments = '/'.join(self.repo.parts[1:])
-        self.server.seed(f'/projects/{segments}/rule.md', 'Project rule', 'Run the project tests first.')
+        self.repo, self.worktree = repo_with_worktree(self.server.root, self.env)
+        self.server.seed(project_path(self.repo), 'Project rule', 'Run the project tests first.')
 
     def run_hook(self, cwd=None, stdin=None, env=None, source='startup'):
         event = json.dumps({'session_id': 's1', 'source': source, 'hook_event_name': 'SessionStart',
@@ -170,6 +240,7 @@ class HookTests(unittest.TestCase):
 
     def context(self, result):
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout, 'the hook printed nothing')
         output = json.loads(result.stdout)['hookSpecificOutput']
         self.assertEqual(output['hookEventName'], 'SessionStart')
         return output['additionalContext']
@@ -200,15 +271,34 @@ class HookTests(unittest.TestCase):
         self.context(self.run_hook(source='startup'))  # other sources still inject
         self.assertEqual(len(self.server.recall_entries()), 1)
 
-    def test_service_down_injects_index_md(self):
+    def test_worktree_subdirectory_maps_to_the_same_directory_in_the_checkout(self):
+        (self.worktree / 'sub').mkdir()
+        self.server.seed(project_path(self.repo / 'sub', 'sub-rule'), 'Sub rule', 'Subdirectory rule text.')
+        text = self.context(self.run_hook(cwd=self.worktree / 'sub'))
+        self.assertIn('Subdirectory rule text.', text)
+        [line] = self.hook_log()
+        self.check_log(line, 'service', str(self.repo / 'sub'))
+        self.assertEqual(self.server.recall_entries()[-1]['project'], str(self.repo / 'sub'))
+
+    def test_service_down_injects_index_md_with_a_banner(self):
         index = (self.server.mirror / 'INDEX.md').read_text()
         self.assertIn('keep.md', index)
         self.server.stop()
         text = self.context(self.run_hook())
+        banner = ('The memory service is unavailable; this is the mirror index. '
+                  'Use the mirror files until it is back.\n\n')
+        self.assertTrue(text.startswith(banner), text[:200])
         self.assertIn(index.strip(), text)
         self.assertEqual(self.server.recall_entries(), [])
         [line] = self.hook_log()
         self.check_log(line, 'index', str(self.repo))
+
+    def test_mirror_is_next_to_the_database_whatever_server_toml_says(self):
+        config = self.home / '.config/agent-memory/server.toml'
+        config.write_text('mount = "%s"\n' % (self.server.root / 'elsewhere') + config.read_text())  # the key is gone (X16)
+        index = (self.server.mirror / 'INDEX.md').read_text()
+        self.server.stop()
+        self.assertIn(index.strip(), self.context(self.run_hook()))
 
     def test_hung_service_still_falls_back_within_the_timeout(self):
         index = (self.server.mirror / 'INDEX.md').read_text()
