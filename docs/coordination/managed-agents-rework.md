@@ -31,11 +31,12 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 | Test engineer H | `local_7a6bae6a-f710-4da7-a17d-ba7c2ff467f9` | `rework/tests-h` @ `0a70203`: encodes the architect rulings; fails to compile on the integration head as intended |
 | Engineer M (migration + install) | `local_15a0c48f-71c2-43fe-8db3-cc45fdea948c` | PR 15 merged |
 | Test engineer M | `local_9adf3c05-b247-4bd0-97bb-f64f1214b6aa` | `rework/tests-m` @ `87ec62f` (4,000 pin budget): 13 migrate + store tests + 5 install tests, all failing on the integration head; 4 rulings asked |
-| Engineer C (clients, hook, docs) | `local_111adbc3-3795-4a66-881a-f9190f3f09ac` | 28/28 on a preview build (A + R + H heads); PR after R, H land |
+| Engineer C (clients, hook, docs) | `local_111adbc3-3795-4a66-881a-f9190f3f09ac` | PR 17 merged |
 | Test engineer C | `local_51c2d84e-6cc7-487f-9294-8ccccdbd4e05` | 27 tests: `rework/tests-c` @ `eea5b60` (stub prints start + task view; hook env overrides), all failing on the integration head; open: stub start+task output, awaiting architect |
 
 ## Merged
 
+- PR 17 (WS-C clients, MCP, hook, stub, skill, docs) → `rework/managed-agents-v2`. Coordinator check at head d4633e6 with a release build: 33 Python tests (28 C + 5 install), 79 Rust tests; live service untouched. All five workstreams are merged.
 - PR 15 (WS-M migration + install) → `rework/managed-agents-v2`. Coordinator check at head 4b243e4 (release): 79 Rust tests, 5 install tests (sandboxed HOME, fake systemctl), clippy and fmt clean; M's files unchanged since the architect's 4445976 approval; live service untouched.
 - PR 14 (WS-H HTTP API) → `rework/managed-agents-v2` `8fbb862`. Coordinator check at head 1eeb4eb: 64 Rust tests, clippy and fmt clean; api.rs/config.rs unchanged since the architect's e548fe2 approval.
 - PR 9 (WS-R recall) → `rework/managed-agents-v2` `ef2f07e`. Coordinator reviewed R's blocked local commit, merged in PR 16, re-ran 43 tests + clippy + fmt, pushed as `0ffb46a`, merged.
@@ -70,5 +71,5 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Next actions
 
-- On each architect-approved PR (number + head SHA): read the diff, check it's current with `rework/managed-agents-v2` and mergeable, run combined tests, merge with `--match-head-commit` in order A → R → H → M → C, tell later workstreams to merge the integration head. No reinstall: these merges don't touch master.
-- Then: combined check, `migrate --dry-run --pin keep-it-simple` on a copy of a fresh live backup, fresh-eyes review + triage, then cutover with the user's go.
+- Fresh-eyes review campaign of `rework/managed-agents-v2` (new sessions, mutation-check the tests) and a fresh triage lead: (a) fix before release, (b) small fix, (c) later.
+- Then cutover per design §5 with the user's go, pins: keep-it-simple, direct-concrete-communication, research-unfamiliar-before-relying, autonomy-within-scope, investigate-before-asking.
