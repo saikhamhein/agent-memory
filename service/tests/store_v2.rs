@@ -1904,6 +1904,7 @@ fn archived_output_store_purged() {
         let dream = start(&mut ts, json!([]));
         let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
         let in_store = "SELECT COUNT(*) FROM memories WHERE store_id=?1";
+        let cloned_version = id(&data(&ts.store.versions(&out, None, None).unwrap())[0]);
         assert_eq!(
             count(&ts, in_store, &[&out]),
             1,
@@ -1928,6 +1929,8 @@ fn archived_output_store_purged() {
             "adopted={adopted}"
         );
         not_found(ts.store.get(&out, &id(&a)));
+        not_found(ts.store.version(&out, &cloned_version));
+        assert!(data(&ts.store.list(&out, "/").unwrap()).is_empty());
         // The diff only exists while the dream runs.
         invalid(ts.store.dream(&did, true));
         let ended = ts.store.dream(&did, false).unwrap();
@@ -1996,8 +1999,17 @@ fn observation_redact_nulls_every_copy() {
 
     let redacted = ts.store.redact_observation(&oid, "token:admin").unwrap();
     assert_eq!(str_of(&redacted, "id"), oid);
-    assert!(redacted["redacted_at"].is_string());
-    assert_eq!(str_of(&redacted, "redacted_by"), "token:admin");
+    assert!(redacted["created"].is_string());
+    // The body column is NOT NULL, so the body keeps its shape with the content gone
+    // and records who redacted it; who made the observation is kept.
+    let gone = &redacted["body"];
+    assert!(
+        gone["path"].is_null() && gone["content"].is_null(),
+        "{gone}"
+    );
+    assert_eq!(str_of(gone, "created_by"), ACTOR);
+    assert!(gone["redacted_at"].is_string());
+    assert_eq!(str_of(gone, "redacted_by"), "token:admin");
     // No copy of the body is left in either table.
     assert_eq!(
         count(
@@ -2015,14 +2027,15 @@ fn observation_redact_nulls_every_copy() {
         ),
         0
     );
-    // The id and time survive; the body is null; other observations are untouched.
+    // The id and time survive; every copy carries the same redacted body; other
+    // observations are untouched.
     for d in [&ended, &running] {
         let view = ts.store.dream(str_of(d, "id"), false).unwrap();
         let carried = view["observations"].as_array().unwrap();
         assert_eq!(carried.len(), 1);
         assert_eq!(str_of(&carried[0], "id"), oid);
         assert!(carried[0]["created"].is_string());
-        assert!(carried[0]["body"].is_null(), "{}", carried[0]);
+        assert_eq!(carried[0]["body"], *gone, "{}", carried[0]);
     }
     assert_eq!(
         count(
@@ -2032,6 +2045,9 @@ fn observation_redact_nulls_every_copy() {
         ),
         1
     );
+    // Redacting again is a no-op: same result, nothing rewritten.
+    let again = ts.store.redact_observation(&oid, "token:other").unwrap();
+    assert_eq!(again, redacted);
     not_found(
         ts.store
             .redact_observation("00000000000000000000000000000000", "token:admin"),
@@ -2230,6 +2246,11 @@ fn adopt_body_has_no_reviewed() {
     let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
     set_content(&mut ts, &out, &x, "x by the dream", "dream:agent");
     let body = json!({"summary": "s", "coverage": "c", "conflicts": []});
+    // A caller that still sends the old flag is told so (400), and nothing happens.
+    let mut old_style = body.clone();
+    old_style["reviewed"] = json!(true);
+    invalid(ts.store.dream_adopt(&did, &old_style, "token:admin"));
+    assert_eq!(dream_status(&ts, &did), "running");
     let done = ts.store.dream_adopt(&did, &body, "token:admin").unwrap();
     assert_eq!(str_of(&done, "status"), "completed");
     assert!(done["adoption"].get("reviewed").is_none(), "{done}");
@@ -2269,4 +2290,106 @@ fn temp_store_leaves_nothing() {
     };
     assert_no_leftovers(&sealed);
     assert!(!sealed.exists());
+}
+
+// Coordinator ruling: the store opens every connection with `PRAGMA secure_delete = ON`,
+// so redacted and purged text does not survive in the database file's free pages.
+#[test]
+fn secure_delete_leaves_no_trace() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let (n_version, n_obs, n_cancel, n_adopt) = (
+        "NEEDLE-VERSION-5521",
+        "NEEDLE-OBSERVATION-5522",
+        "NEEDLE-CANCELED-DREAM-5523",
+        "NEEDLE-ADOPTED-DREAM-5524",
+    );
+    let has = |needle: &str| {
+        let bytes = fs::read(&ts.db).unwrap();
+        bytes.windows(needle.len()).any(|w| w == needle.as_bytes())
+    };
+    // Every write goes through one extra handle that is closed before the file is read.
+    let mut store = ts.open();
+
+    // A secret in an old version, then redacted.
+    let a = store
+        .create(
+            &live,
+            "/global/a.md",
+            &seeded("/global/a.md", &format!("old text {n_version}")),
+            ACTOR,
+        )
+        .unwrap();
+    store
+        .update(
+            &live,
+            &id(&a),
+            Some(&seeded("/global/a.md", "new text")),
+            None,
+            None,
+            ACTOR,
+        )
+        .unwrap();
+    // A secret in an observation, copied into a dream's frozen input, then redacted.
+    let o = store
+        .observe(
+            "/global/obs.md",
+            &text("obs", &format!("lesson {n_obs}")),
+            ACTOR,
+        )
+        .unwrap();
+    // A secret that exists only in a dream's output store, which is then purged by a
+    // cancel, and one that is purged by an adopt after being deleted in the output.
+    let canceled = store.dream_start(&json!([]), "token:review").unwrap();
+    store
+        .create(
+            str_of(&canceled, "output_store_id"),
+            "/global/leak.md",
+            &seeded("/global/leak.md", &format!("only in the clone {n_cancel}")),
+            "dream:agent",
+        )
+        .unwrap();
+    // Before anything is removed, the file really does hold the text.
+    drop(store);
+    for needle in [n_version, n_obs, n_cancel] {
+        assert!(has(needle), "{needle} should be in the file before removal");
+    }
+    let mut store = ts.open();
+    store
+        .dream_cancel(str_of(&canceled, "id"), "token:review")
+        .unwrap();
+    let adopted = store.dream_start(&json!([]), "token:review").unwrap();
+    let out = str_of(&adopted, "output_store_id").to_owned();
+    let temp = store
+        .create(
+            &out,
+            "/global/temp.md",
+            &seeded(
+                "/global/temp.md",
+                &format!("created then deleted {n_adopt}"),
+            ),
+            "dream:agent",
+        )
+        .unwrap();
+    store.delete(&out, &id(&temp), None, "dream:agent").unwrap();
+    store
+        .dream_adopt(str_of(&adopted, "id"), &review("s"), "token:admin")
+        .unwrap();
+    let old_version = data(&store.versions(&live, Some(&id(&a)), None).unwrap())
+        .last()
+        .map(id)
+        .unwrap();
+    store.redact(&live, &old_version, "token:admin").unwrap();
+    store.redact_observation(&id(&o), "token:admin").unwrap();
+    drop(store);
+
+    for needle in [n_version, n_obs, n_cancel, n_adopt] {
+        assert!(!has(needle), "{needle} is still in the database file");
+    }
+    // The journal sidecar is gone too, and nothing else was lost.
+    assert!(!ts.db.with_extension("sqlite3-journal").exists());
+    assert_eq!(
+        get(&ts, &id(&a))["content"],
+        seeded("/global/a.md", "new text")
+    );
 }

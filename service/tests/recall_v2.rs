@@ -69,12 +69,12 @@ impl Item {
     fn dir(&self) -> String {
         format!("{}/", self.path.rsplit_once('/').unwrap().0)
     }
-    /// Value of the scope: the topic, the role, or the project root.
+    /// Searchable scope value: the topic or the role name; empty for global and project memories.
     fn scope_value(&self) -> String {
         let segs: Vec<&str> = self.path.trim_matches('/').split('/').collect();
         match segs[0] {
             "topics" | "roles" => segs[1].to_string(),
-            "projects" => format!("/{}", segs[1..segs.len() - 1].join("/")),
+            // a project's path is not a search term (X19): it is a place, not a topic
             _ => String::new(),
         }
     }
@@ -1436,6 +1436,137 @@ fn task_body_budget_first_fit() {
 }
 
 // ---------------------------------------------------------------- 10-11
+
+/// X19: the words of a project's path (`home`, `sai`, `projects`, `radio`, `mesh`) are not search
+/// terms. Without this, "mesh" would match every memory of the project as a title hit.
+#[test]
+fn project_words_do_not_match() {
+    let root = "/home/sai/Projects/radio-mesh";
+    let mut s = Store::new();
+    // five project memories whose titles, tags and bodies use none of the path words
+    let notes = [
+        (
+            "Duty cycle limit",
+            "Stay under the regional transmit cap in every bench run.",
+        ),
+        (
+            "Flash over cable only",
+            "Over the air flashing bricked two nodes; use the cable.",
+        ),
+        (
+            "Antenna placement",
+            "Keep antennas a wavelength apart and away from metal.",
+        ),
+        (
+            "Battery cutoff",
+            "Cut off the pack at three volts to protect the cells.",
+        ),
+        (
+            "Log format",
+            "Write one line per packet with a monotonic timestamp.",
+        ),
+    ];
+    for (i, (title, body)) in notes.iter().enumerate() {
+        s.add(
+            &format!("/projects/home/sai/Projects/radio-mesh/n{i}.md"),
+            title,
+            body,
+            json!({}),
+        );
+    }
+    // enough other candidates that the project's memories are no more than half of them, so
+    // the term-frequency filter cannot hide the bug
+    for i in 0..8 {
+        s.add(
+            &format!("/global/filler-{i}.md"),
+            &format!("Filler entry {i}"),
+            &format!("Plain filler body {i}."),
+            json!({}),
+        );
+    }
+    for project in [root, "/home/sai/Projects/radio-mesh/firmware"] {
+        for q in [
+            "radio mesh",
+            "radio",
+            "mesh",
+            "projects",
+            "home sai",
+            "home sai projects radio mesh",
+        ] {
+            let r = s.recall(project, "", &[], q);
+            assert_eq!(
+                r.text,
+                no_match(q),
+                "path words matched in project {project:?}, query {q:?}"
+            );
+        }
+        // its own title words still find the memory
+        assert_eq!(
+            s.recall(project, "", &[], "duty cycle").returned,
+            ["/projects/home/sai/Projects/radio-mesh/n0.md"]
+        );
+    }
+
+    // the same on the shared fixture (shaped like the live set): the lora project has two memories
+    let f = Store::fixture();
+    for q in ["custom lora mesh", "custom", "lora", "mesh", "projects"] {
+        assert_eq!(
+            f.recall(LORA, "", &[], q).text,
+            no_match(q),
+            "fixture query {q:?}"
+        );
+    }
+    // topic and role names stay searchable: a topic memory with no "hardware" in its title, tags
+    // or body still matches the query "hardware"
+    let mut t = Store::new();
+    t.add(
+        "/topics/hardware/bench.md",
+        "Bench routine",
+        "Measure with a meter first.",
+        json!({}),
+    );
+    for i in 0..6 {
+        t.add(
+            &format!("/global/f-{i}.md"),
+            &format!("Filler entry {i}"),
+            &format!("Plain body {i}."),
+            json!({}),
+        );
+    }
+    assert_eq!(t.task("hardware").returned, ["/topics/hardware/bench.md"]);
+    // topic and role names stay searchable (match_rule covers a topic; a role here)
+    assert_eq!(
+        f.recall(AM, "", &[], "coordinator").returned.len(),
+        2,
+        "role name still counts as a term"
+    );
+}
+
+/// X19 (architect, doc PR 22): the project path is out of the term-frequency filter too. Here
+/// "mesh" is in the path of 3 of the 4 candidates; if the path counted it would be a common word
+/// and be ignored, and the one memory that really is about mesh would not be found.
+#[test]
+fn project_path_is_not_in_the_frequency_filter() {
+    let mut s = Store::new();
+    for i in 0..3 {
+        s.add(
+            &format!("/projects/work/mesh/app/p{i}.md"),
+            &format!("Project note {i}"),
+            &format!("Plain project body {i}."),
+            json!({}),
+        );
+    }
+    s.add(
+        "/global/topology.md",
+        "Mesh topology notes",
+        "Plain body.",
+        json!({}),
+    );
+    assert_eq!(
+        s.recall("/work/mesh/app", "", &[], "mesh").returned,
+        ["/global/topology.md"]
+    );
+}
 
 #[test]
 fn task_finds_topic_without_flag() {
