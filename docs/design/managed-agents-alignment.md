@@ -105,6 +105,7 @@ PRAGMA user_version = 2;
 
 Path rules:
 - Each segment matches `[A-Za-z0-9._-]+`, is not `.` or `..`, and is at most 255 bytes long. That is the filesystem's file-name limit (`NAME_MAX`); a longer segment could be committed but never mirrored.
+- No segment except the last may end in `.md` (X6). Otherwise one memory's file path could be another memory's directory, and the mirror could never be written.
 - A path has 2–20 segments and at most 1,024 bytes.
 - The slug matches `[a-z0-9][a-z0-9-]{0,79}` and is unique within its store. That is today's id rule, so slugs are today's ids.
 
@@ -129,7 +130,7 @@ Further rules:
 - Migration writes frontmatter in today's `encode()` format.
 
 **Mirror (read-only copy):**
-- The live store is written to `<database dir>/mnt/shared-agent-memory/`. `mnt` is configurable as `mount` in `server.toml`.
+- The live store is written to `<database dir>/mnt/shared-agent-memory/`. The location is fixed: there is no `mount` key (X16).
 - Each memory is a file at its path holding the exact stored bytes, mode 0444, in directories with mode 0555.
 - `INDEX.md` (`recall::index_md`) is the **full** index, with no size cap and no count lines:
   - the header;
@@ -200,8 +201,8 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
 
 1. **Candidates:** every in-scope unpinned memory plus all topic and role memories, excluding other projects, tentative and expired memories. Pinned memories are excluded because the start view already carried them.
 2. **Terms:** lowercase `\w+` tokens of at least 3 characters that are not in the frozen `STOPWORDS` list in `recall.rs` (about 60 common English words). With 4 or more candidates, a term found in more than half of them is also ignored (for example "memory", "agent", "user").
-3. **Match rule:** at least 1 distinct term in the title, tags or scope value, or at least 2 distinct terms in the body.
-4. **Ranking:** score = 3 × title/tag/scope hits + body hits. Ties sort by `priority`, then slug.
+3. **Match rule:** at least 1 distinct term in the head (the title, the tags, and the name of a topic or role memory), or at least 2 distinct terms in the body. A project memory's root path is not a head term (X19); otherwise a query word like `projects` or a repository name would match every memory of that project.
+4. **Ranking:** score = 3 × head hits + body hits. Ties sort by `priority`, then slug.
 5. **Output:** the top `SEARCH_RESULTS = 5` in full, within `TASK_BODY_BUDGET = 6000` of `block_len`. Further matches appear as `- {path} — {title}` under "More matches", at most 20 lines, then `+N more`.
 6. **No match:** the output is exactly `No memory matches "{query}".\n`. Every recall text ends with exactly one newline.
 7. **Why not BM25:** its scores have no natural cut-off, so "an unrelated query returns nothing" would need a tuned threshold. The distinct-term rule with a frequency filter is deterministic and testable.
@@ -242,7 +243,8 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
   - `pinned`: the paths in "Always apply".
   - `returned`: every path whose body is in the text, pinned included, in output order.
   - `view`: `"start"` or `"task"`.
-- **Term frequency filter** covers the title, tags, scope value and body.
+- **Term frequency filter** covers the head and the body.
+- **Project matching inside `recall()`** uses `model::absolute_path`, and an error means no project (X18). There is no separate `project_root`.
 - **Tokens.** `\w+` is the Rust regex UTS#18 class, which includes the Mn and Mc marks, so Burmese runs stay whole tokens. Python's `re` `\w` splits them, which is one more reason recall is rendered only in Rust.
 - **Expiry** is compared against the UTC date.
 
@@ -280,41 +282,86 @@ Reads are not MCP resources either: in Claude Code those are `@`-mentions made b
 
 ### 3.5 Dreams
 
+Rulings from the v2 triage (`docs/coordination/v2-review-triage.md`) are cited by id, for example X10.
+
 1. **Start (`POST /v1/dreams`, `review`).**
-   - Body: `{"sessions": [{source, locator, sha256?}]}` with 0–100 unique locators.
+   - Body: `{"sessions": [{source, locator, sha256?}]}`, with 0–100 unique locators.
+   - Each item holds only those three keys; any other key is 400 (X8).
+   - **At most one dream is `running`.** A start while one runs returns 409 `dream_running`, with `paths: [<running dream id>]` (X10).
    - In one transaction it:
      - freezes `input` as the base `{memory_id: {path, content_sha256}}`, the pending observations and the sessions;
      - creates the output store;
      - copies every live memory into it under the same id, with `created` versions by `dream:<id>`;
      - sets status `running`.
    - **Pending** means not in the input of any adopted v2 dream or promoted legacy dream.
-2. **Work.** The agent reads the mirror, the sessions and the observations, then edits the output store through the memory API. `review` is enough for an output store.
-3. **Diff (`GET /v1/dreams/{id}?diff=true`).** Returns `{added, removed, changed}` against the base.
-   - `added` and `removed` items are `{memory_id, path, content}`.
-   - `changed` items are `{memory_id, before: {path, content}, after: {path, content}}`.
+2. **Work.**
+   - The agent reads the mirror, the sessions and the dream's `observations` list, then edits the output store through the memory API. `review` is enough for an output store.
+   - Observations are not copied into the output store. Each one kept is written there as a memory.
+3. **Diff (`GET /v1/dreams/{id}?diff=true`).**
+   - Works only while the dream is `running`; for an ended dream it returns 400.
+   - Returns `{added, removed, changed}` against the base:
+     - `added` and `removed` items are `{memory_id, path, content}`;
+     - `changed` items are `{memory_id, before: {path, content}, after: {path, content}}`.
    - After adoption, `adoption` holds `{summary, coverage, conflicts, added, changed, removed}`, the last three as lists of paths.
 4. **Adopt (`POST /v1/dreams/{id}/adopt`, `promote`).**
-   - Body: `{summary, coverage, conflicts, reviewed}`. The same gates as today's promote apply, and the dream must be `running`.
+   - Body: `{summary, coverage, conflicts}` (X14). `summary` and `coverage` must be non-empty, every conflict must have `status: "resolved"`, and the dream must be `running`. Anything else is 400.
    - In one transaction:
      - every changed or removed id must still have its base hash and path in the live store;
      - every added path and slug must be free;
-     - none of the dream's observations may have been consumed by another adopted dream;
      - the pinned budget must hold.
-   - Any failure returns 409 `adopt_conflict`, `observations_consumed` or `pinned_budget_exceeded`, with `paths`, and nothing changes. For `observations_consumed`, `paths` holds the observation ids.
-   - On success it applies the changes as live versions by `dream:<id>`, sets `completed`, archives the output store and rebuilds the mirror. An empty diff is valid.
-5. **Cancel (`POST /v1/dreams/{id}/cancel`, `review`).** `running` becomes `canceled` and the output store is archived. Cancelling a canceled dream is a no-op; cancelling a completed dream returns 400.
+   - Any failure returns 409 `adopt_conflict` or `pinned_budget_exceeded`, with `paths`, and nothing changes. `observations_consumed` is gone: with a single running dream it can't happen.
+   - On success, in the same transaction, it:
+     - applies the changes as live versions by `dream:<id>`;
+     - sets `completed`;
+     - archives the output store and **deletes its memory and version rows** (X7). The `stores` row, the live versions by `dream:<id>` and `adoption` remain as the audit.
 
-**On a conflict,** the skill says: cancel, start a new dream, and carry the edits over once. For `pinned_budget_exceeded`, the dream is still running, so the agent unpins or shortens memories in the output store and adopts again.
+     It then rebuilds the mirror. An empty diff is valid.
+5. **Cancel (`POST /v1/dreams/{id}/cancel`, `review`).**
+   - `running` becomes `canceled`, and the output store is archived and its rows deleted, as for adopt.
+   - Cancelling a canceled dream is a no-op; cancelling a completed dream returns 400.
 
-**Observations from ordinary sessions are suggestions, not evidence.**
+**Credential check (X8):**
+- One check covers every string the store keeps:
+  - memory and observation content;
+  - dream `sessions`;
+  - the adopt `summary`, `coverage` and `conflicts`.
+- On a match the request is 400.
+- The pattern list lives in `model.rs`. It adds `xox[abposr]-`, `AIza`, `github_pat_`, three-part JWTs, `Bearer\s+\S{20,}`, and 64 hex characters next to a token or key word.
+
+**Observation redact (X7).** `POST /v1/observations/{id}/redact` (`promote`) replaces the observation's body. The `observations.body` column is a frozen `NOT NULL`, so the body can't be SQL NULL. Instead:
+- The new body is `{"path": null, "content": null, "created_by": <kept>, "redacted_at", "redacted_by"}`. A legacy v1 body gets `created_by: null`.
+- The same body goes into every `dream_jobs.input` copy of that observation.
+- It returns `{id, created, body}`, the same shape as a dream's `observations` items.
+- Redacting again is a no-op; an unknown id is 404.
+
+**A purged output store** keeps its `stores` row, archived. Listing it returns an empty list, and reading a memory or version in it returns 404.
+
+**The dream cycle, in the skill and the task prompt (X24, X3):**
+1. Every run starts a dream and reviews the full memory set: new sessions and observations, plus duplicates, stale entries and wording that failed to trigger.
+2. Adopt when the diff is non-empty **or** the input held observations. An empty adopt is how rejected observations stop being pending. Otherwise cancel.
+3. Dreams run through `agent-memory-client --config ~/.config/agent-memory/maintainer.json`, never through MCP.
+
+**Stale dream.** A 409 `dream_running` at start means an earlier run died, or another dream is in progress.
+- Show the named dream (`dream show ID`).
+- If it started more than an hour ago, cancel it and start again.
+- Otherwise stop and report that a dream is already running.
+
+This is a rule in the skill and the prompt. There is no store-side timeout.
+
+**On a conflict:**
+- `adopt_conflict`: cancel, start a new dream, and carry the edits over once.
+- `pinned_budget_exceeded`: the dream is still running, so the agent unpins or shortens memories in the output store and adopts again.
+
+**Observations from ordinary sessions are suggestions, not evidence (X4):**
 - Before keeping one, the dream checks its evidence locator against the user's own words in that transcript. An observation that cites no user message is dropped and noted in `coverage`.
+- The dream may change pinned memories, but only on the evidence of the user's own words.
 - The report lists every change to a pinned memory, or to the pinned set, on a line of its own.
 
 ### 3.6 Migration
 
 `agent-memory-server migrate --database PATH [--dry-run] [--pin SLUG]…` runs in one exclusive transaction and rolls back completely on any failure.
 
-1. **Refuse** if the database is already v2, or if `revisions` is not a linear chain (`parent = id − 1`).
+1. **Refuse** if the database is already v2, if `revisions` is not a linear chain (`parent = id − 1`), or if `state.active` is not `max(id)` (X13). A v1 store can't produce the last case, so it means the data is damaged.
 2. **Apply the schema** and create the live store.
 3. **Replay revisions 1..max**, diffing by v1 id:
    - a new id gets a new `mem_` id and a `created` version;
@@ -335,8 +382,22 @@ Reads are not MCP resources either: in Claude Code those are `@`-mentions made b
 
 Guards:
 - The v2 binary refuses to serve a database with `user_version < 2`.
-- `install-user.py` refuses to install it over a v1 database unless `--migrate` is given. With `--migrate` it stops the service, makes an integrity-checked `backup` under `runtime/`, migrates (with the `--pin` values passed through), installs, starts the service and verifies it.
-- `update-local.sh` never passes `--migrate`.
+- `install-user.py` refuses to install it over a v1 database unless `--migrate` is given. `update-local.sh` never passes `--migrate`.
+- **With `--migrate` (X5):**
+  1. Stop **and disable** the unit.
+  2. Make an integrity-checked `backup` under `runtime/`.
+  3. Run `migrate` with the `--pin` values.
+  4. Decide by the database's `user_version`, never by `migrate`'s exit code:
+     - `< 2`: nothing was committed. Re-enable and restart the old service, and report the error.
+     - `≥ 2`: the store is migrated. Install the v2 binary and unit, then enable and start them. If any later step fails, leave the unit stopped and disabled, and say "rerun install-user.py (without --migrate) or roll back".
+
+  The old binary must never run on a v2 database.
+- **Token reconcile, on every run, idempotent (X2, X15):**
+  1. Back up `server.toml` and `client.json` to `runtime/` (mode 0600, never overwriting).
+  2. Ensure an `agent-session = [recall, observe]` token exists, with its secret in `client.json`.
+  3. Remove the `agent-recall` token and any `[projects]` table.
+  4. Leave `memory-maintainer` and `maintainer.json` untouched.
+  5. Write each file atomically. The restart at the end picks up the change.
 
 ### 3.7 What's removed
 
@@ -349,23 +410,24 @@ Guards:
 | Recall `limit`, `budget`, `mode`; MCP `structuredContent` | Bounded start and task views |
 | The 4,000-character body cap; the scope field | 100 kB content; the path |
 
-### 3.8 Contract changes proposed by Review 3 (pending triage)
+### 3.8 Review 3 contract changes: resolved
 
-Review 3 (`review-security-api-simplicity.md` in the shared notes) found these against `3bdfd68`. Each needs a contract change. The exact contract text and my recommended class are below; the triage lead decides the class, and nothing here is staffed yet. B1 and S6 are already applied above (§3.4, §4.1), the first by user ruling and the second because the new session tool set settles it.
+The v2 triage (`docs/coordination/v2-review-triage.md`, PR #20) classed every Review 3 proposal, and each one is now in the contract above:
 
-| Item | Proposed contract | Recommended class |
+| Item | Triage | Where |
 | --- | --- | --- |
-| S3: archived output stores keep leaked secrets; observations can't be redacted | On adopt or cancel, delete the output store's memory and version rows; the `stores` row stays, archived. The live versions written by `dream:<id>` and the dream's `adoption` record remain the audit. `GET /v1/dreams/{id}?diff=true` works only while the dream is running (otherwise 400). Add `POST /v1/observations/{id}/redact` (`promote`): it nulls the body in `observations` and in every `dream_jobs.input` copy, keeping id, time and `created_by`. | (a) before cutover: otherwise each daily dream copies any live secret into permanent storage |
-| S4: credential check gaps | The credential check runs on every stored string: memory and observation content, dream `sessions`, and the adopt `summary`, `coverage` and `conflicts`. A `sessions` item holds only `source`, `locator` and `sha256`; any other key is 400. The pattern list (A's `model.rs`) adds `xox[abposr]-`, `AIza`, `github_pat_`, three-part JWTs, `Bearer\s+\S{20,}`, and 64-hex next to a token or key word. | (b) small fix |
-| S5: a path that is another memory's directory leaves the mirror stale | No segment except the last may end in `.md`. | (a) one line in `validate_path`, and it prevents a silent stale mirror |
-| S7: unbounded dreams; recall cost grows with history | At most one dream is `running`; `dream_start` returns 409 `dream_running`. With that, `observations_consumed` can't happen and is removed from the contract, the skill and the task prompt. Recall reads `mirror_dir` without calling `status()`. | (a) the single-dream rule removes a conflict type and a retry branch; the recall fix is one line |
-| Adopt `reviewed` flag | Remove it. The adopt body is `{summary, coverage, conflicts}`; the same caller set the flag, so it gated nothing. | (b) |
-| `project_id`, `[projects]`, `--project-id` | Remove. No caller sends them. | (b) |
-| `mount` config key | Remove. The mirror is always `<database dir>/mnt`, and the hook's lookup gets simpler. | (b) |
-| `/healthz` | Remove. `/v1/status` covers it; the harness switches. | (c) later |
-| S2 extra: refuse adopting a new pinned memory that comes only from observations | No store rule. The dream may change pinned memories, but only on the evidence of the user's own words, and it reports every such change (§3.5). | Settled 2026-11-01 by the coordinator under the user's standing instruction that dreams run fully autonomously |
-
-Everything else in Review 3 is implementation or later: S1 is the threat model, now written in §3.4; L1–L8 and the rest of the simplicity list change no contract.
+| B1: maintenance token in every session | X1, X2 (a) | §3.4, §3.6 token reconcile, §4.1 |
+| S3: secrets kept in archived output stores; no observation redact | X7 (a) | §3.5 adopt and cancel purge; observation redact |
+| S4: credential check gaps | X8 (b) | §3.5 credential check; closed `sessions` keys |
+| S5: `.md` middle segment wedges the mirror | X6 (a) | §3.1 path rules |
+| S6: session tokens read version history | X9 (b) | §4.1 version reads need `review` |
+| S7: unbounded dreams; recall calls `status()` | X10, X11 (b) | §3.5 one running dream (and the stale-dream rule); a one-line implementation fix in recall |
+| Adopt `reviewed` flag | X14 (b) | §3.5 adopt body |
+| `project_id`, `[projects]`, `--project-id` | X15 (b) | §4.1; the installer strips `[projects]` (§3.6) |
+| `mount` config key | X16 (b) | §3.1 mirror |
+| `token` subcommand | X17 (b) | §4.1 |
+| `/healthz` | X43 (c) | kept for now |
+| S2 extra: pinned additions that come only from observations | settled | §3.5 observations rule |
 
 ## 4. Workstreams
 
@@ -392,7 +454,7 @@ The old `agent-recall` token is removed.
 | Route | Capability | Body → result |
 | --- | --- | --- |
 | `GET /v1/status` | recall | `{store_id, revision, memories, pinned_chars, observations_pending, dreams_running, mirror_dir, mirror_stale}` |
-| `POST /v1/recall` | recall | `{project?, project_id?, role?, topics?, query?, client?}` → `{revision, view, pinned, returned, text}` |
+| `POST /v1/recall` | recall | `{project?, role?, topics?, query?, client?}` → `{revision, view, pinned, returned, text}` |
 | `GET /v1/memory_stores/{store}/memories?path_prefix=/` | read | `{data: [{id, path, title, content_sha256, memory_version_id, updated_at}]}` |
 | `GET /v1/memory_stores/{store}/memories/{id}` | read | the same fields plus `content` |
 | `POST /v1/memory_stores/{store}/memories` | write | `{path, content}` → memory |
@@ -402,6 +464,7 @@ The old `agent-recall` token is removed.
 | `GET /v1/memory_stores/{store}/memory_versions/{id}` | review | version with content |
 | `POST /v1/memory_stores/{store}/memory_versions/{id}/redact` | promote | version |
 | `POST /v1/observations` | observe | `{path, content}` → `{id}` |
+| `POST /v1/observations/{id}/redact` | promote | `{id, created, body}`, where the redacted body is `{path: null, content: null, created_by, redacted_at, redacted_by}`; the same body is written into every `dream_jobs.input` copy |
 | `POST /v1/dreams` / `GET /v1/dreams` / `GET /v1/dreams/{id}?diff=` | review | dream / `{data: [dream]}` newest first / dream, plus `diff` when asked |
 | `POST /v1/dreams/{id}/adopt` | promote | dream |
 | `POST /v1/dreams/{id}/cancel` | review | dream |
@@ -414,6 +477,12 @@ Error responses:
 - Every error body is `{"error", "type"}`. 409 bodies add `paths` for every type except `store_archived`; for `slug_exists`, `paths` holds the path that already uses the slug.
 - 400 has type `invalid`, and its message names the reason, for example `store_full`, redacting a head version, a dream that is not running, or a failed review gate. 401 and 403 are authentication errors. 404 has type `not_found`. 413 is for bodies above 4 MiB.
 - Removed v1 routes return 404.
+- Removed request keys (`project_id`, `reviewed`, `limit`, `budget`) and unknown keys are rejected with 400, as `deny_unknown_fields` does. They are not ignored.
+- The 409 types are `precondition_failed`, `path_exists`, `slug_exists`, `store_archived`, `adopt_conflict`, `pinned_budget_exceeded` and `dream_running`.
+
+**Server CLI and config:**
+- `agent-memory-server` has `init`, `serve`, `check`, `backup` and `migrate`; the `token` subcommand is removed (X17).
+- `server.toml` has `listen`, `database` and `tokens` only. `mount` and `[projects]` are unknown keys, so `Config::load` rejects them. The installer strips `[projects]` before the new binary runs (§3.6).
 
 **Rust boundaries:**
 
@@ -460,7 +529,7 @@ pub fn index_md(memories: &[Memory], revision: i64, mirror_dir: &str) -> String;
 ```
 
 **MCP tools (C).** Paths are resolved to ids with one list call.
-- **The only tool set** (session credential): `memory_status`; `memory_recall(query="", project="", role="", topics=[])` (text only); `memory_list(path_prefix="/")`; `memory_read(path)` (live store, current content only); `memory_observe(path, content)`.
+- **The only tool set** (session credential): `memory_status`; `memory_recall(query="", project="")` (text only; the agent passes the canonical project root, X20; `role` and `topics` dropped, X25); `memory_list(path_prefix="/")`; `memory_read(path)` (live store, current content only); `memory_observe(path, content)`.
 - There is no maintenance mode and no `--maintenance-config`. Maintenance goes through the client CLI with `maintainer.json` (§3.4).
 - A 409 becomes a ToolError that names its type and paths and says to re-read and retry.
 
@@ -475,7 +544,7 @@ pub fn index_md(memories: &[Memory], revision: i64, mirror_dir: &str) -> String;
 | --- | --- | --- |
 | **A, store core and mirror** | `service/src/{store,model,lib,mirror}.rs`, `service/src/schema_v2.sql`; `service/tests/service.rs` (delete v1-only tests; keep backup, encoding and decoder tests); new `service/tests/store_v2.rs`, `service/tests/common/mod.rs` | none |
 | **R, recall** | new `service/src/recall.rs`, `service/tests/recall_v2.rs`, `service/tests/fixtures/recall/` | `model::Memory` |
-| **H, HTTP API** | `service/src/{api,config}.rs` (`config.mount: Option<PathBuf>`), new `service/tests/api_v2.rs` | A, R |
+| **H, HTTP API** | `service/src/{api,config}.rs`, new `service/tests/api_v2.rs` | A, R |
 | **M, migration and install** | new `service/src/migrate.rs`, `service/src/main.rs`, new `service/tests/{migrate.rs,legacy/mod.rs}`, `service/install-user.py`, `service/tests/test_install.py`, `update-local.sh`, `.gitignore` (`/mnt/`), `service/deploy/server.example.toml` | A |
 | **C, clients, hook and docs** | `service/{mcp_server,client,install-mcp}.py`, `service/tests/{test_mcp,test_client,harness}.py`, `memory.py` (the stub), `test_memory.py` (stub tests), `hooks/agent-memory-recall.py`, `catalog.py`, `README.md`, `service/README.md`, `AGENTS.md`, `skill/dream-memory/SKILL.md`, new `ops/daily-memory-dream.md` | the HTTP API |
 
@@ -541,7 +610,7 @@ Shared helpers, each built once:
     - live and dream both change X → `adopt_conflict` with `paths` `[X]`; nothing changes and the dream stays `running`;
     - live changes X and the dream changes Y → success, and the live X is kept;
     - both add the same path → conflict.
-14. `adopt_gates_and_observations`: the review gates, `observations_consumed`, and the pinned budget checked at adopt.
+14. `adopt_gates`: the review gates and the pinned budget checked at adopt. (The v2 triage adds `one_running_dream`, `archived_output_store_purged`, `observation_redact_nulls_every_copy` and others; see its WS-A list.)
 15. `cancel_semantics`.
 16. `mirror_tracks_live`:
     - files hold the stored bytes, mode 0444 in 0555 directories;
@@ -643,32 +712,53 @@ The coordinator reviews these against §3.
 
 ## 5. Rollout
 
-1. **Build.** Cut `rework/managed-agents-v2` from the current master. Run A, R, H, M and C, merging in the order of §4.2.
-2. **Combined check** on the integration head:
+Steps marked (Δn) are the v2 triage's runbook deltas.
+
+1. **Build.** Cut `rework/managed-agents-v2` from the current master. Run A, R, H, M and C, merging in the order of §4.2. The triage fix round merges A → H → M → C.
+2. **Combined check** on the integration head. Every test and dry run uses `TMPDIR` on disk, and the coordinator checks `df /tmp` first.
    - `cargo test`, `clippy -D warnings`, a release build and all Python suites;
-   - `migrate --dry-run --pin keep-it-simple …` against a copy of a fresh `backup` of the live store. The coordinator and the architect review the report and settle the pinned set: `keep-it-simple` plus what fits in 4,000 characters;
+   - `migrate --dry-run --pin …` against a copy of a fresh `backup` of the live store (Δ1). The report also lists the global rules that will load only as index lines. The coordinator and the architect settle the pinned set, within 4,000 characters, knowing that list;
    - a fresh-eyes review campaign and triage.
-3. **Cutover**, after the coordinator has the user's go in chat:
-   1. Record the master SHA. Copy `~/.claude/hooks/agent-memory-recall.py` to `runtime/` first, because `update-local.sh` replaces it with a symlink.
+3. **Cutover**, after the coordinator has the user's go in chat. The coordinator alone runs steps 3.2 to 3.5 back to back, outside the daily dream's 05:25 window (Δ2). Other sessions are told not to run the post-merge routine for this merge: from the pull onward, `memory.py` is the v2 stub, and a stray `install-mcp.py` would point v2 tools at the v1 service.
+   1. Record the master SHA. Copy `~/.claude/hooks/agent-memory-recall.py` to `runtime/` first, because `update-local.sh` replaces it with a symlink. Set a date when the rollback window closes (Δ8).
    2. Merge to master.
    3. Run `update-local.sh`. It stops at the v1 guard.
-   4. Run `install-user.py --database …/memory.sqlite3 --migrate --pin …`. It stops the service, backs up to `runtime/pre-v2-*.sqlite3`, migrates, installs and starts the service. If a step after the migration fails, the service stays stopped rather than running the old binary on a v2 database.
-   5. Run `update-local.sh` again. Now that the store is v2, it gets past the guard and installs the MCP adapter and the hook link, which the first run never reached. `install-mcp.py` registers the session credential only.
-   6. Re-register Claude Code's `shared_memory` server without `--maintenance-config`. Its entry in `~/.claude.json` currently passes `maintainer.json`. This changes the user's configuration, so it needs the same go. The mechanism (`claude mcp` or editing the file) is **unverified**, and WS-C checks it first.
-   7. Verify:
-      - `status` (the memory count matches the pre-cutover store, and pinned characters are shown);
-      - the hook output in a new Claude session (core present, about 10k characters fewer than today);
-      - MCP `memory_recall` after an app restart;
-      - `memory.py recall` as the Codex and DeepSeek loaders run it.
-   8. Copy `ops/daily-memory-dream.md` into the scheduled task. Copy rather than symlink: whether the scheduler follows a symlink is unverified.
-4. **Rollback:**
-   1. Stop the service.
-   2. Set the migrated database aside.
-   3. Restore the backup.
-   4. Check out the recorded master SHA and run the old `install-user.py`.
-   5. Restore the old task prompt (`runtime/daily-memory-dream.SKILL.pre-*.md`) and the old hook file saved in step 3.1.
+   4. Run `install-user.py --database …/memory.sqlite3 --migrate --pin …` (Δ3). It:
+      - stops and disables the unit;
+      - backs up to `runtime/pre-v2-*.sqlite3`;
+      - reconciles tokens, backing up `server.toml` and `client.json` to `runtime/`;
+      - migrates;
+      - decides by `user_version`;
+      - installs, enables and starts v2.
 
-   Observations made after cutover stay in the set-aside copy; re-observe them by hand.
+      If it fails after the commit, the service is left stopped **and disabled**. Then either rerun `install-user.py` without `--migrate` or roll back. Never `systemctl --user start` it by hand.
+   5. Run `update-local.sh` again. Now that the store is v2, it gets past the guard and installs the MCP adapter (registering `client.json`, the `agent-session` token, only) and the hook link (Δ4).
+   6. Claude Code's `shared_memory` server is re-registered by `install-mcp.py` in step 3.5, using the documented CLI (Δ4). The script:
+      - checks `claude mcp get shared_memory`;
+      - refuses an entry that isn't ours;
+      - does nothing when the entry already matches;
+      - otherwise runs `claude mcp remove --scope user`, then `claude mcp add --scope user … --config client.json`.
+
+      It never edits `~/.claude.json` by hand. This changes the user's configuration, so it is covered by the same go. Afterwards, check `claude mcp get shared_memory`. Open sessions need `/mcp reconnect` or a restart.
+   7. Verify (Δ5):
+      - `status`: the memory count matches the pre-cutover store, pinned characters are shown, and `mirror_stale` is false;
+      - `server.toml` lists `agent-session` with exactly `recall` and `observe`, and no `agent-recall`;
+      - a live write with `client.json` returns 403;
+      - the hook output in a new Claude session: the core is present, about 10k characters fewer than today;
+      - MCP `memory_recall`, after an app restart;
+      - `memory.py recall`, as the Codex and DeepSeek loaders run it.
+
+      Don't create a test observation in the live store: the next dream would consume it.
+   8. Copy `ops/daily-memory-dream.md` into the scheduled task, rather than symlinking it, since whether the scheduler follows a symlink is unverified. Then trigger one supervised run and read its report (Δ6). It is the first run on CLI-only dream tooling and on the full-review rule.
+4. **Rollback** (Δ7):
+   1. Stop and disable the service.
+   2. List what will be lost: every v2 change since cutover, meaning memory edits, deletes, adopted dreams and observations. Get it with `agent-memory-client versions` since cutover, and keep the set-aside database.
+   3. Set the migrated database **and `mnt/`** aside. Before deleting the mirror, run `chmod -R u+w` on it, because it is 0555/0444.
+   4. Restore the backup.
+   5. Restore `server.toml` and `client.json` from `runtime/`.
+   6. Check out the recorded master SHA and run the old `install-user.py` and `install-mcp.py`, which re-register Codex.
+   7. Restore Claude Code's MCP entry, the old task prompt (`runtime/daily-memory-dream.SKILL.pre-*.md`) and the hook file saved in step 3.1.
+5. **When the rollback window closes** (Δ8): drop the legacy tables and delete `runtime/pre-v2-*.sqlite3`. Until then they hold v1 history that redact can't reach.
 
 ## 6. What was checked
 
