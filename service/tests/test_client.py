@@ -4,6 +4,7 @@ Standard library only, so these also run without the MCP virtual environment.
 """
 import json
 import os
+import re
 import socket
 import shutil
 import subprocess
@@ -142,6 +143,20 @@ class ClientTests(unittest.TestCase):
         self.json('dream', 'cancel', started['id'])
         self.assertEqual(self.json('status')['dreams_running'], 0)
         self.assertEqual(self.json('dream', 'start')['status'], 'running')  # the slot is free again
+
+    def test_stale_dream_is_found_cancelled_and_replaced(self):
+        """A run that died leaves a running dream; the 409 names it so the next run can cancel it (X10)."""
+        stale = self.json('dream', 'start')
+        clash = self.run_client('dream', 'start', ok=False)
+        [named] = re.findall(r'drm_[0-9a-f]{32}', clash.stderr)
+        self.assertEqual(named, stale['id'])
+        shown = self.json('dream', 'show', named)
+        self.assertEqual(shown['status'], 'running')
+        self.assertTrue(shown['created_at'])  # what the skill compares with "more than an hour ago"
+        self.json('dream', 'cancel', named)
+        fresh = self.json('dream', 'start')
+        self.assertNotEqual(fresh['id'], stale['id'])
+        self.assertEqual(self.json('status')['dreams_running'], 1)
 
     def test_recall_canonicalizes_worktrees_and_has_no_project_id(self):
         _, env = self.server.home()

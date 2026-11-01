@@ -181,6 +181,7 @@ class DocsTests(unittest.TestCase):
     def test_the_dream_cycle_matches_the_contract(self):
         text = '\n'.join(doc.read_text() for doc in self.DOCS)
         self.assertTrue('dream_running' in text, 'docs must say what to do on a dream_running 409 (X10)')
+        self.assertTrue('hour' in text, 'docs must give the stale-dream rule: cancel one older than an hour (X10)')
         self.assertNotIn('observations_consumed', text)  # X10 removed it
         self.assertIsNone(re.search(r'\breviewed\s*[=:]|`reviewed`', text), 'the adopt body has no reviewed flag (X14)')
         self.assertIn('maintainer.json', text)  # dreams run through the client CLI with the maintenance credential
