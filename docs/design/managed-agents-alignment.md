@@ -47,7 +47,7 @@ From `feat/recall-on-demand` (d125894, not merged), the workstreams take text-on
 | Store create/update/delete, store list, `name`, `description`, `metadata` | **Reject** | One live store comes from `init`/`migrate`; a dream's output store is reached through the dream. The mount note is fixed text. |
 | Archive (one-way, read-only) | **Adapt** | Automatic when a dream ends; no endpoint. |
 | Mounted directory, file tools, mount note | **Adapt: read via files, write via the API** | Read-only mirror plus a fixed mount note. A writable mount needs the self-hosted sync worker (15 s sync, store-wins overwrites, deletion modes). |
-| `read_only` / `read_write` access; prompt-injection warning | **Adapt** | Existing token capabilities. Ordinary sessions read; their captures go to append-only observations, which are never recalled. Only `promote` writes the live store. |
+| `read_only` / `read_write` access; prompt-injection warning | **Adapt** | Ordinary sessions get read and suggest only (user ruling, 2026-11-01). Their `agent-session` token holds `recall` and `observe`, and their captures go to append-only observations, which are never recalled. Only the daily dream, or a dream the user asks for, holds the maintenance token that can write the live store. |
 | Up to 8 stores per session; per-session `instructions` | **Reject** | Directories give the scoping, and there is no attach step. |
 | Dream inputs: store + 1–100 sessions + `instructions` → new output store; inputs never modified | **Adapt** | The live store, 0–100 session locators with hashes (transcripts stay where they are), and pending observations. The agent running the dream is the synthesizer, so dream `instructions` are dropped. |
 | Status `pending/running/completed/failed/canceled`; cancel; dream archive; `usage`; error types; `update_existing` | **Adapt** | `running` → `completed` (adopted) or `canceled`. There is no queue, no async pipeline, no token usage, and no write without review. |
@@ -254,8 +254,22 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
 
 | Who | Reads | Writes |
 | --- | --- | --- |
-| Any session | Start view (hook or loader), mirror files, `memory_recall(query)`, `memory_list`, `memory_read` | `memory_observe` (append-only; never recalled) |
-| Maintenance: the daily dream, or a session acting on an explicit user correction under the standing authorization | Plus versions and dreams | `memory_write`, `memory_delete`, `memory_redact`, dream tools (`promote` capability for the live store) |
+| Any session: hook, loaders, MCP (`agent-session` token: `recall`, `observe`) | Start view, mirror files, `memory_recall(query)`, `memory_list` and `memory_read` on the live store | `memory_observe` only (append-only; never recalled) |
+| Maintenance: the daily dream, or a dream the user asks for (`memory-maintainer` token: all four capabilities), through `agent-memory-client --config ~/.config/agent-memory/maintainer.json` | Plus versions, dream output stores and dreams | Memory writes, delete, redact, dream start / adopt / cancel |
+
+**Read and suggest only (user ruling, 2026-11-01).**
+- An ordinary session never writes the live store. When the user says "remember this" or corrects the agent, the session records an observation. The next daily dream applies it, or a dream the user asks for applies it sooner.
+- The MCP adapter exposes only the session tool set (§4.1) and has no maintenance mode. Maintenance runs through the CLI.
+
+**Threat model.**
+- **What capabilities stop:** an agent using the tools it was given to change accepted memory. That covers a session following an injected instruction through its MCP tools, the case the upstream warning describes.
+- **What they don't stop:** a same-uid agent with a shell reading `~/.config/agent-memory/maintainer.json` and calling the CLI. That is accepted for this single-user machine.
+- **What limits that risk:**
+  - only the dream prompts and the skill name that file;
+  - observations carry their token's name, so the dream can see which ones came from ordinary sessions;
+  - the dream checks every observation against the user's own words before keeping it (§3.5).
+
+  Moving the maintenance token to another OS user would close the gap. That is left out until the user asks for it.
 
 Reads are not file imports, because no common mechanism exists:
 - Codex documents no import syntax in `AGENTS.md` and caps it at 32 KiB ([docs](https://developers.openai.com/codex/guides/agents-md)).
@@ -290,7 +304,11 @@ Reads are not MCP resources either: in Claude Code those are `@`-mentions made b
    - On success it applies the changes as live versions by `dream:<id>`, sets `completed`, archives the output store and rebuilds the mirror. An empty diff is valid.
 5. **Cancel (`POST /v1/dreams/{id}/cancel`, `review`).** `running` becomes `canceled` and the output store is archived. Cancelling a canceled dream is a no-op; cancelling a completed dream returns 400.
 
-**On a conflict,** the skill says: cancel, start a new dream, and carry the edits over once.
+**On a conflict,** the skill says: cancel, start a new dream, and carry the edits over once. For `pinned_budget_exceeded`, the dream is still running, so the agent unpins or shortens memories in the output store and adopts again.
+
+**Observations from ordinary sessions are suggestions, not evidence.**
+- Before keeping one, the dream checks its evidence locator against the user's own words in that transcript. An observation that cites no user message is dropped and noted in `coverage`.
+- The report lists every change to a pinned memory, or to the pinned set, on a line of its own.
 
 ### 3.6 Migration
 
@@ -331,6 +349,24 @@ Guards:
 | Recall `limit`, `budget`, `mode`; MCP `structuredContent` | Bounded start and task views |
 | The 4,000-character body cap; the scope field | 100 kB content; the path |
 
+### 3.8 Contract changes proposed by Review 3 (pending triage)
+
+Review 3 (`review-security-api-simplicity.md` in the shared notes) found these against `3bdfd68`. Each needs a contract change. The exact contract text and my recommended class are below; the triage lead decides the class, and nothing here is staffed yet. B1 and S6 are already applied above (§3.4, §4.1), the first by user ruling and the second because the new session tool set settles it.
+
+| Item | Proposed contract | Recommended class |
+| --- | --- | --- |
+| S3: archived output stores keep leaked secrets; observations can't be redacted | On adopt or cancel, delete the output store's memory and version rows; the `stores` row stays, archived. The live versions written by `dream:<id>` and the dream's `adoption` record remain the audit. `GET /v1/dreams/{id}?diff=true` works only while the dream is running (otherwise 400). Add `POST /v1/observations/{id}/redact` (`promote`): it nulls the body in `observations` and in every `dream_jobs.input` copy, keeping id, time and `created_by`. | (a) before cutover: otherwise each daily dream copies any live secret into permanent storage |
+| S4: credential check gaps | The credential check runs on every stored string: memory and observation content, dream `sessions`, and the adopt `summary`, `coverage` and `conflicts`. A `sessions` item holds only `source`, `locator` and `sha256`; any other key is 400. The pattern list (A's `model.rs`) adds `xox[abposr]-`, `AIza`, `github_pat_`, three-part JWTs, `Bearer\s+\S{20,}`, and 64-hex next to a token or key word. | (b) small fix |
+| S5: a path that is another memory's directory leaves the mirror stale | No segment except the last may end in `.md`. | (a) one line in `validate_path`, and it prevents a silent stale mirror |
+| S7: unbounded dreams; recall cost grows with history | At most one dream is `running`; `dream_start` returns 409 `dream_running`. With that, `observations_consumed` can't happen and is removed from the contract, the skill and the task prompt. Recall reads `mirror_dir` without calling `status()`. | (a) the single-dream rule removes a conflict type and a retry branch; the recall fix is one line |
+| Adopt `reviewed` flag | Remove it. The adopt body is `{summary, coverage, conflicts}`; the same caller set the flag, so it gated nothing. | (b) |
+| `project_id`, `[projects]`, `--project-id` | Remove. No caller sends them. | (b) |
+| `mount` config key | Remove. The mirror is always `<database dir>/mnt`, and the hook's lookup gets simpler. | (b) |
+| `/healthz` | Remove. `/v1/status` covers it; the harness switches. | (c) later |
+| S2 extra: refuse adopting a new pinned memory that comes only from observations | Not a store rule. If the user wants pinned changes to need their request, it belongs in the dream prompt. | Ask the user (product); the policy note in §3.5 covers reporting now |
+
+Everything else in Review 3 is implementation or later: S1 is the threat model, now written in §3.4; L1–L8 and the rest of the simplicity list change no contract.
+
 ## 4. Workstreams
 
 All PRs target **`rework/managed-agents-v2`**, cut from the current master. Nothing reaches master before cutover, because of the standing rule to run `update-local.sh` after every master merge.
@@ -345,7 +381,13 @@ A test engineer commits the acceptance tests first, and they must fail on the in
 
 ### 4.1 Frozen interfaces
 
-**HTTP API.** `{store}` is an id or `live`. Reads need `recall` for the live store and `review` for any other store; writes need `promote` for the live store and `review` for any other store.
+**HTTP API.** `{store}` is an id or `live`. Memory reads need `recall` for the live store and `review` for any other store. Version reads always need `review`, because history includes deleted memories. Writes need `promote` for the live store and `review` for any other store.
+
+**Tokens** (`install-user.py`):
+- `agent-session` = `[recall, observe]`, in `client.json`, used by the hook, the loaders and MCP;
+- `memory-maintainer` = all four, in `maintainer.json`, used only by the dream prompts.
+
+The old `agent-recall` token is removed.
 
 | Route | Capability | Body → result |
 | --- | --- | --- |
@@ -356,8 +398,8 @@ A test engineer commits the acceptance tests first, and they must fail on the in
 | `POST /v1/memory_stores/{store}/memories` | write | `{path, content}` → memory |
 | `POST /v1/memory_stores/{store}/memories/{id}` | write | `{content?, path?, precondition?: {type: "content_sha256", content_sha256}}` → memory |
 | `DELETE /v1/memory_stores/{store}/memories/{id}?expected_content_sha256=` | write | `{type: "memory_deleted", id}` |
-| `GET /v1/memory_stores/{store}/memory_versions?memory_id=&created_by=` | read | `{data: [version]}`, newest first, without content |
-| `GET /v1/memory_stores/{store}/memory_versions/{id}` | read | version with content |
+| `GET /v1/memory_stores/{store}/memory_versions?memory_id=&created_by=` | review | `{data: [version]}`, newest first, without content |
+| `GET /v1/memory_stores/{store}/memory_versions/{id}` | review | version with content |
 | `POST /v1/memory_stores/{store}/memory_versions/{id}/redact` | promote | version |
 | `POST /v1/observations` | observe | `{path, content}` → `{id}` |
 | `POST /v1/dreams` / `GET /v1/dreams` / `GET /v1/dreams/{id}?diff=` | review | dream / `{data: [dream]}` newest first / dream, plus `diff` when asked |
@@ -418,11 +460,11 @@ pub fn index_md(memories: &[Memory], revision: i64, mirror_dir: &str) -> String;
 ```
 
 **MCP tools (C).** Paths are resolved to ids with one list call.
-- **Read set:** `memory_status`, `memory_recall(query="", project="", role="", topics=[])` (text only), `memory_list(path_prefix="/", store="live")`, `memory_read(path, store="live")`, `memory_versions(path?, created_by?, store="live")`.
-- **Maintenance set adds:** `memory_observe(path, content)`; `memory_write(path, content?, expected_sha256?, new_path?, store="live")` (no `expected_sha256` means create); `memory_delete(path, expected_sha256?, store="live")`; `memory_redact(version_id)`; `memory_dream_start(sessions=[])`; `memory_dream_get(dream_id?, diff=False)`; `memory_dream_adopt(dream_id, summary, coverage, conflicts, reviewed)`; `memory_dream_cancel(dream_id)`.
+- **The only tool set** (session credential): `memory_status`; `memory_recall(query="", project="", role="", topics=[])` (text only); `memory_list(path_prefix="/")`; `memory_read(path)` (live store, current content only); `memory_observe(path, content)`.
+- There is no maintenance mode and no `--maintenance-config`. Maintenance goes through the client CLI with `maintainer.json` (§3.4).
 - A 409 becomes a ToolError that names its type and paths and says to re-read and retry.
 
-**Client CLI (C), `agent-memory-client`:**
+**Client CLI (C), `agent-memory-client`.** It uses `client.json` (session) by default. Every command beyond `status`, `recall`, `ls`, `cat` and `observe` needs `--config ~/.config/agent-memory/maintainer.json`.
 - **Read:** `status`, `recall [--query] [--project | --project-id] [--role] [--topic]… [--client]` (old `--limit`, `--budget` and `--json` are accepted and ignored), `ls [PREFIX] [--store]`, `cat PATH [--store]` (exact bytes), `versions [PATH]`.
 - **Write:** `observe PATH FILE`, `write PATH FILE [--expected SHA] [--to NEW] [--store]`, `rm PATH [--expected SHA] [--store]`, `redact VERSION`.
 - **Dreams:** `dream start [--sessions FILE]`, `dream show [ID] [--diff]`, `dream adopt ID REVIEW.json`, `dream cancel ID`.
@@ -539,7 +581,8 @@ Shared helpers, each built once:
    - reader: live reads, recall and status; 403 on live writes, on dreams and on output-store reads;
    - review token: dream start and output writes allowed; 403 on live writes, adopt and redact;
    - observe token: only `/v1/observations`;
-   - promote token: everything.
+   - promote token: everything;
+   - session token (`recall` + `observe`): live memory reads, recall, status and observations; 403 on any version read, any write, any dream route and any output-store read.
 2. `live_alias`.
 3. `error_mapping`: each 409 type comes with its `type` and `paths`; 400, 404, 413.
 4. `actor_recorded`: a write with token `admin` produces `created_by: "token:admin"`.
@@ -562,19 +605,20 @@ Shared helpers, each built once:
 8. `install_refuses_v1_without_flag`: exits non-zero, and the database and service state are restored.
 9. `install_migrate_backs_up_first`.
 10. `update_local_never_migrates`.
+11. `install_mints_session_token`: `client.json` holds the `agent-session` token (`recall`, `observe`), `maintainer.json` holds `memory-maintainer`, and no `agent-recall` token is minted. `install-mcp.py` registers only `client.json`, with no `--maintenance-config`.
 
 **C (`test_mcp.py`, `test_client.py`, `test_memory.py`, against the real server through `harness.py`)**
 
-1. `read_catalog`: exactly the 5 read tools; recall returns text with no `structuredContent`.
-2. `maintenance_catalog`: exactly 13 tools, with none of the v1 names.
-3. `write_by_path`:
+1. `session_catalog`: exactly 5 tools (`memory_status`, `memory_recall`, `memory_list`, `memory_read`, `memory_observe`); recall returns text with no `structuredContent`; the adapter has no `--maintenance-config` option.
+2. `observe_only`: `memory_observe` succeeds, and the observation's `created_by` is `token:agent-session`. `memory_read` of a `memver_` id is refused.
+3. `write_by_path` (client CLI with `maintainer.json`):
    - create;
    - update with the expected hash;
-   - a stale hash raises a ToolError that says "re-read";
+   - a stale hash raises an error that says "re-read";
    - rename;
    - delete.
-4. `dream_workflow_mcp`.
-5. `reader_cannot_write`.
+4. `dream_workflow_cli` (client CLI with `maintainer.json`).
+5. `session_cannot_write`: the client without `--config maintainer.json` gets a 403 on write, rm, redact and dream commands.
 6. `offline_is_error_not_empty`.
 7. `client_roundtrip`: `ls`, `cat` (exact bytes), `write --expected`, `--to`, `rm`, `redact`, and `dream start`, `show --diff`, `adopt`, `cancel`.
 8. `stub_forwards_recall`: `python3 memory.py recall --project P --query Q --limit 12 --budget 12000` prints the client's output; other subcommands exit 2 and name the client.
@@ -609,13 +653,14 @@ The coordinator reviews these against §3.
    2. Merge to master.
    3. Run `update-local.sh`. It stops at the v1 guard.
    4. Run `install-user.py --database …/memory.sqlite3 --migrate --pin …`. It stops the service, backs up to `runtime/pre-v2-*.sqlite3`, migrates, installs and starts the service. If a step after the migration fails, the service stays stopped rather than running the old binary on a v2 database.
-   5. Run `update-local.sh` again. Now that the store is v2, it gets past the guard and installs the MCP adapter and the hook link, which the first run never reached.
-   6. Verify:
+   5. Run `update-local.sh` again. Now that the store is v2, it gets past the guard and installs the MCP adapter and the hook link, which the first run never reached. `install-mcp.py` registers the session credential only.
+   6. Re-register Claude Code's `shared_memory` server without `--maintenance-config`. Its entry in `~/.claude.json` currently passes `maintainer.json`. This changes the user's configuration, so it needs the same go. The mechanism (`claude mcp` or editing the file) is **unverified**, and WS-C checks it first.
+   7. Verify:
       - `status` (the memory count matches the pre-cutover store, and pinned characters are shown);
       - the hook output in a new Claude session (core present, about 10k characters fewer than today);
       - MCP `memory_recall` after an app restart;
       - `memory.py recall` as the Codex and DeepSeek loaders run it.
-   7. Copy `ops/daily-memory-dream.md` into the scheduled task. Copy rather than symlink: whether the scheduler follows a symlink is unverified.
+   8. Copy `ops/daily-memory-dream.md` into the scheduled task. Copy rather than symlink: whether the scheduler follows a symlink is unverified.
 4. **Rollback:**
    1. Stop the service.
    2. Set the migrated database aside.
