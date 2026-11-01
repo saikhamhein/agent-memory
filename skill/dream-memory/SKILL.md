@@ -36,10 +36,10 @@ The user has given standing authorization (2026-10-29, 2026-11-01) for memory-st
 6. **Adopt.** Call `memory_dream_adopt(dream_id, summary, coverage, conflicts, reviewed=true)`.
    - `reviewed` records your evidence review. It isn't user approval.
    - Write `coverage` honestly: what was read, partial or unavailable, and what was left out.
-7. **On a 409** (`adopt_conflict`, `observations_consumed`, `pinned_budget_exceeded`):
-   - `memory_dream_cancel`, start a new dream, and carry the edits over once.
-   - If adopting fails again, report the error.
-   - Never retry blindly.
+7. **On a 409.** A failed adopt changes nothing and leaves the dream running.
+   - `pinned_budget_exceeded`: unpin or shorten memories in the output store (`paths` lists the pinned ones), then adopt again.
+   - `adopt_conflict` or `observations_consumed`: `memory_dream_cancel`, start a new dream, and carry the edits over once.
+   - If adopting fails again, report the error. Never retry blindly.
 8. **Report.**
    - Revision before → after.
    - Each memory added, changed or removed, one line each with its evidence date.
