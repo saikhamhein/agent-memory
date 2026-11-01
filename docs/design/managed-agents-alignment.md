@@ -327,7 +327,13 @@ Rulings from the v2 triage (`docs/coordination/v2-review-triage.md`) are cited b
 - On a match the request is 400.
 - The pattern list lives in `model.rs`. It adds `xox[abposr]-`, `AIza`, `github_pat_`, three-part JWTs, `Bearer\s+\S{20,}`, and 64 hex characters next to a token or key word.
 
-**Observation redact (X7).** `POST /v1/observations/{id}/redact` (`promote`) nulls the observation's body in `observations` and in every `dream_jobs.input` copy. The id, the time and `created_by` stay. Redacting again is a no-op; an unknown id is 404.
+**Observation redact (X7).** `POST /v1/observations/{id}/redact` (`promote`) replaces the observation's body. The `observations.body` column is a frozen `NOT NULL`, so the body can't be SQL NULL. Instead:
+- The new body is `{"path": null, "content": null, "created_by": <kept>, "redacted_at", "redacted_by"}`. A legacy v1 body gets `created_by: null`.
+- The same body goes into every `dream_jobs.input` copy of that observation.
+- It returns `{id, created, body}`, the same shape as a dream's `observations` items.
+- Redacting again is a no-op; an unknown id is 404.
+
+**A purged output store** keeps its `stores` row, archived. Listing it returns an empty list, and reading a memory or version in it returns 404.
 
 **The dream cycle, in the skill and the task prompt (X24, X3):**
 1. Every run starts a dream and reviews the full memory set: new sessions and observations, plus duplicates, stale entries and wording that failed to trigger.
@@ -457,7 +463,7 @@ The old `agent-recall` token is removed.
 | `GET /v1/memory_stores/{store}/memory_versions/{id}` | review | version with content |
 | `POST /v1/memory_stores/{store}/memory_versions/{id}/redact` | promote | version |
 | `POST /v1/observations` | observe | `{path, content}` → `{id}` |
-| `POST /v1/observations/{id}/redact` | promote | `{id, created, created_by, redacted_at}`; nulls the body here and in every `dream_jobs.input` copy |
+| `POST /v1/observations/{id}/redact` | promote | `{id, created, body}`, where the redacted body is `{path: null, content: null, created_by, redacted_at, redacted_by}`; the same body is written into every `dream_jobs.input` copy |
 | `POST /v1/dreams` / `GET /v1/dreams` / `GET /v1/dreams/{id}?diff=` | review | dream / `{data: [dream]}` newest first / dream, plus `diff` when asked |
 | `POST /v1/dreams/{id}/adopt` | promote | dream |
 | `POST /v1/dreams/{id}/cancel` | review | dream |
