@@ -2864,3 +2864,69 @@ fn api_v2_leaves_nothing_in_tmpdir() {
         "the inner run of the suite failed: {status}"
     );
 }
+
+/// X10: at most one dream runs; a second start is 409 `dream_running` whose `paths` is the
+/// running dream's id. Canceling or adopting the stale one frees the slot.
+/// X7: `?diff=true` works only while the dream is running; afterwards it is 400.
+#[tokio::test]
+async fn error_mapping_dream_running() {
+    let fx = Fx::new();
+    let first = fx.dream().await;
+    let first_id = first["id"].as_str().unwrap().to_owned();
+    for token in ["admin", "reviewer"] {
+        let again = fx
+            .call("POST", "/v1/dreams", token, json!({"sessions": []}))
+            .await;
+        assert_conflict(&again, "dream_running", Some(&[first_id.as_str()]));
+    }
+    assert_eq!(fx.status().await["dreams_running"], 1);
+    assert_eq!(
+        fx.call(
+            "GET",
+            &format!("/v1/dreams/{first_id}?diff=true"),
+            "admin",
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    fx.ok("POST", &format!("/v1/dreams/{first_id}/cancel"), json!({}))
+        .await;
+    assert_invalid(
+        &fx.call(
+            "GET",
+            &format!("/v1/dreams/{first_id}?diff=true"),
+            "admin",
+            Value::Null,
+        )
+        .await,
+        "",
+    );
+    let second = fx.dream().await;
+    let second_id = second["id"].as_str().unwrap().to_owned();
+    assert_conflict(
+        &fx.call("POST", "/v1/dreams", "admin", json!({"sessions": []}))
+            .await,
+        "dream_running",
+        Some(&[second_id.as_str()]),
+    );
+    assert_eq!(fx.adopt("admin", &second_id).await.0, StatusCode::OK);
+    assert_invalid(
+        &fx.call(
+            "GET",
+            &format!("/v1/dreams/{second_id}?diff=true"),
+            "admin",
+            Value::Null,
+        )
+        .await,
+        "",
+    );
+    // A finished dream's record is still readable without the diff.
+    assert_eq!(
+        fx.ok("GET", &format!("/v1/dreams/{second_id}"), Value::Null)
+            .await["status"],
+        "completed"
+    );
+    fx.dream().await;
+}
