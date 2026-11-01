@@ -66,6 +66,9 @@ Reports:
   The coordinator keeps 1 and 2 on its own judgment (one source of procedure; stale memories cleaned on quiet days), so they land in `ops/daily-memory-dream.md` and the skill before cutover. Items 3 and 4 are advisory and the triage lead decides them.
   Live task: `daily-memory-dream` at 05:25 local, prompt `~/.claude/scheduled-tasks/daily-memory-dream/SKILL.md`.
 
+- 2026-11-01: with the user's go, the coordinator cleaned the leaked /tmp/.tmp* test dirs and the idle sessions' build caches. /tmp went from 97% to 38% used.
+- Triage lead `local_b9c54bf3-2f93-4fb2-ba8b-c5d965ed3970` started. Deliverable: `docs/coordination/v2-review-triage.md` as a PR to `rework/managed-agents-v2`.
+
 Then a fresh triage lead classes the findings: (a) fix before release, (b) small fix, (c) later.
 
 ## Merged
@@ -102,8 +105,6 @@ Then a fresh triage lead classes the findings: (a) fix before release, (b) small
 
 ## Blockers
 
-- /tmp cleanup of the leaked test dirs and the idle sessions' build caches was denied by the auto-mode classifier (shared scratch sweep). Left for the user.
-- The triage lead can only be started from a message the user types in the desktop app.
 - Review campaign note: test-C's 28 tests passed first try; the fresh-eyes review should mutation-check them.
 - Architect session's outgoing messaging paused again (2026-11-01, second time); rulings for H/test-H and the PR 10 notice undelivered. Needs the user to resume it there. The coordinator does not relay around the pause.
 - Proposed card `task_8b1e5f32`: text-only MCP recall quick win on master.
