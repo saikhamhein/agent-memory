@@ -3,6 +3,7 @@
 install-mcp.py runs against the real `claude` and `codex` CLIs, but with HOME and CODEX_HOME in a
 temporary directory and a fake `uv`, so nothing outside the temporary directory is read or written.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,7 +26,17 @@ if [ "$1" = venv ]; then mkdir -p "$2/bin"; ln -sf "$REAL_PYTHON" "$2/bin/python
 
 @unittest.skipUnless(shutil.which('claude') and shutil.which('codex'), 'needs the claude and codex CLIs')
 class InstallMcpTests(unittest.TestCase):
+    REAL_CONFIGS = [Path.home() / '.claude.json', Path.home() / '.codex/config.toml']
+
+    @staticmethod
+    def digest(path):
+        return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
     def setUp(self):
+        # The real CLIs run here, so prove they never touch the user's own configuration.
+        before = [self.digest(path) for path in self.REAL_CONFIGS]
+        self.addCleanup(lambda: self.assertEqual(before, [self.digest(p) for p in self.REAL_CONFIGS],
+                                                 'the test changed the real ~/.claude.json or ~/.codex/config.toml'))
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name).resolve()
