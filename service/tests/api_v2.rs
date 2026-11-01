@@ -7,6 +7,8 @@
 //! Assumptions that the §4.1 table leaves open are marked `ASSUMPTION` and were
 //! sent to the architect; a ruling changes the test, not the engineer's code.
 
+mod common;
+
 use agent_memory_server::{
     api,
     config::{Capability, Config, Token},
@@ -18,6 +20,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use common::SealedTempDir;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -92,7 +95,7 @@ fn config(db: &Path) -> Config {
 }
 
 struct Fx {
-    tmp: TempDir,
+    tmp: SealedTempDir,
     app: Router,
     db: PathBuf,
     mnt: PathBuf,
@@ -104,7 +107,7 @@ impl Fx {
     }
     /// `prepare` may edit the initialised database (raw SQL) before the service opens it.
     fn seeded(prepare: impl FnOnce(&Path)) -> Self {
-        let tmp = TempDir::new().unwrap();
+        let tmp = SealedTempDir::new();
         let db = tmp.path().join("memory.sqlite3");
         let mnt = tmp.path().join("mnt");
         Store::init(&db).unwrap();
