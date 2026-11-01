@@ -26,17 +26,24 @@ if [ "$1" = venv ]; then mkdir -p "$2/bin"; ln -sf "$REAL_PYTHON" "$2/bin/python
 
 @unittest.skipUnless(shutil.which('claude') and shutil.which('codex'), 'needs the claude and codex CLIs')
 class InstallMcpTests(unittest.TestCase):
-    REAL_CONFIGS = [Path.home() / '.claude.json', Path.home() / '.codex/config.toml']
+    CLAUDE_JSON, CODEX_TOML = Path.home() / '.claude.json', Path.home() / '.codex/config.toml'
 
-    @staticmethod
-    def digest(path):
-        return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+    @classmethod
+    def digests(cls):
+        """What install-mcp.py could change: Claude's user-scope `mcpServers` (running sessions rewrite the rest
+        of ~/.claude.json all the time) and the whole Codex config."""
+        try:
+            servers = json.loads(cls.CLAUDE_JSON.read_text()).get('mcpServers')
+        except (OSError, ValueError):
+            servers = None
+        codex = hashlib.sha256(cls.CODEX_TOML.read_bytes()).hexdigest() if cls.CODEX_TOML.is_file() else None
+        return json.dumps(servers, sort_keys=True), codex
 
     def setUp(self):
         # The real CLIs run here, so prove they never touch the user's own configuration.
-        before = [self.digest(path) for path in self.REAL_CONFIGS]
-        self.addCleanup(lambda: self.assertEqual(before, [self.digest(p) for p in self.REAL_CONFIGS],
-                                                 'the test changed the real ~/.claude.json or ~/.codex/config.toml'))
+        before = self.digests()
+        self.addCleanup(lambda: self.assertEqual(before, self.digests(),
+                                                 'the test changed the real ~/.claude.json mcpServers or ~/.codex/config.toml'))
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name).resolve()
