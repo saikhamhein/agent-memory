@@ -111,7 +111,7 @@ def toks(s): return set(re.findall(r"\w+", s.lower()))
 def task(ms, rev, q, project=""):
     c = [m for m in ms if live(m) and applies(m, project) and not m["meta"].get("pinned")]
     ts = terms(q)
-    fields = lambda m: toks(m["meta"]["title"]) | toks(" ".join(m["meta"]["tags"])) | toks(m["value"])
+    fields = lambda m: toks(m["meta"]["title"]) | toks(" ".join(m["meta"]["tags"])) | toks(m["value"] if m["kind"] != "projects" else "")
     if len(c) >= 4: ts = [t for t in ts if sum(t in fields(m) | toks(m["body"]) for m in c) * 2 <= len(c)]
     res = []
     for m in c:
