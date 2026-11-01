@@ -1,0 +1,7 @@
+# Memories matching "burmese font rendering" — revision 42
+
+### Burmese font fallback order for rendering mixed text [/topics/burmese/font-fallback-order.md]
+မြန်မာစာသား ပါသော စာမျက်နှာများတွင် Unicode ဖောင့်ကို ဦးစားပေးပါ။ Put a Myanmar-capable font before the Latin font in the stack, and test long syllable stacks for clipped marks.
+
+### Reply in Burmese script when the user writes Burmese [/global/burmese-reply-script.md]
+ဗမာစာဖြင့် မေးလျှင် ဗမာစာဖြင့်ပင် ပြန်ဖြေပါ။ ဘာသာပြန်ရာတွင် အဓိပ္ပာယ်ကို မပျက်စေပါနှင့်။ Use Unicode text only, never a legacy font encoding. Applies to every agent that reads the shared memory.

@@ -192,7 +192,7 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
   - Index lines fill whatever remains of `START_MAX`.
   - The rest become one `{dir} — {n} more` line per directory.
   - If those count lines don't fit either, they collapse into the single line `- {n} more memories not listed; full index: {mirror_dir}/INDEX.md`.
-  - Pinned blocks (≤4,000), plus the header and section headings (≤700), plus body blocks (≤3,000), leave at least 1,800 characters. The renderer first reserves room for the single collapse line, then fills index lines and count lines into the rest, so the bound holds at any store size.
+  - Pinned blocks (≤4,000), plus the header and section headings (≤700), plus body blocks (≤3,000), leave at least 1,800 characters. The renderer first reserves room for the single collapse line, then lists as many index lines as fit beside it, stopping at the first that doesn't. If the per-directory count lines for the rest also fit, they replace the collapse line. Otherwise the collapse line names the number of unlisted memories. Either way the bound holds at any store size.
 - **Exclusions:** tentative and expired memories never appear.
 - **Size:** everything except the index is independent of how many other memories the store holds.
 
@@ -605,22 +605,23 @@ The coordinator reviews these against §3.
    - `migrate --dry-run --pin keep-it-simple …` against a copy of a fresh `backup` of the live store. The coordinator and the architect review the report and settle the pinned set: `keep-it-simple` plus what fits in 4,000 characters;
    - a fresh-eyes review campaign and triage.
 3. **Cutover**, after the coordinator has the user's go in chat:
-   1. Record the master SHA.
+   1. Record the master SHA. Copy `~/.claude/hooks/agent-memory-recall.py` to `runtime/` first, because `update-local.sh` replaces it with a symlink.
    2. Merge to master.
    3. Run `update-local.sh`. It stops at the v1 guard.
-   4. Run `install-user.py --database …/memory.sqlite3 --migrate --pin …`.
-   5. Verify:
+   4. Run `install-user.py --database …/memory.sqlite3 --migrate --pin …`. It stops the service, backs up to `runtime/pre-v2-*.sqlite3`, migrates, installs and starts the service. If a step after the migration fails, the service stays stopped rather than running the old binary on a v2 database.
+   5. Run `update-local.sh` again. Now that the store is v2, it gets past the guard and installs the MCP adapter and the hook link, which the first run never reached.
+   6. Verify:
       - `status` (the memory count matches the pre-cutover store, and pinned characters are shown);
       - the hook output in a new Claude session (core present, about 10k characters fewer than today);
       - MCP `memory_recall` after an app restart;
       - `memory.py recall` as the Codex and DeepSeek loaders run it.
-   6. Copy `ops/daily-memory-dream.md` into the scheduled task. Copy rather than symlink: whether the scheduler follows a symlink is unverified.
+   7. Copy `ops/daily-memory-dream.md` into the scheduled task. Copy rather than symlink: whether the scheduler follows a symlink is unverified.
 4. **Rollback:**
    1. Stop the service.
    2. Set the migrated database aside.
    3. Restore the backup.
    4. Check out the recorded master SHA and run the old `install-user.py`.
-   5. Restore the old task prompt (`runtime/daily-memory-dream.SKILL.pre-*.md`).
+   5. Restore the old task prompt (`runtime/daily-memory-dream.SKILL.pre-*.md`) and the old hook file saved in step 3.1.
 
    Observations made after cutover stay in the set-aside copy; re-observe them by hand.
 
