@@ -23,10 +23,11 @@ BINARY = Path(os.environ.get('AGENT_MEMORY_BINARY') or SERVICE / 'target/release
 
 # role -> capabilities (design §4.1: reads need recall, writes to the live store need promote)
 ROLES = {
+    'agent-session': ['recall', 'observe'],  # client.json: the hook, loaders, MCP and the client's default
     'reader': ['recall'],
     'observer': ['observe'],
     'reviewer': ['recall', 'review'],
-    'admin': ['recall', 'observe', 'review', 'promote'],
+    'admin': ['recall', 'observe', 'review', 'promote'],  # maintainer.json: the daily dream only
 }
 NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -151,7 +152,8 @@ class Server:
         home = self.root / 'home'
         config = home / '.config' / 'agent-memory'
         config.mkdir(parents=True, exist_ok=True)
-        shutil.copy(self.config('reader'), config / 'client.json')
+        shutil.copy(self.config('agent-session'), config / 'client.json')
+        shutil.copy(self.config('admin'), config / 'maintainer.json')
         shutil.copy(self.root / 'server.toml', config / 'server.toml')
         env = {k: v for k, v in os.environ.items() if not k.startswith('AGENT_MEMORY')}
         env['HOME'] = str(home)
@@ -159,11 +161,28 @@ class Server:
 
     def client(self, *args, role='admin', env=None, binary=False, check=None):
         """Run service/client.py with this server's credential for `role`."""
-        result = subprocess.run([sys.executable, str(SERVICE / 'client.py'), '--config', str(self.config(role)),
-            *map(str, args)], capture_output=True, text=not binary, timeout=20, env=env)
+        config = [] if role is None else ['--config', str(self.config(role))]  # None: the client's default config
+        result = subprocess.run([sys.executable, str(SERVICE / 'client.py'), *config, *map(str, args)],
+                                capture_output=True, text=not binary, timeout=20, env=env)
         if check is True and result.returncode != 0:
             raise AssertionError(f'client {args}: {result.returncode} {result.stderr}')
         return result
+
+
+def repo_with_worktree(base: Path, env):
+    """A git checkout with a commit and a linked worktree beside it; returns (checkout, worktree), resolved."""
+    git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@t']
+    repo = (base / 'checkout').resolve()
+    worktree = repo.parent / 'worktree'
+    subprocess.run([*git, 'init', '-q', str(repo)], check=True, env=env)
+    subprocess.run([*git, '-C', str(repo), 'commit', '-q', '--allow-empty', '-m', 'x'], check=True, env=env)
+    subprocess.run([*git, '-C', str(repo), 'worktree', 'add', '-q', str(worktree)], check=True, env=env)
+    return repo, worktree
+
+
+def project_path(root, slug='rule'):
+    """The memory path whose scope is the project root `root` (§3.1)."""
+    return '/projects/' + '/'.join(Path(root).parts[1:]) + f'/{slug}.md'
 
 
 def start_server(case: unittest.TestCase) -> Server:

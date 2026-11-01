@@ -8,7 +8,7 @@ import subprocess
 import sys
 import unittest
 
-from service.tests.harness import start_server
+from service.tests.harness import project_path, start_server
 
 STUB = Path(__file__).resolve().parent / 'memory.py'
 CLIENT = STUB.parent / 'service' / 'client.py'
@@ -52,6 +52,22 @@ class StubTests(unittest.TestCase):
         self.assertEqual(result.stdout, self.run_client('recall').stdout + '\n' +
                          self.run_client('recall', '--query', 'zebrafish husbandry').stdout)
         self.assertFalse(root.exists())
+
+    def test_project_memories_are_printed_once(self):
+        root = '/home/sai/Projects/zebra'
+        self.server.seed(project_path(root, 'zebra-rule'), 'Zebrafish project rule', 'Zebrafish tanks here use RO water.')
+        out = self.run_stub('recall', '--project', root, '--query', 'zebrafish husbandry').stdout
+        self.assertEqual(out.count('### Zebrafish project rule'), 1)  # in the start view, not repeated in the task view
+        self.assertEqual(out.count('Zebrafish tanks here use RO water.'), 1)
+        self.assertIn('Zebrafish tanks need weekly water changes.', out)  # a match the start view lacks stays
+
+    def test_nothing_new_in_the_task_view_prints_only_the_start_view(self):
+        root = '/home/sai/Projects/zebra'
+        self.server.seed(project_path(root, 'axolotl-rule'), 'Axolotl care', 'Axolotls need cold water.')
+        result = self.run_stub('recall', '--project', root, '--query', 'axolotl')
+        start = self.run_client('recall', '--project', root).stdout
+        self.assertEqual(result.stdout, start)  # no blank line and no empty task view
+        self.assertEqual(result.stdout.count('Axolotls need cold water.'), 1)
 
     def test_start_view_and_client_label(self):
         result = self.run_stub('recall', '--client', 'session-start', '--project', '/home/sai/x')

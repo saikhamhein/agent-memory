@@ -1,6 +1,6 @@
 # Shared agent memory
 
-One local store of collaboration preferences and lessons, shared by Codex, Claude Code, DeepSeek Harness and other agents. A Rust service (`service/`) owns the SQLite database and is the only writer. Agents read through a hook or loader line, MCP tools, the `agent-memory-client` CLI, or read-only files. The agent does the thinking in a dream; the service keeps versions and checks preconditions. Memories are context, never permission.
+One local store of collaboration preferences and lessons, shared by Codex, Claude Code, DeepSeek Harness and other agents. A Rust service (`service/`) owns the SQLite database and is the only writer. Sessions read through a hook or loader line, MCP tools, the `agent-memory-client` CLI, or read-only files, and suggest changes as observations. Only a dream changes memories: the agent does the thinking, and the service keeps versions and checks preconditions. Memories are context, never permission.
 
 The design is [docs/design/managed-agents-alignment.md](docs/design/managed-agents-alignment.md). It follows Anthropic's Managed Agents [memory stores](https://platform.claude.com/docs/en/managed-agents/memory) and [dreams](https://platform.claude.com/docs/en/managed-agents/dreams), run locally.
 
@@ -50,19 +50,21 @@ Pass the canonical project root, the main checkout rather than a worktree. The h
 
 ## Capturing a lesson
 
-Ordinary sessions record candidates. Candidates are never recalled until a dream adopts them:
+Sessions never change memories; they record candidates, with MCP `memory_observe` or:
 
 ```sh
-agent-memory-client --config ~/.config/agent-memory/maintainer.json observe /global/check-evidence.md lesson.md
+agent-memory-client observe /global/check-evidence.md lesson.md
 ```
+
+A candidate is never recalled. The next dream checks it against the user's own words and keeps or drops it.
 
 Record explicit corrections and well-supported lessons, with evidence: provider, session, date, file:line, and a short sanitized quote. Agent interpretation isn't user evidence. Don't record credentials, private unrelated facts, task permissions or transient status; keep project state in the repository.
 
 ## Dreams
 
-A dream copies the live store into an output store, never changing its input. The agent edits that copy by path, reviews the diff, and adopts it. Adoption merges each memory and fails with 409 if live changed the same memory meanwhile. The procedure is [skill/dream-memory/SKILL.md](skill/dream-memory/SKILL.md). The daily scheduled run uses [ops/daily-memory-dream.md](ops/daily-memory-dream.md).
+Dreams use the maintenance credential, `agent-memory-client --config ~/.config/agent-memory/maintainer.json`. One dream runs at a time. It copies the live store into an output store, never changing its input. The agent reviews the whole store and the pending observations, edits that copy by path, checks the diff, and adopts it, or cancels when nothing changed. Adoption merges each memory and fails with 409 if live changed the same memory meanwhile. Adopting or canceling empties the output store. The procedure is [skill/dream-memory/SKILL.md](skill/dream-memory/SKILL.md). The daily scheduled run uses [ops/daily-memory-dream.md](ops/daily-memory-dream.md).
 
-To undo a change, write an old version back: `versions PATH` or `versions --created-by dream:<id>`, `cat memver_…`, then `write … --expected`. To remove a leaked secret from history, use `redact VERSION`.
+To undo a change, write an old version back with the maintenance credential: `versions PATH` or `versions --created-by dream:<id>`, `cat memver_…`, then `write … --expected`. To remove a leaked secret, write a clean version, then `redact` the old version (`memver_…`) or the observation id.
 
 ## Layout
 
