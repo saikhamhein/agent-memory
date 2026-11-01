@@ -1,7 +1,8 @@
-use agent_memory_server::{api, config::Config, model::hash, store::Store};
+use agent_memory_server::{api, config::Config, store::Store};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use uuid::Uuid;
+
+mod migrate;
 
 #[derive(Parser)]
 #[command(version, about = "Shared agent memory HTTP service")]
@@ -16,10 +17,21 @@ enum Command {
         #[arg(long)]
         config: PathBuf,
     },
-    /// Explicitly initialize a store, or migrate an existing store's journal mode.
+    /// Explicitly initialize an empty v2 store.
     Init {
         #[arg(long)]
         database: PathBuf,
+    },
+    /// Migrate a v1 store to v2 in one transaction. Run it with the service stopped.
+    Migrate {
+        #[arg(long)]
+        database: PathBuf,
+        /// Print the report and roll back.
+        #[arg(long)]
+        dry_run: bool,
+        /// Pin this slug's memory (repeatable).
+        #[arg(long = "pin", value_name = "SLUG")]
+        pins: Vec<String>,
     },
     /// Make a consistent SQLite backup. Refuses to overwrite the output.
     Backup {
@@ -28,8 +40,6 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Generate an API token and the SHA256 value to place in server configuration.
-    Token,
     /// Validate configuration and database access without listening.
     Check {
         #[arg(long)]
@@ -44,25 +54,27 @@ async fn main() -> anyhow::Result<()> {
             Store::init(&database)?;
             println!("Store initialized");
         }
+        Command::Migrate {
+            database,
+            dry_run,
+            pins,
+        } => {
+            let report =
+                migrate::migrate(&database, &database.with_file_name("mnt"), &pins, dry_run)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         Command::Backup { database, output } => {
             Store::backup(&database, &output)?;
             println!("Backup complete: {}", output.display());
         }
-        Command::Token => {
-            let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-            println!(
-                "{}",
-                serde_json::json!({"token":token,"sha256":hash(token.as_bytes())})
-            );
-        }
         Command::Check { config } => {
             let config = Config::load(&config)?;
-            let store = Store::open(&config.database)?;
+            let store = Store::open(&config.database, &config.mount_dir())?;
             println!("{}", store.status()?);
         }
         Command::Serve { config } => {
             let config = Config::load(&config)?;
-            let store = Store::open(&config.database)?;
+            let store = Store::open(&config.database, &config.mount_dir())?;
             let listener = tokio::net::TcpListener::bind(config.listen).await?;
             eprintln!(
                 "agent-memory-server {} listening on {}",
