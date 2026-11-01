@@ -363,7 +363,7 @@ Review 3 (`review-security-api-simplicity.md` in the shared notes) found these a
 | `project_id`, `[projects]`, `--project-id` | Remove. No caller sends them. | (b) |
 | `mount` config key | Remove. The mirror is always `<database dir>/mnt`, and the hook's lookup gets simpler. | (b) |
 | `/healthz` | Remove. `/v1/status` covers it; the harness switches. | (c) later |
-| S2 extra: refuse adopting a new pinned memory that comes only from observations | Not a store rule. If the user wants pinned changes to need their request, it belongs in the dream prompt. | Ask the user (product); the policy note in §3.5 covers reporting now |
+| S2 extra: refuse adopting a new pinned memory that comes only from observations | No store rule. The dream may change pinned memories, but only on the evidence of the user's own words, and it reports every such change (§3.5). | Settled 2026-11-01 by the coordinator under the user's standing instruction that dreams run fully autonomously |
 
 Everything else in Review 3 is implementation or later: S1 is the threat model, now written in §3.4; L1–L8 and the rest of the simplicity list change no contract.
 
