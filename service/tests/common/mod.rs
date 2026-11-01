@@ -1,5 +1,8 @@
 //! Shared helpers for the v2 store tests (workstream A owns this file).
 //!
+//! - `SealedTempDir`: a temporary directory that makes a sealed (0555/0444) tree
+//!   deletable on drop. Use it instead of a bare `TempDir` for anything that holds
+//!   a mirror; `assert_no_leftovers` proves it left nothing behind.
 //! - `TempStore`: a v2 database plus a temporary `mnt`, removed on drop.
 //! - `content` / `frontmatter` / `render`: valid memory bytes (§3.1 file format).
 //! - `seed`: create a memory through the public API; `seed_raw` bulk-inserts rows
@@ -28,16 +31,56 @@ use tempfile::TempDir;
 
 pub const ACTOR: &str = "token:test";
 
+/// A `TempDir` whose tree is made writable again before it is deleted. The mirror is
+/// read-only (0555 directories), and `TempDir` alone cannot remove it: it would leak
+/// the directory silently on every passing run.
+pub struct SealedTempDir(Option<TempDir>);
+
+impl SealedTempDir {
+    pub fn new() -> Self {
+        Self(Some(TempDir::new().unwrap()))
+    }
+    pub fn path(&self) -> &Path {
+        self.0.as_ref().unwrap().path()
+    }
+}
+
+impl Drop for SealedTempDir {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.take() {
+            make_writable(dir.path());
+            // `TempDir::drop` ignores errors; report a failed removal instead.
+            let path = dir.path().to_owned();
+            if let Err(e) = dir.close() {
+                eprintln!("could not remove {}: {e}", path.display());
+            }
+        }
+    }
+}
+
+/// Fail if `dir` exists and has anything in it. Use it with the path of a dropped
+/// `SealedTempDir`, or with a fresh `TMPDIR` at the end of a suite run: a leak is a failure.
+pub fn assert_no_leftovers(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return; // gone
+    };
+    let left: Vec<_> = entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(left.is_empty(), "{} was left with {left:?}", dir.display());
+}
+
 pub struct TempStore {
     pub store: Store,
     pub db: PathBuf,
     pub mnt: PathBuf,
-    dir: TempDir,
+    dir: SealedTempDir,
 }
 
 impl TempStore {
     pub fn new() -> Self {
-        let dir = TempDir::new().unwrap();
+        let dir = SealedTempDir::new();
         let db = dir.path().join("memory.sqlite3");
         let mnt = dir.path().join("mnt");
         Store::init(&db).unwrap();
@@ -68,13 +111,6 @@ impl TempStore {
     }
     pub fn path(&self) -> &Path {
         self.dir.path()
-    }
-}
-
-impl Drop for TempStore {
-    fn drop(&mut self) {
-        // The mirror is read-only (0555 directories); TempDir could not remove it.
-        make_writable(&self.mnt);
     }
 }
 
