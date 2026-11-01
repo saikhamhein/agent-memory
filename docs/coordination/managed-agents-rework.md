@@ -52,6 +52,7 @@ Reports:
   4. last dream time from `GET /v1/dreams`, and an id-level diff summary;
   5. maintenance via the CLI with files, which PR 18 already settles;
   6. the task prompt hard-codes v1, so the cutover must copy `ops/daily-memory-dream.md` into the task in the same step (design §5 step 8).
+  Items 1 and 2 must land in `ops/daily-memory-dream.md` and the skill before cutover, so the cutover carries them.
   Live task: `daily-memory-dream` at 05:25 local, prompt `~/.claude/scheduled-tasks/daily-memory-dream/SKILL.md`.
 
 Then a fresh triage lead classes the findings: (a) fix before release, (b) small fix, (c) later.
