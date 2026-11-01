@@ -186,11 +186,26 @@ static SECRETS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,})\b",
         r"(?i)[?&](?:x-amz-signature|access_token|api_key|password|pwd)=[^\s&]+",
         r#"(?i)\b(?:password|api[_ -]?key|secret[_ -]?key)\s*[:=]\s*["']?[A-Za-z0-9/+_.-]{8,}"#,
+        r"\bxox[abposr]-[A-Za-z0-9-]{10,}",
+        r"\bAIza[0-9A-Za-z_-]{35}",
+        r"\bgithub_pat_[A-Za-z0-9_]{20,}",
+        r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+        r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{20,}",
+        r#"(?i)(?:key|token|secret)[\w-]*["']?\s*[:=]\s*["']?[0-9a-f]{64}\b"#,
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
     .collect()
 });
+
+/// Refuses text that looks like a credential. Every string the store keeps
+/// passes through it.
+pub fn check_secrets(text: &str) -> Result<()> {
+    if SECRETS.iter().any(|r| r.is_match(text)) {
+        return Err(invalid("Possible credential; remove it before saving"));
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -263,6 +278,10 @@ pub fn validate_path(path: &str) -> Result<Scope> {
         .filter(|s| SLUG.is_match(s))
         .ok_or_else(|| bad("the name must be <slug>.md with slug [a-z0-9][a-z0-9-]{0,79}"))?;
     let middle = &segments[1..segments.len() - 1];
+    if middle.iter().any(|s| s.ends_with(".md")) {
+        // A file and a directory of the same name could never both be mirrored.
+        return Err(bad("only the last segment may end in .md"));
+    }
     let (kind, value) = match (segments[0], middle.len()) {
         ("global", 0) => (Kind::Global, String::new()),
         ("projects", 1..) => (Kind::Project, format!("/{}", middle.join("/"))),
@@ -281,17 +300,23 @@ pub fn validate_path(path: &str) -> Result<Scope> {
     })
 }
 
-/// Splits `---\n<JSON>\n---\n<body>` and applies every write rule.
-pub fn parse(path: &str, content: &str) -> Result<Memory> {
-    let scope = validate_path(path)?;
-    if content.len() > MAX_CONTENT {
-        return Err(invalid("Content exceeds 102400 bytes"));
-    }
+/// Splits `---\n<JSON>\n---\n<body>` into the decoded frontmatter and the body.
+pub fn split(content: &str) -> Result<(Value, &str)> {
     let (front, body) = content
         .strip_prefix("---\n")
         .and_then(|rest| rest.split_once("\n---\n"))
         .ok_or_else(|| invalid("Content must start with ---\\n<JSON object>\\n---\\n"))?;
     let meta = decode(front).map_err(|_| invalid("Frontmatter must be a JSON object"))?;
+    Ok((meta, body))
+}
+
+/// Splits the content and applies every write rule.
+pub fn parse(path: &str, content: &str) -> Result<Memory> {
+    let scope = validate_path(path)?;
+    if content.len() > MAX_CONTENT {
+        return Err(invalid("Content exceeds 102400 bytes"));
+    }
+    let (meta, body) = split(content)?;
     let fields = meta
         .as_object()
         .ok_or_else(|| invalid("Frontmatter must be a JSON object"))?;
@@ -361,11 +386,7 @@ pub fn parse(path: &str, content: &str) -> Result<Memory> {
     if body.trim().is_empty() {
         return Err(invalid("The body must not be empty"));
     }
-    if SECRETS.iter().any(|r| r.is_match(content)) {
-        return Err(invalid(
-            "Possible credential in memory; remove it before saving",
-        ));
-    }
+    check_secrets(content)?;
     Ok(Memory {
         id: String::new(),
         path: path.to_owned(),
