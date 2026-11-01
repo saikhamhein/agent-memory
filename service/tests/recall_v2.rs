@@ -1516,6 +1516,24 @@ fn project_words_do_not_match() {
             "fixture query {q:?}"
         );
     }
+    // topic and role names stay searchable: a topic memory with no "hardware" in its title, tags
+    // or body still matches the query "hardware"
+    let mut t = Store::new();
+    t.add(
+        "/topics/hardware/bench.md",
+        "Bench routine",
+        "Measure with a meter first.",
+        json!({}),
+    );
+    for i in 0..6 {
+        t.add(
+            &format!("/global/f-{i}.md"),
+            &format!("Filler entry {i}"),
+            &format!("Plain body {i}."),
+            json!({}),
+        );
+    }
+    assert_eq!(t.task("hardware").returned, ["/topics/hardware/bench.md"]);
     // topic and role names stay searchable (match_rule covers a topic; a role here)
     assert_eq!(
         f.recall(AM, "", &[], "coordinator").returned.len(),
