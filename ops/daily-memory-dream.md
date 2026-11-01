@@ -20,7 +20,7 @@ Never end the run with proposals, suggested changes or questions for the user. I
 Out of scope, don't touch: git repositories, CLAUDE.md, AGENTS.md, skills, settings, hooks, services, other sessions, hardware, network, and anything outside the memory store. When a lesson is about an instruction file's wording, fix the matching memory instead and report it as done.
 
 ## Last run
-"Since the last dream" means since the `ended_at` of the newest dream that has one, in `agent-memory-client --config ~/.config/agent-memory/maintainer.json dream show` (newest first). A dream still `running` there is a run that died; the cycle cancels it. If there is none yet, use `sqlite3 -readonly /home/sai/Projects/agent-memory/memory.sqlite3 "select created from dreams order by created desc limit 1"`.
+"Since the last dream" means since the `ended_at` of the newest dream that has one, in `agent-memory-client --config ~/.config/agent-memory/maintainer.json dream show` (newest first). A dream still `running` there is handled by the stale-dream rule in the skill's step 4. If there is none yet, use `sqlite3 -readonly /home/sai/Projects/agent-memory/memory.sqlite3 "select created from dreams order by created desc limit 1"`.
 
 ## Report
 Short, past tense, for a phone; no questions, no "proposed" or "suggested" items:

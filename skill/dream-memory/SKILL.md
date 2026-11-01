@@ -34,7 +34,7 @@ Only the daily scheduled dream, or a dream the user asks for, runs this. It uses
    ```sh
    agent-memory-client --config ~/.config/agent-memory/maintainer.json dream start --sessions /home/sai/Projects/agent-memory/sources/changed-sessions.json
    ```
-   It copies the live store into a new output store (`output_store_id`) and freezes the pending observations into the dream. A 409 `dream_running` means an earlier run died: its id is in `paths`. Cancel it (step 8), then start again.
+   It copies the live store into a new output store (`output_store_id`) and freezes the pending observations into the dream. A 409 `dream_running` means an earlier run died or another dream is in progress; its id is in `paths`. Show it with `agent-memory-client --config ~/.config/agent-memory/maintainer.json dream show ID`. If it started more than an hour ago, cancel it (step 8) and start again. Otherwise stop and report that a dream is already running.
 5. **Weigh the observations.** `agent-memory-client --config ~/.config/agent-memory/maintainer.json dream show DREAM_ID` lists them as `{id, created, body: {path, content, created_by}}`. They aren't in the output store.
    - Ones with `created_by` `token:agent-session` came from ordinary sessions: suggestions, not evidence. Check each one's evidence locator against the user's own words in that transcript.
    - Keep one by writing it into the output store, on its own or merged into an existing memory.
