@@ -25,7 +25,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 | Architect | `local_b602e858-1cf0-40c9-a15d-c78a09d3e1e3` (architect) | PR 6 rev 3 merged @ c9b48a3; reviews workstream PRs |
 | Engineer A (store + mirror) | `local_f7b57f17-4e91-4996-ba3b-3fddbd222144` | PR 11 merged |
 | Test engineer A | `local_c79accd0-cf18-4ce5-9f59-86e28b10f1a7` | `rework/tests-a` @ `f565521`: 19 tests, 19/19 on engineer WIP, 6 mutants caught; told to adopt PR 10 block_len |
-| Engineer R (recall) | `local_6158a6a3-f625-44c2-9401-7a559884a564` | PR 9 approved; merged with A locally at ea38c32 (43 pass); push blocked by its permission check — waiting on user |
+| Engineer R (recall) | `local_6158a6a3-f625-44c2-9401-7a559884a564` | PR 9 merged |
 | Test engineer R | `local_88b6d74f-ee66-441e-a12a-cb3df7e5719c` | `rework/tests-r` @ `30114e5`: 19 tests, PR 10 block_len adopted |
 | Engineer H (HTTP API) | `local_a320fa63-05c9-4d9a-9f6a-ebad5ce08624` | PR 14 approved at e548fe2 (draft); reruns after R |
 | Test engineer H | `local_7a6bae6a-f710-4da7-a17d-ba7c2ff467f9` | `rework/tests-h` @ `0a70203`: encodes the architect rulings; fails to compile on the integration head as intended |
@@ -36,6 +36,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Merged
 
+- PR 9 (WS-R recall) → `rework/managed-agents-v2` `ef2f07e`. Coordinator reviewed R's blocked local commit, merged in PR 16, re-ran 43 tests + clippy + fmt, pushed as `0ffb46a`, merged.
 - PR 11 (WS-A store core + mirror, architect-approved at 529c2d5) → `rework/managed-agents-v2` `76e85fd`. Coordinator check on the merged result: 23 Rust tests pass, clippy -D warnings and fmt clean; placeholders for recall.rs/api.rs/main.rs labelled with owners. Python suites are expected red until C.
 - PR 16 (cutover: save the old hook to runtime/ first; rerun update-local.sh after --migrate; doc only) → `rework/managed-agents-v2`.
 - PR 13 (index lines still fill beside the collapse line; doc only) → `rework/managed-agents-v2`.
@@ -56,10 +57,10 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 - PR 6 review: (1) `start` must load only an always-load core + project + requested scopes in full, plus a one-line index of everything else; tests for core never cut and bounded output; (2) don't merge `feat/recall-on-demand` first, cut the integration branch from master; (3) KISS: one recall renderer (Rust), drop dream `instructions`, justify or cut the store list, `kind` and symlink generations; (4) writes only through the service, settled by the coordinator.
 - Architect ruling (no contract change): A's PR may carry owner-labelled placeholders `recall.rs` (R), `api.rs` cut to `/healthz` + `/v1/status` (H), `main.rs` cut to init/serve/backup/check (M); owners replace them wholesale. A must not touch `config.rs`, and the integration branch must build and pass `cargo test` at A's head. On merge: check placeholders are labelled and the integration head builds.
 - Coordinator ruling: test-M `replays_history` expects 6 versions, not 7 (its own lineages sum to 6). Corrects an arithmetic error; loosens nothing.
+- 2026-11-01 user: repo authority was granted at session start; the coordinator reviews and pushes or merges a teammate's blocked commit itself and does not ask. Memory revision 11 (`coordinate-a-team-playbook` item 10).
 
 ## Blockers
 
-- R's push of ea38c32 and un-drafting PR 9 were blocked by that session's permission check; needs the user's approval there. Not routed around.
 - Review campaign note: test-C's 28 tests passed first try; the fresh-eyes review should mutation-check them.
 - Architect session's outgoing messaging paused again (2026-11-01, second time); rulings for H/test-H and the PR 10 notice undelivered. Needs the user to resume it there. The coordinator does not relay around the pause.
 - Proposed card `task_8b1e5f32`: text-only MCP recall quick win on master.
