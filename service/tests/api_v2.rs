@@ -167,7 +167,7 @@ impl Fx {
 }
 
 fn review() -> Value {
-    json!({"summary": "Test adoption", "coverage": "Fixtures only", "conflicts": [], "reviewed": true})
+    json!({"summary": "Test adoption", "coverage": "Fixtures only", "conflicts": []})
 }
 
 async fn call(
@@ -313,7 +313,6 @@ async fn capability_matrix() {
             .as_str()
             .unwrap()
             .to_owned();
-        let d1 = fx.dream().await["id"].as_str().unwrap().to_owned();
         let d2 = fx.dream().await;
         let (d2_id, out) = (
             d2["id"].as_str().unwrap().to_owned(),
@@ -415,13 +414,6 @@ async fn capability_matrix() {
                 Need::Review,
             ),
             (
-                "dream start",
-                "POST",
-                "/v1/dreams".into(),
-                json!({"sessions": []}),
-                Need::Review,
-            ),
-            (
                 "output list",
                 "GET",
                 format!("{o}/memories"),
@@ -470,15 +462,39 @@ async fn capability_matrix() {
                 json!({}),
                 Need::Review,
             ),
+            // One dream runs at a time (X10): start follows cancel, and adopt
+            // takes whichever dream is then running (d2, or the one just started).
+            (
+                "dream start",
+                "POST",
+                "/v1/dreams".into(),
+                json!({"sessions": []}),
+                Need::Review,
+            ),
             (
                 "dream adopt",
                 "POST",
-                format!("/v1/dreams/{d1}/adopt"),
+                "/v1/dreams/{running}/adopt".into(),
                 review(),
                 Need::Promote,
             ),
         ];
         for (name, method, path, body, need) in ops {
+            let path = if path.contains("{running}") {
+                let dreams = fx.ok("GET", "/v1/dreams", Value::Null).await;
+                let running = dreams["data"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|d| d["status"] == "running")
+                    .expect("one dream is running")["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned();
+                path.replace("{running}", &running)
+            } else {
+                path
+            };
             let (code, response) = fx.call(method, &path, token, body).await;
             if caps.contains(&need.cap()) {
                 assert_eq!(
@@ -1241,6 +1257,9 @@ async fn error_mapping_dream_conflicts() {
     // The output store is still writable while the dream runs.
     fx.update(&out, &b_id, &content("Beta dream", "still writable"))
         .await;
+    // One dream runs at a time (X10): cancel it before the next start.
+    fx.ok("POST", &format!("/v1/dreams/{d_id}/cancel"), json!({}))
+        .await;
 
     // adopt_conflict on an added path both sides created.
     let d = fx.dream().await;
@@ -1301,7 +1320,8 @@ async fn error_mapping_dream_conflicts() {
         StatusCode::OK
     );
 
-    // observations_consumed: two dreams share one pending observation; the second adopt is refused.
+    // X10 removed observations_consumed: a second dream cannot start while the first
+    // runs, so two dreams can no longer share one pending observation.
     let fx = Fx::new();
     fx.ok(
         "POST",
@@ -1310,27 +1330,18 @@ async fn error_mapping_dream_conflicts() {
     )
     .await;
     let first = fx.dream().await;
-    let second = fx.dream().await;
     assert_eq!(
         first["observations"].as_array().unwrap().len(),
         1,
         "ASSUMPTION: `observations` is a list"
     );
-    assert_eq!(second["observations"].as_array().unwrap().len(), 1);
-    let (first_id, second_id) = (
-        first["id"].as_str().unwrap().to_owned(),
-        second["id"].as_str().unwrap().to_owned(),
-    );
+    let first_id = first["id"].as_str().unwrap().to_owned();
+    let second = fx
+        .call("POST", "/v1/dreams", "admin", json!({"sessions": []}))
+        .await;
+    assert_conflict(&second, "dream_running", Some(&[first_id.as_str()]));
     assert_eq!(fx.adopt("admin", &first_id).await.0, StatusCode::OK);
-    let consumed = fx.adopt("admin", &second_id).await;
-    assert_eq!(consumed.0, StatusCode::CONFLICT, "{}", consumed.1);
-    assert_eq!(consumed.1["type"], "observations_consumed");
     assert_eq!(fx.status().await["observations_pending"], 0);
-    assert_eq!(
-        fx.ok("GET", &format!("/v1/dreams/{second_id}"), Value::Null)
-            .await["status"],
-        "running"
-    );
 
     // store_archived after a successful adopt as well.
     let out = first["output_store_id"].as_str().unwrap();
@@ -1503,17 +1514,19 @@ async fn error_mapping_bad_requests() {
         StatusCode::BAD_REQUEST
     );
     let hundred: Vec<_> = (0..100).map(session).collect();
-    assert_eq!(
-        fx.call("POST", "/v1/dreams", "admin", json!({"sessions": hundred}))
-            .await
-            .0,
-        StatusCode::OK
-    );
-    // Adopt review gates, "the same gates as today's promote": reviewed, coverage, resolved conflicts.
+    let (code, started) = fx
+        .call("POST", "/v1/dreams", "admin", json!({"sessions": hundred}))
+        .await;
+    assert_eq!(code, StatusCode::OK);
+    // One dream runs at a time (X10): cancel it before the next start.
+    let started = started["id"].as_str().unwrap();
+    fx.ok("POST", &format!("/v1/dreams/{started}/cancel"), json!({}))
+        .await;
+    // Adopt review gates: no reviewed key (X14), coverage, summary, resolved conflicts.
     let d = fx.dream().await;
     let d_id = d["id"].as_str().unwrap();
     for (name, patch) in [
-        ("not reviewed", json!({"reviewed": false})),
+        ("removed reviewed key", json!({"reviewed": false})),
         ("empty coverage", json!({"coverage": ""})),
         ("empty summary", json!({"summary": ""})),
         (
@@ -2845,4 +2858,70 @@ fn api_v2_leaves_nothing_in_tmpdir() {
         status.success(),
         "the inner run of the suite failed: {status}"
     );
+}
+
+/// X10: at most one dream runs; a second start is 409 `dream_running` whose `paths` is the
+/// running dream's id. Canceling or adopting the stale one frees the slot.
+/// X7: `?diff=true` works only while the dream is running; afterwards it is 400.
+#[tokio::test]
+async fn error_mapping_dream_running() {
+    let fx = Fx::new();
+    let first = fx.dream().await;
+    let first_id = first["id"].as_str().unwrap().to_owned();
+    for token in ["admin", "reviewer"] {
+        let again = fx
+            .call("POST", "/v1/dreams", token, json!({"sessions": []}))
+            .await;
+        assert_conflict(&again, "dream_running", Some(&[first_id.as_str()]));
+    }
+    assert_eq!(fx.status().await["dreams_running"], 1);
+    assert_eq!(
+        fx.call(
+            "GET",
+            &format!("/v1/dreams/{first_id}?diff=true"),
+            "admin",
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    fx.ok("POST", &format!("/v1/dreams/{first_id}/cancel"), json!({}))
+        .await;
+    assert_invalid(
+        &fx.call(
+            "GET",
+            &format!("/v1/dreams/{first_id}?diff=true"),
+            "admin",
+            Value::Null,
+        )
+        .await,
+        "",
+    );
+    let second = fx.dream().await;
+    let second_id = second["id"].as_str().unwrap().to_owned();
+    assert_conflict(
+        &fx.call("POST", "/v1/dreams", "admin", json!({"sessions": []}))
+            .await,
+        "dream_running",
+        Some(&[second_id.as_str()]),
+    );
+    assert_eq!(fx.adopt("admin", &second_id).await.0, StatusCode::OK);
+    assert_invalid(
+        &fx.call(
+            "GET",
+            &format!("/v1/dreams/{second_id}?diff=true"),
+            "admin",
+            Value::Null,
+        )
+        .await,
+        "",
+    );
+    // A finished dream's record is still readable without the diff.
+    assert_eq!(
+        fx.ok("GET", &format!("/v1/dreams/{second_id}"), Value::Null)
+            .await["status"],
+        "completed"
+    );
+    fx.dream().await;
 }
