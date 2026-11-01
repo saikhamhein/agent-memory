@@ -77,7 +77,7 @@ Triage: 47 findings, 7 (a), 24 (b), 16 (c), in `docs/coordination/v2-review-tria
 
 | WS | Engineer | Test engineer | Test branch |
 | --- | --- | --- | --- |
-| A store + mirror | eng A | test A | `rework/tests-fix-a` |
+| A store + mirror | eng A | test A | `rework/tests-fix-a` @ `d39084d` (12 of 28 failing as intended; 28/28 with scratch fixes) |
 | H API + config | eng H | test H | `rework/tests-fix-h` @ `5c81ac4` (6 failing on 1b7abfe) |
 | H recall part | eng R | test R | `rework/tests-fix-r` |
 | M migration + install | eng M | test M | `rework/tests-fix-m` @ `0337498` (6 install + 1 migrate failing on 1b7abfe) |
@@ -121,6 +121,8 @@ Merge order: A → H and R → M → C. Removed request keys are rejected with 4
 - Coordinator ruling on S2 (should pinned changes need the user's request?): no. The user's standing instruction is that dreams run fully autonomously and never leave proposals for approval. So the daily dream may change pinned memories only on evidence of the user's own words, and reports every pinned change (§3.5).
 - Architect ruling: A's fix PR carries the minimal edits to 7 api_v2 tests that send `reviewed` or start a second dream, so the integration branch stays green at A's head.
 - Sent after the user's message: test C's brief (with PR 21–23 rulings) and the test M ruling (a pre-commit failure restores the old service and re-enables the unit).
+- Coordinator ruling: `PRAGMA secure_delete = ON` on every store connection, plus a test that a redacted secret is gone from the file bytes. No VACUUM.
+- 2026-11-01: the user is concerned about size and complexity. Asked: finish the fixes then cut the coral features (dream copy-and-merge, history replay), or keep only the recall fix. Awaiting their answer.
 
 ## Blockers
 
