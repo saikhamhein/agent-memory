@@ -45,6 +45,17 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 Reports:
 - Review 3 done: 1 blocker (default MCP install registers the maintainer token for every session, so any injected session can write, delete, redact or adopt live memory), 7 should-fix, 8 later, 14 removable items. File: `/tmp/claude-1000/-home-sai-Projects-agent-memory--claude-worktrees-sleepy-antonelli-01c285/ec71ef4b-fcb2-4f2d-9792-397bfe038dc0/scratchpad/review-security-api-simplicity.md`, with a copy in the shared notes folder. The coordinator found the same blocker independently and asked the user whether ordinary sessions should be read-and-suggest only.
 
+- Review 1 done (store, migration, data safety). File in the shared notes folder: `review-store-migration/`.
+  - Should-fix, borderline blocker: migrate can commit and still exit non-zero, and the installer then restarts the old v1 binary on a v2 database (F1).
+  - Should-fix: a file and directory pair wedges the mirror (F2); redact can't reach dream output stores (F3).
+  - Later: 7 smaller items.
+  - Mutations: 17 of 22 caught. Missed: migration self-check, EXCLUSIVE→DEFERRED, previous generation deleted at once, same-revision rebuild, is_current ignoring INDEX.md.
+- Review 2 done (recall, clients, hook end to end): `review-recall-agent-surface.md` in the shared notes folder. Unrelated queries return nothing; the pinned core is always present; the hook stays under 10,000 characters (9,420 at 350 memories). Should-fix:
+  - MCP recall drops project memories unless `project` is passed (F1);
+  - Codex worktrees get no project memories (F2);
+  - observations are silently consumed (F6);
+  - plus F4, F7, F10–F13.
+- Coordinator finding: Rust tests leak their TempDirs, because the mirror is 0444 inside 0555 directories, so drop can't delete them. About 2,000 dirs (4.9 GB) piled up in /tmp, and /tmp hit 100%. Review 1 reran with TMPDIR on disk; results from that window may be invalid. Fix: the test helper unseals before drop.
 - Dream handover from session `local_75db75dc-b488-4b0b-ba64-59e58d5c83fd` (2026-11-01; it had not seen the v2 work, so the user said to weigh it with caution). Items for triage:
   1. the skill owns the procedure, and the task prompt keeps only run specifics (authorization, out of scope, quiet day, recall-usage check, report);
   2. review the full memory set every run, and adopt only when something changes;
@@ -91,6 +102,8 @@ Then a fresh triage lead classes the findings: (a) fix before release, (b) small
 
 ## Blockers
 
+- /tmp cleanup of the leaked test dirs and the idle sessions' build caches was denied by the auto-mode classifier (shared scratch sweep). Left for the user.
+- The triage lead can only be started from a message the user types in the desktop app.
 - Review campaign note: test-C's 28 tests passed first try; the fresh-eyes review should mutation-check them.
 - Architect session's outgoing messaging paused again (2026-11-01, second time); rulings for H/test-H and the PR 10 notice undelivered. Needs the user to resume it there. The coordinator does not relay around the pause.
 - Proposed card `task_8b1e5f32`: text-only MCP recall quick win on master.
