@@ -78,9 +78,9 @@ Triage: 47 findings, 7 (a), 24 (b), 16 (c), in `docs/coordination/v2-review-tria
 | WS | Engineer | Test engineer | Test branch |
 | --- | --- | --- | --- |
 | A store + mirror | eng A | test A | `rework/tests-fix-a` |
-| H API + config | eng H | test H | `rework/tests-fix-h` |
+| H API + config | eng H | test H | `rework/tests-fix-h` @ `5c81ac4` (6 failing on 1b7abfe) |
 | H recall part | eng R | test R | `rework/tests-fix-r` |
-| M migration + install | eng M | test M | `rework/tests-fix-m` |
+| M migration + install | eng M | test M | `rework/tests-fix-m` @ `0337498` (6 install + 1 migrate failing on 1b7abfe) |
 | C clients, hook, dream docs | eng C | test C | `rework/tests-fix-c` |
 
 Merge order: A → H and R → M → C. Removed request keys are rejected with 400. The stale-dream rule is the architect's call.
@@ -122,6 +122,10 @@ Merge order: A → H and R → M → C. Removed request keys are rejected with 4
 
 ## Blockers
 
+- Waiting for the user's next message to resume cross-session messages. Queued sends:
+  - test C: its fix-round brief (WS-C tests per the triage, branch `rework/tests-fix-c`);
+  - test H: its open questions are settled by PR 22 (redact returns `{id, created, body}`) and PR 21 (removed keys give 400); X19 is on test R's branch;
+  - test M: ruling on point 1, that a pre-commit failure restarts the old service and re-enables the unit, i.e. back to the prior state, as the test assumes.
 - Test engineer C's fix-round brief was not delivered: the app pauses cross-session messages after 10 in a row with no user message. Resend it after the user's next message.
 - Review campaign note: test-C's 28 tests passed first try; the fresh-eyes review should mutation-check them.
 - Architect session's outgoing messaging paused again (2026-11-01, second time); rulings for H/test-H and the PR 10 notice undelivered. Needs the user to resume it there. The coordinator does not relay around the pause.
