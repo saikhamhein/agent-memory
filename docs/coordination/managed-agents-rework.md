@@ -65,6 +65,7 @@ Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `
 
 ## Blockers
 
+- Review sessions not started: the app starts sessions only on a message typed in the desktop app, and the user is on Remote Control. Planned reviewers: (1) store, migration and data safety; (2) recall, clients and hook end to end; (3) security, API surface and simplicity. Each mutation-checks the tests; then a fresh triage lead.
 - Review campaign note: test-C's 28 tests passed first try; the fresh-eyes review should mutation-check them.
 - Architect session's outgoing messaging paused again (2026-11-01, second time); rulings for H/test-H and the PR 10 notice undelivered. Needs the user to resume it there. The coordinator does not relay around the pause.
 - Proposed card `task_8b1e5f32`: text-only MCP recall quick win on master.
