@@ -71,8 +71,23 @@ Reports:
 
 Then a fresh triage lead classes the findings: (a) fix before release, (b) small fix, (c) later.
 
+## Fix round (started 2026-11-01, from triage PR 20)
+
+Triage: 47 findings, 7 (a), 24 (b), 16 (c), in `docs/coordination/v2-review-triage.md`. The architect writes one contract PR. Pairs reuse the existing sessions:
+
+| WS | Engineer | Test engineer | Test branch |
+| --- | --- | --- | --- |
+| A store + mirror | eng A | test A | `rework/tests-fix-a` |
+| H API + config | eng H | test H | `rework/tests-fix-h` |
+| H recall part | eng R | test R | `rework/tests-fix-r` |
+| M migration + install | eng M | test M | `rework/tests-fix-m` |
+| C clients, hook, dream docs | eng C | test C | `rework/tests-fix-c` |
+
+Merge order: A → H and R → M → C. Removed request keys are rejected with 400. The stale-dream rule is the architect's call.
+
 ## Merged
 
+- PR 20 (triage) → `rework/managed-agents-v2` `1b7abfe`.
 - PR 17 (WS-C clients, MCP, hook, stub, skill, docs) → `rework/managed-agents-v2`. Coordinator check at head d4633e6 with a release build: 33 Python tests (28 C + 5 install), 79 Rust tests; live service untouched. All five workstreams are merged.
 - PR 15 (WS-M migration + install) → `rework/managed-agents-v2`. Coordinator check at head 4b243e4 (release): 79 Rust tests, 5 install tests (sandboxed HOME, fake systemctl), clippy and fmt clean; M's files unchanged since the architect's 4445976 approval; live service untouched.
 - PR 14 (WS-H HTTP API) → `rework/managed-agents-v2` `8fbb862`. Coordinator check at head 1eeb4eb: 64 Rust tests, clippy and fmt clean; api.rs/config.rs unchanged since the architect's e548fe2 approval.
@@ -105,6 +120,7 @@ Then a fresh triage lead classes the findings: (a) fix before release, (b) small
 
 ## Blockers
 
+- Test engineer C's fix-round brief was not delivered: the app pauses cross-session messages after 10 in a row with no user message. Resend it after the user's next message.
 - Review campaign note: test-C's 28 tests passed first try; the fresh-eyes review should mutation-check them.
 - Architect session's outgoing messaging paused again (2026-11-01, second time); rulings for H/test-H and the PR 10 notice undelivered. Needs the user to resume it there. The coordinator does not relay around the pause.
 - Proposed card `task_8b1e5f32`: text-only MCP recall quick win on master.
