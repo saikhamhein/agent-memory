@@ -4,6 +4,17 @@ Goal (user, 2026-11-01): rework this repository's memory store and dream workflo
 
 Coordinator: session in worktree `managed-agents-memory-dreams-622f97` (branch `claude/managed-agents-memory-dreams-622f97`). Coordinates only; teammates implement. Teammates send the coordinator an approved PR number and head SHA; the coordinator merges.
 
+## Resume here (read this first after a compaction)
+
+- **Phase:** fix round. Merged into `rework/managed-agents-v2`: R (PR 24), M (PR 25), A (PR 26 at `3f98000`). Next: H (eng H opens its PR on `claude/fix-h-api`), then C (eng C, branch `claude/ws-c-fix`), then M's small X31 follow-up. Then the combined check, a fresh dry run on a live-store copy with TMPDIR on disk, and the cutover per design §5 with the user's go.
+- **Merge routine:** read the diff, check it's current with the integration head (or test a local merge), run all suites with `TMPDIR` and `CARGO_TARGET_DIR` under this worktree (`.check-*`, `.target`), then `gh pr merge N --merge --match-head-commit SHA`. Remove the check worktree with `chmod -R u+w` first, because the mirror is read-only. For C, also check that the real `~/.claude.json` `mcpServers` and `~/.codex/config.toml` are unchanged.
+- **Rules learned:**
+  - The user's repo authority covers pushing and merging teammates' reviewed commits; don't ask.
+  - The app pauses cross-session sends after 10 in a row without a user message.
+  - Sessions can be started only from a message the user types in the desktop app.
+  - The user wants context kept lean: offload to this file, compact at checkpoints.
+- **Live system:** still v1 at revision 11. The MCP adapter still holds the maintainer token (the user chose to wait for the cutover). Don't touch it before the cutover.
+
 ## Standing constraints
 
 - Local implementation. No Managed Agents API calls, cloud upload of transcripts, or paid model jobs (existing README design basis). Revisit only with the user.
