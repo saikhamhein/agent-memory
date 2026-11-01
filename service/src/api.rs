@@ -1,6 +1,7 @@
 use crate::{
     Error, Result,
     config::{Capability, Config},
+    mirror,
     model::{self, absolute_path},
     recall,
     store::Store,
@@ -166,6 +167,7 @@ pub fn router(config: Config, store: Store) -> Router {
         .route("/v1/status", get(status))
         .route("/v1/recall", post(recall))
         .route("/v1/observations", post(observe))
+        .route("/v1/observations/{id}/redact", post(redact_observation))
         .route("/v1/dreams", post(dream_start).get(dreams))
         .route("/v1/dreams/{id}", get(dream))
         .route("/v1/dreams/{id}/adopt", post(dream_adopt))
@@ -188,7 +190,7 @@ pub fn router(config: Config, store: Store) -> Router {
         .with_state(app)
 }
 
-/// Reads of the live store need `recall` and its writes `promote`; any other store needs `review`.
+/// Reads of live memories need `recall` and live writes `promote`; versions and other stores need `review`.
 async fn required(app: &App, request: &mut Request) -> std::result::Result<Capability, Reject> {
     let method = request.method().clone();
     let route = request
@@ -198,7 +200,14 @@ async fn required(app: &App, request: &mut Request) -> std::result::Result<Capab
     Ok(match (&method, route) {
         (&Method::GET, "/v1/status") | (&Method::POST, "/v1/recall") => Capability::Recall,
         (&Method::POST, "/v1/observations") => Capability::Observe,
+        // History includes deleted memories, so even live versions need review.
+        (
+            &Method::GET,
+            "/v1/memory_stores/{store}/memory_versions"
+            | "/v1/memory_stores/{store}/memory_versions/{id}",
+        ) => Capability::Review,
         (&Method::POST, "/v1/dreams/{id}/adopt")
+        | (&Method::POST, "/v1/observations/{id}/redact")
         | (&Method::POST, "/v1/memory_stores/{store}/memory_versions/{id}/redact") => {
             Capability::Promote
         }
@@ -265,7 +274,6 @@ async fn status(State(app): State<App>) -> Reply {
 #[serde(default, deny_unknown_fields)]
 struct RecallRequest {
     project: String,
-    project_id: String,
     role: String,
     topics: Vec<String>,
     query: String,
@@ -278,15 +286,6 @@ async fn recall(
     body: Bytes,
 ) -> Reply {
     let mut r: RecallRequest = parse(&body)?;
-    if !r.project_id.is_empty() {
-        if !r.project.is_empty() {
-            return Err(model::invalid("Use project_id or project, not both").into());
-        }
-        let Some(path) = app.config.projects.get(&r.project_id) else {
-            return Err(model::invalid("Unknown project_id").into());
-        };
-        r.project = path.clone();
-    }
     if !r.project.is_empty() {
         r.project = absolute_path(&r.project)?.to_string_lossy().into_owned();
     }
@@ -298,11 +297,8 @@ async fn recall(
     };
     let client = if r.client.is_empty() { token } else { r.client };
     let log = app.config.database.with_file_name("recall-log.jsonl");
+    let mirror_dir = mirror::dir(&app.config.mount_dir()).display().to_string();
     app.json(move |s| {
-        let mirror_dir = s.status()?["mirror_dir"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
         let (revision, memories) = s.live_memories()?;
         let result = recall::recall(&memories, revision, &mirror_dir, &request);
         log_recall(&log, &client, &request, revision, &result);
@@ -540,5 +536,21 @@ async fn redact(
     Path((store, id)): Path<(String, String)>,
 ) -> Reply {
     app.json(move |s| s.redact(&store, &id, &client.actor()))
+        .await
+}
+
+/// A body that must be empty or `{}`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NoBody {}
+
+async fn redact_observation(
+    State(app): State<App>,
+    Extension(client): Extension<Client>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Reply {
+    let NoBody {} = parse(&body)?;
+    app.json(move |s| s.redact_observation(&id, &client.actor()))
         .await
 }
