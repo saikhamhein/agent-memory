@@ -1,20 +1,14 @@
 # Local testing: loopback only. Later use the server's LAN IP for LAN access.
 listen = "127.0.0.1:8787"
 database = "/var/lib/agent-memory/memory.sqlite3"
-# Read-only mirror of the live store. Default: "mnt" next to the database.
-# mount = "/var/lib/agent-memory/mnt"
 
-# Stable ids resolve to the original logical project roots in accepted memories.
-# These directories do not need to exist on the server or Raspberry Pi.
-[projects]
-agent-memory = "/home/sai/probe/agent-memory"
-
-# Generate credentials with `agent-memory-server token`.
-# Put only its sha256 field here; keep its token field in the client config.
+# install-user.py writes these tokens itself. For a manual deploy, make a secret with
+# `openssl rand -hex 32`, put its `printf %s SECRET | sha256sum` here, and keep the secret in the client config.
+# agent-session is for ordinary sessions (client.json); memory-maintainer only for the dream (maintainer.json).
 [[tokens]]
-name = "agent-recall"
+name = "agent-session"
 sha256 = "REPLACE_WITH_GENERATED_SHA256"
-capabilities = ["recall"]
+capabilities = ["recall", "observe"]
 
 [[tokens]]
 name = "memory-maintainer"
