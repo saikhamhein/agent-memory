@@ -1,0 +1,4 @@
+# Memories matching "raspberry usb power" — revision 42
+
+### Check whether a Raspberry Pi 5 can switch one USB port before planning on it [/topics/hardware/pi-usb-port-power.md]
+Per-port power switching depends on the hub chip and the board revision. Read the vendor notes and test on the bench with a meter before writing it into a plan.

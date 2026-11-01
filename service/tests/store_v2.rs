@@ -1,0 +1,2395 @@
+//! Workstream A acceptance tests (design §4.3 "A"): the v2 store, its write rules,
+//! dreams and the read-only mirror. Written against the frozen §4.1 interface.
+//! Temporary stores only; nothing here touches a live database.
+mod common;
+
+use agent_memory_server::{model, recall, store::Store};
+use common::*;
+use rusqlite::{Connection, OpenFlags};
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    fs,
+    os::unix::{fs::PermissionsExt, io::AsRawFd},
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+    time::{Duration, Instant},
+};
+
+/// `model::PINNED_BUDGET`, design §3.1.
+const PINNED_BUDGET: usize = 4000;
+const MAX_CONTENT: usize = 102_400;
+const STORE_LIMIT: usize = 10_000;
+
+fn pinned() -> Value {
+    json!({"pinned": true})
+}
+fn no_meta() -> Value {
+    json!({})
+}
+fn text(title: &str, body: &str) -> String {
+    content(title, body, &no_meta())
+}
+/// Content for a memory seeded by `seed(path, body)` (its title is the slug).
+fn seeded(path: &str, body: &str) -> String {
+    text(
+        path.rsplit('/').next().unwrap().trim_end_matches(".md"),
+        body,
+    )
+}
+fn slug_of(path: &str) -> &str {
+    path.rsplit('/').next().unwrap().trim_end_matches(".md")
+}
+fn sorted(mut paths: Vec<String>) -> Vec<String> {
+    paths.sort();
+    paths
+}
+/// `model::block_len` (design §3.1): the `chars()` count of
+/// `### {title} [{path}]\n{body}\n\n` with the body's trailing whitespace trimmed.
+/// This is what the pinned budget counts. Titles here are the slug.
+fn block_len(title: &str, path: &str, body: &str) -> usize {
+    format!("### {title} [{path}]\n{}\n\n", body.trim_end())
+        .chars()
+        .count()
+}
+/// A body made of `ch` that makes the memory at `path` cost exactly `cost`.
+fn body_costing(path: &str, cost: usize, ch: &str) -> String {
+    let title = slug_of(path);
+    ch.repeat(cost - block_len(title, path, ""))
+}
+fn get(ts: &TempStore, id: &str) -> Value {
+    ts.store.get(&ts.live(), id).unwrap()
+}
+fn live_list(ts: &TempStore) -> Value {
+    ts.store.list(&ts.live(), "/").unwrap()
+}
+fn versions_of(ts: &TempStore, store: &str, memory_id: &str) -> Vec<Value> {
+    data(&ts.store.versions(store, Some(memory_id), None).unwrap()).clone()
+}
+fn status_u64(ts: &TempStore, key: &str) -> u64 {
+    ts.store.status().unwrap()[key]
+        .as_u64()
+        .unwrap_or_else(|| panic!("status.{key} is not a number"))
+}
+fn start(ts: &mut TempStore, sessions: Value) -> Value {
+    ts.store.dream_start(&sessions, "token:review").unwrap()
+}
+fn review(summary: &str) -> Value {
+    json!({"summary": summary, "coverage": "fixtures only", "conflicts": []})
+}
+fn adopt(ts: &mut TempStore, dream: &str) -> agent_memory_server::Result<Value> {
+    ts.store.dream_adopt(dream, &review("test"), "token:admin")
+}
+fn dream_status(ts: &TempStore, dream: &str) -> String {
+    str_of(&ts.store.dream(dream, false).unwrap(), "status").to_owned()
+}
+/// Two live memories, `/global/x.md` and `/global/y.md`.
+fn xy() -> (TempStore, String, Value, Value) {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let x = seed(&mut ts.store, "/global/x.md", "x original");
+    let y = seed(&mut ts.store, "/global/y.md", "y original");
+    (ts, live, x, y)
+}
+fn set_content(ts: &mut TempStore, store: &str, memory: &Value, body: &str, by: &str) -> Value {
+    let title = str_of(memory, "path").to_owned();
+    ts.store
+        .update(
+            store,
+            &id(memory),
+            Some(&seeded(&title, body)),
+            None,
+            Some(str_of(memory, "content_sha256")),
+            by,
+        )
+        .unwrap()
+}
+
+// ---- mirror assertions ---------------------------------------------------
+
+/// The mirror equals the live store: bytes, modes, marker, INDEX.md, generations.
+fn assert_mirror(ts: &TempStore) {
+    let status = ts.store.status().unwrap();
+    let revision = status["revision"].as_i64().unwrap();
+    let link = ts.link();
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "mnt/shared-agent-memory must be a symlink"
+    );
+    assert_eq!(
+        generation_revision(&fs::read_link(&link).unwrap()),
+        revision,
+        "the symlink must point at .generations/<revision>"
+    );
+    let generations: Vec<_> = fs::read_dir(ts.mnt.join(".generations"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        generations.len() <= 2
+            && generations
+                .iter()
+                .any(|g| generation_revision(Path::new(g)) == revision),
+        "keep only the current and previous generation, found {generations:?}"
+    );
+    let mut top: Vec<_> = fs::read_dir(&ts.mnt)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    top.sort();
+    assert_eq!(
+        top,
+        [".generations", "shared-agent-memory"],
+        "only the live store is mirrored"
+    );
+
+    let (live_revision, memories) = ts.store.live_memories().unwrap();
+    assert_eq!(live_revision, revision);
+    let live = ts.live();
+    let mut expected: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for m in &memories {
+        let stored = ts.store.get(&live, &m.id).unwrap();
+        expected.insert(
+            m.path.trim_start_matches('/').to_owned(),
+            str_of(&stored, "content").as_bytes().to_vec(),
+        );
+    }
+    let index = recall::index_md(&memories, revision, str_of(&status, "mirror_dir"));
+    expected.insert("INDEX.md".into(), index.into_bytes());
+
+    let mut actual = BTreeMap::new();
+    for (name, (mode, bytes)) in tree(&link) {
+        if name == "/" || name.ends_with('/') {
+            assert_eq!(mode, 0o555, "directory {name} must be 0555");
+        } else {
+            assert_eq!(mode, 0o444, "file {name} must be 0444");
+            if name == ".agent-memory-store" {
+                let marker: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(marker["store_id"], status["store_id"]);
+                assert_eq!(marker["revision"].as_i64(), Some(revision));
+            } else {
+                actual.insert(name, bytes);
+            }
+        }
+    }
+    assert_eq!(actual, expected, "mirror files differ from the live store");
+}
+
+// ---- 1. init -------------------------------------------------------------
+
+#[test]
+fn init_v2() {
+    let ts = TempStore::new();
+    let conn = Connection::open(&ts.db).unwrap();
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+    let stores: Vec<(String, Option<String>)> = conn
+        .prepare("SELECT kind, archived_at FROM stores")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        stores,
+        [("live".to_owned(), None)],
+        "exactly one live store"
+    );
+    // The legacy tables exist and are frozen.
+    let err = conn
+        .execute(
+            "INSERT INTO revisions(parent,created,reason,body,sha256) VALUES (0,'t','r','[]','x')",
+            [],
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("migrated to v2"), "{err}");
+
+    let status = ts.store.status().unwrap();
+    assert_eq!(status["revision"], 0);
+    assert_eq!(status["memories"], 0);
+    assert_eq!(status["pinned_chars"], 0);
+    assert_eq!(status["observations_pending"], 0);
+    assert_eq!(status["dreams_running"], 0);
+    assert_eq!(status["mirror_stale"], false);
+    assert!(str_of(&status, "store_id").starts_with("memstore_"));
+    assert!(str_of(&status, "mirror_dir").ends_with("shared-agent-memory"));
+    assert!(ts.store.is_live(&ts.live()).unwrap());
+    assert_mirror(&ts);
+
+    // A v1 database is refused, and the message tells the operator what to run.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let v1 = tmp.path().join("v1.sqlite3");
+    Connection::open(&v1)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE revisions (id INTEGER PRIMARY KEY, parent INTEGER, created TEXT NOT NULL,
+                reason TEXT NOT NULL, body TEXT NOT NULL, sha256 TEXT NOT NULL);
+             CREATE TABLE state (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+             CREATE TABLE observations (id TEXT PRIMARY KEY, created TEXT NOT NULL, body TEXT NOT NULL);
+             CREATE TABLE dreams (id TEXT PRIMARY KEY, created TEXT NOT NULL, base INTEGER NOT NULL,
+                input TEXT NOT NULL, promoted INTEGER, proposal TEXT);
+             INSERT INTO revisions VALUES (0,NULL,'t','Empty initial store','[]','x');
+             INSERT INTO state VALUES ('active',0);",
+        )
+        .unwrap();
+    let mnt = tmp.path().join("mnt");
+    let refused = Store::open(&v1, &mnt)
+        .err()
+        .expect("a v1 database must be refused");
+    assert!(refused.to_string().contains("migrate"), "{refused}");
+    assert!(!mnt.exists(), "a refused open must not create a mirror");
+}
+
+// ---- 2. paths ------------------------------------------------------------
+
+fn deep(segments: usize) -> String {
+    format!("/projects{}/s.md", "/d".repeat(segments - 2))
+}
+
+#[test]
+fn path_rules() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let ok = text("ok", "body");
+
+    // All four layouts are accepted, by the validator and by create.
+    for (path, slug) in [
+        ("/global/a.md", "a"),
+        ("/projects/home/sai/x/b.md", "b"),
+        ("/topics/hardware/c.md", "c"),
+        ("/roles/coordinator/d.md", "d"),
+    ] {
+        assert_eq!(model::validate_path(path).unwrap().slug, slug, "{path}");
+        ts.store
+            .create(&live, path, &seeded(path, "body"), ACTOR)
+            .unwrap_or_else(|e| panic!("{path}: {e:?}"));
+    }
+    // Boundaries that are still valid: 20 segments, 1,024 bytes, 80-character slug,
+    // dotted and hyphenated segments.
+    let mut bytes_1024 = String::from("/projects");
+    for _ in 0..5 {
+        bytes_1024 += &format!("/{}", "a".repeat(200));
+    }
+    bytes_1024 += "/a/slug.md";
+    assert_eq!(bytes_1024.len(), 1024);
+    for path in [
+        deep(20),
+        bytes_1024.clone(),
+        format!("/global/{}.md", "a".repeat(80)),
+        "/global/0-9-a.md".into(),
+        "/projects/home/sai/.hidden-dir/v1.2_x/e.md".into(),
+        format!("/topics/{}/x.md", "a".repeat(255)),
+        format!("/projects/{}/x.md", "a".repeat(255)),
+    ] {
+        model::validate_path(&path).unwrap_or_else(|e| panic!("{path}: {e:?}"));
+    }
+
+    let mut bad: Vec<(String, &str)> = vec![
+        ("/global/../a.md".into(), "dot-dot segment"),
+        ("/projects/home/../etc/a.md".into(), "dot-dot segment"),
+        ("/projects/./home/a.md".into(), "dot segment"),
+        ("/global//a.md".into(), "empty segment"),
+        ("/topics//a.md".into(), "empty segment"),
+        ("/global/a.md/".into(), "trailing slash"),
+        ("global/a.md".into(), "not absolute"),
+        (deep(21), "21 segments"),
+        (
+            format!("/topics/{}/x.md", "a".repeat(256)),
+            "256-byte segment (NAME_MAX)",
+        ),
+        (
+            format!("/projects/{}/x.md", "a".repeat(256)),
+            "256-byte project segment",
+        ),
+        (bytes_1024.replace("/slug.md", "/slugs.md"), "1,025 bytes"),
+        ("/topics/café/a.md".into(), "non-ASCII segment"),
+        ("/global/မြန်မာ.md".into(), "non-ASCII slug"),
+        ("/topics/machine learning/a.md".into(), "space in segment"),
+        ("/misc/a.md".into(), "unknown top-level directory"),
+        ("/a.md".into(), "no top-level directory"),
+        (
+            "/Global/a.md".into(),
+            "top-level directories are case-sensitive",
+        ),
+        ("/global/a.txt".into(), "not .md"),
+        ("/global/a".into(), "no extension"),
+        ("/global/.md".into(), "empty slug"),
+        ("/global/A.md".into(), "uppercase slug"),
+        ("/global/-a.md".into(), "slug starts with a hyphen"),
+        ("/global/a_b.md".into(), "underscore in slug"),
+        ("/global/a.b.md".into(), "dot in slug"),
+        (
+            format!("/global/{}.md", "a".repeat(81)),
+            "81-character slug",
+        ),
+    ];
+    bad.push(("".into(), "empty path"));
+    for (path, why) in &bad {
+        assert!(
+            model::validate_path(path).is_err(),
+            "{why}: {path:?} was accepted"
+        );
+        invalid(ts.store.create(&live, path, &ok, ACTOR));
+    }
+    assert_eq!(
+        status_u64(&ts, "memories"),
+        4,
+        "rejected paths wrote nothing"
+    );
+    assert_eq!(status_u64(&ts, "revision"), 4);
+    // A 255-byte segment is a legal file name, so it also reaches the mirror.
+    let long = format!("/topics/{}/x.md", "a".repeat(255));
+    ts.store
+        .create(&live, &long, &seeded(&long, "body"), ACTOR)
+        .unwrap();
+    assert!(ts.link().join(long.trim_start_matches('/')).exists());
+    assert_eq!(ts.store.status().unwrap()["mirror_stale"], false);
+}
+
+// ---- 3. content ----------------------------------------------------------
+
+#[test]
+fn content_rules() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let fm = |meta: Value| frontmatter("Title", &meta);
+    let without = |key: &str| {
+        let mut f = fm(json!({}));
+        f.as_object_mut().unwrap().remove(key);
+        render(&f, "body")
+    };
+    let overhead = text("T", "").len();
+
+    let bad: Vec<(String, String)> = vec![
+        ("no frontmatter".into(), "just a body\n".into()),
+        (
+            "frontmatter not closed".into(),
+            format!("---\n{}\nbody", fm(json!({}))),
+        ),
+        (
+            "frontmatter not JSON".into(),
+            "---\ntitle: x\n---\nbody".into(),
+        ),
+        (
+            "frontmatter not an object".into(),
+            "---\n[1]\n---\nbody".into(),
+        ),
+        ("missing title".into(), without("title")),
+        ("missing confidence".into(), without("confidence")),
+        ("missing tags".into(), without("tags")),
+        ("missing evidence".into(), without("evidence")),
+        (
+            "empty evidence".into(),
+            render(&fm(json!({"evidence": []})), "body"),
+        ),
+        (
+            "evidence item without note".into(),
+            render(
+                &fm(json!({"evidence": [{"source": "s", "locator": "l"}]})),
+                "body",
+            ),
+        ),
+        (
+            "evidence item with empty locator".into(),
+            render(
+                &fm(json!({"evidence": [{"source": "s", "locator": "", "note": "n"}]})),
+                "body",
+            ),
+        ),
+        (
+            "bad confidence".into(),
+            render(&fm(json!({"confidence": "maybe"})), "body"),
+        ),
+        (
+            "tags not a list".into(),
+            render(&fm(json!({"tags": "a"})), "body"),
+        ),
+        ("empty title".into(), text("", "body")),
+        ("multi-line title".into(), text("a\nb", "body")),
+        ("121-character title".into(), text(&"t".repeat(121), "body")),
+        ("id key".into(), render(&fm(json!({"id": "x"})), "body")),
+        (
+            "scope key".into(),
+            render(&fm(json!({"scope": {"kind": "global"}})), "body"),
+        ),
+        ("body key".into(), render(&fm(json!({"body": "x"})), "body")),
+        (
+            "bad expires".into(),
+            render(&fm(json!({"expires": "tomorrow"})), "body"),
+        ),
+        (
+            "non-integer priority".into(),
+            render(&fm(json!({"priority": "high"})), "body"),
+        ),
+        (
+            "102,401 bytes".into(),
+            text("T", &"x".repeat(MAX_CONTENT + 1 - overhead)),
+        ),
+        (
+            "api_key=".into(),
+            text("T", "set api_key=abcd1234efgh5678 in the shell"),
+        ),
+        (
+            "private key".into(),
+            text("T", "-----BEGIN RSA PRIVATE KEY-----"),
+        ),
+        ("empty body".into(), text("T", "")),
+    ];
+    for (why, text) in &bad {
+        invalid(ts.store.create(&live, "/global/bad.md", text, ACTOR));
+        assert!(
+            model::parse("/global/bad.md", text).is_err(),
+            "{why} parsed"
+        );
+    }
+    // `pinned` is only for /global/ and /projects/ paths.
+    let pinned_topic = content("T", "body", &pinned());
+    invalid(
+        ts.store
+            .create(&live, "/topics/t/p.md", &pinned_topic, ACTOR),
+    );
+    invalid(
+        ts.store
+            .create(&live, "/roles/r/p.md", &pinned_topic, ACTOR),
+    );
+    assert!(model::parse("/topics/t/p.md", &pinned_topic).is_err());
+    assert_eq!(
+        status_u64(&ts, "memories"),
+        0,
+        "rejected content wrote nothing"
+    );
+    assert_eq!(status_u64(&ts, "revision"), 0);
+
+    // Accepted: both ends of the size limit, optional fields and unknown keys.
+    let exactly = text("T", &"x".repeat(MAX_CONTENT - overhead));
+    assert_eq!(exactly.len(), MAX_CONTENT);
+    ts.store
+        .create(&live, "/global/max.md", &exactly, ACTOR)
+        .unwrap();
+    let title_120 = text(&"t".repeat(120), "body");
+    ts.store
+        .create(&live, "/global/title.md", &title_120, ACTOR)
+        .unwrap();
+    for (n, meta) in [
+        json!({"confidence": "tentative"}),
+        json!({"confidence": "corroborated"}),
+        json!({"expires": "2026-12-31"}),
+        json!({"expires": null}),
+        json!({"expires": ""}),
+        json!({"priority": 7}),
+        json!({"pinned": true}),
+        json!({"updated": "2026-11-01", "custom": {"nested": [1, 2.5]}}),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let path = format!("/global/ok-{n}.md");
+        let good = content("Title", "body", meta);
+        ts.store
+            .create(&live, &path, &good, ACTOR)
+            .unwrap_or_else(|e| panic!("{meta}: {e:?}"));
+        let parsed = model::parse(&path, &good).unwrap();
+        assert_eq!(parsed.body, "body");
+        assert_eq!(parsed.meta["title"], "Title");
+    }
+    ts.store
+        .create(
+            &live,
+            "/projects/home/sai/x/pinned.md",
+            &content("Title", "body", &pinned()),
+            ACTOR,
+        )
+        .unwrap();
+}
+
+// ---- 4. raw bytes --------------------------------------------------------
+
+#[test]
+fn sha_is_raw_bytes() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    // Non-canonical JSON spacing and key order, a non-canonical float, Burmese text
+    // and trailing whitespace: all must survive byte for byte.
+    let first = "---\n{ \"title\" : \"မြန်မာ\" ,\n \"extra\": 1.50,\"confidence\":\"explicit\",\"tags\":[ \"a\" ],\
+                 \"evidence\":[{\"source\":\"s\",\"locator\":\"l\",\"note\":\"မှတ်ချက်\"}] }\n---\nမြန်မာ body  \n\n";
+    let created = ts
+        .store
+        .create(&live, "/global/raw.md", first, ACTOR)
+        .unwrap();
+    assert_eq!(str_of(&created, "content_sha256"), sha256(first.as_bytes()));
+    let stored = get(&ts, &id(&created));
+    assert_eq!(str_of(&stored, "content"), first);
+    assert_eq!(str_of(&stored, "content_sha256"), sha256(first.as_bytes()));
+    assert_eq!(
+        fs::read(ts.link().join("global/raw.md")).unwrap(),
+        first.as_bytes()
+    );
+    let version = ts
+        .store
+        .version(&live, str_of(&created, "memory_version_id"))
+        .unwrap();
+    assert_eq!(str_of(&version, "content"), first);
+    assert_eq!(str_of(&version, "content_sha256"), sha256(first.as_bytes()));
+
+    let second = first.replace("1.50", "1.5e0").replace("  \n\n", "\n");
+    let updated = ts
+        .store
+        .update(
+            &live,
+            &id(&created),
+            Some(&second),
+            None,
+            Some(&sha256(first.as_bytes())),
+            ACTOR,
+        )
+        .unwrap();
+    assert_eq!(
+        str_of(&updated, "content_sha256"),
+        sha256(second.as_bytes())
+    );
+    assert_eq!(str_of(&get(&ts, &id(&created)), "content"), second);
+    assert_eq!(
+        fs::read(ts.link().join("global/raw.md")).unwrap(),
+        second.as_bytes()
+    );
+    assert_ne!(sha256(first.as_bytes()), sha256(second.as_bytes()));
+}
+
+// ---- 5. create conflicts -------------------------------------------------
+
+#[test]
+fn create_conflicts() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    seed(&mut ts.store, "/global/a.md", "first");
+    let revision = status_u64(&ts, "revision");
+
+    let paths = conflict(
+        ts.store.create(
+            &live,
+            "/global/a.md",
+            &seeded("/global/a.md", "other"),
+            ACTOR,
+        ),
+        "path_exists",
+    );
+    assert_eq!(paths, ["/global/a.md"]);
+    // The slug is unique in the store, whatever the directory.
+    for other in [
+        "/topics/t/a.md",
+        "/roles/r/a.md",
+        "/projects/home/sai/x/a.md",
+    ] {
+        let paths = conflict(
+            ts.store
+                .create(&live, other, &seeded(other, "other"), ACTOR),
+            "slug_exists",
+        );
+        assert_eq!(
+            paths,
+            ["/global/a.md"],
+            "slug_exists names the path using the slug"
+        );
+    }
+    assert_eq!(
+        status_u64(&ts, "revision"),
+        revision,
+        "failed creates add no version"
+    );
+    assert_eq!(status_u64(&ts, "memories"), 1);
+
+    // Eight writers creating one path: exactly one wins.
+    let results = race(&ts, 8, |i, store| {
+        store.create(
+            &live,
+            "/global/race.md",
+            &text("race", &format!("writer {i}")),
+            ACTOR,
+        )
+    });
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    for r in results.into_iter().filter(Result::is_err) {
+        conflict(r, "path_exists");
+    }
+    assert_eq!(status_u64(&ts, "memories"), 2);
+}
+
+// ---- 6. update preconditions and rename ----------------------------------
+
+#[test]
+fn update_precondition() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let created = seed(&mut ts.store, "/topics/t/a.md", "one");
+    let mid = id(&created);
+    let h1 = str_of(&created, "content_sha256").to_owned();
+    let v1 = str_of(&created, "memory_version_id").to_owned();
+    let two = seeded("/topics/t/a.md", "two");
+
+    // A stale hash fails and adds nothing.
+    let before = version_count(&ts.store, &live);
+    conflict(
+        ts.store.update(
+            &live,
+            &mid,
+            Some(&two),
+            None,
+            Some(&sha256(b"not the content")),
+            ACTOR,
+        ),
+        "precondition_failed",
+    );
+    assert_eq!(version_count(&ts.store, &live), before);
+    assert_eq!(str_of(&get(&ts, &mid), "content_sha256"), h1);
+
+    // A matching hash creates a new version.
+    let updated = ts
+        .store
+        .update(&live, &mid, Some(&two), None, Some(&h1), "token:writer")
+        .unwrap();
+    let v2 = str_of(&updated, "memory_version_id").to_owned();
+    assert_ne!(v2, v1);
+    assert_eq!(str_of(&updated, "content_sha256"), sha256(two.as_bytes()));
+    assert_eq!(str_of(&get(&ts, &mid), "content"), two);
+    assert_eq!(version_count(&ts.store, &live), before + 1);
+    // The old hash is now stale.
+    conflict(
+        ts.store.update(
+            &live,
+            &mid,
+            Some(&seeded("/topics/t/a.md", "three")),
+            None,
+            Some(&h1),
+            ACTOR,
+        ),
+        "precondition_failed",
+    );
+    // No precondition means an unconditional update.
+    let three = seeded("/topics/t/a.md", "three");
+    ts.store
+        .update(&live, &mid, Some(&three), None, None, ACTOR)
+        .unwrap();
+    assert_eq!(str_of(&get(&ts, &mid), "content"), three);
+
+    // A rename keeps the id; the content is unchanged and the history shows both paths.
+    let h3 = sha256(three.as_bytes());
+    conflict(
+        ts.store
+            .update(&live, &mid, None, Some("/topics/t2/a.md"), Some(&h1), ACTOR),
+        "precondition_failed",
+    );
+    let renamed = ts
+        .store
+        .update(&live, &mid, None, Some("/topics/t2/a.md"), Some(&h3), ACTOR)
+        .unwrap();
+    assert_eq!(id(&renamed), mid);
+    assert_eq!(str_of(&renamed, "path"), "/topics/t2/a.md");
+    assert_eq!(str_of(&renamed, "content_sha256"), h3);
+    let moved = get(&ts, &mid);
+    assert_eq!(str_of(&moved, "path"), "/topics/t2/a.md");
+    assert_eq!(str_of(&moved, "content"), three);
+    assert_eq!(listed_paths(&live_list(&ts)), ["/topics/t2/a.md"]);
+    let history = versions_of(&ts, &live, &mid);
+    assert_eq!(history.len(), 4);
+    let paths: Vec<&str> = history.iter().map(|v| str_of(v, "path")).collect();
+    assert_eq!(paths.first(), Some(&"/topics/t2/a.md"), "newest first");
+    assert_eq!(paths.last(), Some(&"/topics/t/a.md"));
+    let operations: Vec<&str> = history.iter().map(|v| str_of(v, "operation")).collect();
+    assert_eq!(operations, ["modified", "modified", "modified", "created"]);
+    assert_eq!(str_of(&history[2], "created_by"), "token:writer");
+    assert!(
+        history.iter().all(|v| v["content"].is_null()),
+        "listings carry no content"
+    );
+    assert_eq!(str_of(&history[3], "id"), v1);
+    assert_eq!(str_of(&history[2], "id"), v2);
+}
+
+// ---- 7. concurrent writers -----------------------------------------------
+
+#[test]
+fn concurrent_writers_one_winner() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let created = seed(&mut ts.store, "/global/a.md", "start");
+    let mid = id(&created);
+    let h = str_of(&created, "content_sha256").to_owned();
+    let before = version_count(&ts.store, &live);
+    let revision = status_u64(&ts, "revision");
+
+    let results = race(&ts, 8, |i, store| {
+        store.update(
+            &live,
+            &mid,
+            Some(&seeded("/global/a.md", &format!("writer {i}"))),
+            None,
+            Some(&h),
+            &format!("token:w{i}"),
+        )
+    });
+    let winners: Vec<usize> = (0..8).filter(|&i| results[i].is_ok()).collect();
+    assert_eq!(winners.len(), 1, "exactly one writer may win: {results:?}");
+    let mut losers = 0;
+    for r in results.into_iter().filter(Result::is_err) {
+        conflict(r, "precondition_failed");
+        losers += 1;
+    }
+    assert_eq!(losers, 7);
+    assert_eq!(version_count(&ts.store, &live), before + 1);
+    assert_eq!(status_u64(&ts, "revision"), revision + 1);
+    assert_eq!(
+        str_of(&get(&ts, &mid), "content"),
+        seeded("/global/a.md", &format!("writer {}", winners[0]))
+    );
+    assert_mirror(&ts);
+
+    // The same holds for deletes.
+    let h = str_of(&get(&ts, &mid), "content_sha256").to_owned();
+    let results = race(&ts, 8, |_, store| {
+        store.delete(&live, &mid, Some(&h), ACTOR)
+    });
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    assert_eq!(status_u64(&ts, "memories"), 0);
+    assert_eq!(
+        versions_of(&ts, &live, &mid)
+            .iter()
+            .filter(|v| v["operation"] == "deleted")
+            .count(),
+        1
+    );
+}
+
+// ---- 8. delete and redact ------------------------------------------------
+
+#[test]
+fn delete_and_redact() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let created = seed(&mut ts.store, "/global/a.md", "one");
+    let mid = id(&created);
+    let v1 = str_of(&created, "memory_version_id").to_owned();
+    let two = seeded("/global/a.md", "two");
+    let updated = ts
+        .store
+        .update(
+            &live,
+            &mid,
+            Some(&two),
+            None,
+            Some(str_of(&created, "content_sha256")),
+            ACTOR,
+        )
+        .unwrap();
+    let v2 = str_of(&updated, "memory_version_id").to_owned();
+    let h2 = sha256(two.as_bytes());
+
+    // Redacting the head version of a live memory is refused.
+    invalid(ts.store.redact(&live, &v2, "token:admin"));
+    assert_eq!(
+        str_of(&ts.store.version(&live, &v2).unwrap(), "content"),
+        two
+    );
+
+    // Redacting an older version nulls its fields and keeps who made it.
+    let redacted = ts.store.redact(&live, &v1, "token:admin").unwrap();
+    assert_eq!(str_of(&redacted, "id"), v1);
+    for key in ["content", "path", "content_sha256"] {
+        assert!(redacted[key].is_null(), "{key} must be null: {redacted}");
+    }
+    assert!(redacted["redacted_at"].is_string());
+    assert_eq!(str_of(&redacted, "redacted_by"), "token:admin");
+    assert_eq!(str_of(&redacted, "created_by"), ACTOR);
+    assert_eq!(str_of(&redacted, "operation"), "created");
+    let again = ts.store.version(&live, &v1).unwrap();
+    assert!(again["content"].is_null() && again["path"].is_null());
+    assert_eq!(str_of(&again, "redacted_by"), "token:admin");
+    assert_eq!(
+        str_of(&get(&ts, &mid), "content"),
+        two,
+        "the live memory is unaffected"
+    );
+    assert_mirror(&ts);
+
+    // A wrong expected hash blocks the delete.
+    conflict(
+        ts.store.delete(&live, &mid, Some(&sha256(b"stale")), ACTOR),
+        "precondition_failed",
+    );
+    assert_eq!(status_u64(&ts, "memories"), 1);
+
+    // Delete adds a `deleted` version that keeps the lineage and the last path.
+    let before = version_count(&ts.store, &live);
+    let deleted = ts
+        .store
+        .delete(&live, &mid, Some(&h2), "token:admin")
+        .unwrap();
+    assert_eq!(str_of(&deleted, "type"), "memory_deleted");
+    assert_eq!(str_of(&deleted, "id"), mid);
+    not_found(ts.store.get(&live, &mid));
+    assert!(listed_paths(&live_list(&ts)).is_empty());
+    let history = versions_of(&ts, &live, &mid);
+    assert_eq!(history.len(), 3);
+    assert_eq!(version_count(&ts.store, &live), before + 1);
+    assert_eq!(str_of(&history[0], "operation"), "deleted");
+    assert_eq!(str_of(&history[0], "created_by"), "token:admin");
+    assert_eq!(str_of(&history[0], "path"), "/global/a.md");
+    assert!(history[0]["content"].is_null() && history[0]["content_sha256"].is_null());
+    assert_eq!(str_of(&history[1], "operation"), "modified");
+    assert_mirror(&ts);
+    assert!(!ts.link().join("global/a.md").exists());
+
+    // Once the memory is gone, its last content version is no longer a head.
+    let redacted = ts.store.redact(&live, &v2, "token:admin").unwrap();
+    assert!(redacted["content"].is_null());
+    // The path can be used again, by a new memory.
+    let reborn = seed(&mut ts.store, "/global/a.md", "again");
+    assert_ne!(id(&reborn), mid);
+    // Delete without a precondition is allowed.
+    ts.store.delete(&live, &id(&reborn), None, ACTOR).unwrap();
+    // Unknown objects.
+    not_found(ts.store.delete(&live, &mid, None, ACTOR));
+    not_found(
+        ts.store
+            .version(&live, "memver_00000000000000000000000000000000"),
+    );
+}
+
+// ---- 9. limits -----------------------------------------------------------
+
+#[test]
+fn store_full() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    seed_raw(&ts.db, STORE_LIMIT - 2);
+    ts.reopen();
+    assert_eq!(status_u64(&ts, "memories") as usize, STORE_LIMIT - 2);
+    let last = seed(&mut ts.store, "/global/last.md", "the 9,999th");
+    seed(&mut ts.store, "/global/limit.md", "the 10,000th");
+    assert_eq!(status_u64(&ts, "memories") as usize, STORE_LIMIT);
+    let revision = status_u64(&ts, "revision");
+
+    let message = invalid(
+        ts.store
+            .create(&live, "/global/over.md", &text("over", "x"), ACTOR),
+    );
+    assert!(message.contains("store_full"), "{message}");
+    assert_eq!(status_u64(&ts, "memories") as usize, STORE_LIMIT);
+    assert_eq!(status_u64(&ts, "revision"), revision, "nothing was written");
+    assert!(!ts.link().join("global/over.md").exists());
+    // At the limit, existing memories can still be updated and deleted.
+    set_content(&mut ts, &live, &last, "changed", ACTOR);
+    ts.store.delete(&live, &id(&last), None, ACTOR).unwrap();
+    seed(&mut ts.store, "/global/over.md", "room again");
+}
+
+#[test]
+fn pinned_budget() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let make = |ts: &mut TempStore, path: &str, body: &str| {
+        ts.store
+            .create(&live, path, &content(slug_of(path), body, &pinned()), ACTOR)
+    };
+    let (g1, g2, g3) = (
+        "/global/p1.md",
+        "/global/p2.md",
+        "/projects/home/sai/x/p3.md",
+    );
+    // The budget counts rendered blocks in characters, not bytes: a block of 2,500
+    // characters made of Burmese letters is more than 7,000 bytes.
+    let burmese = body_costing(g1, 2500, "မ");
+    assert!(burmese.len() > 6000);
+    let p1 = make(&mut ts, g1, &burmese).unwrap();
+    let p2 = make(&mut ts, g2, &body_costing(g2, 1500, "b")).unwrap();
+    assert_eq!(status_u64(&ts, "pinned_chars") as usize, PINNED_BUDGET);
+    let revision = status_u64(&ts, "revision");
+
+    // 4,001 is refused and nothing is written. The 409 lists every pinned path,
+    // including the new one.
+    let mut all = vec![g1, g2, g3];
+    all.sort();
+    assert_eq!(
+        sorted(conflict(make(&mut ts, g3, "c"), "pinned_budget_exceeded")),
+        all
+    );
+    conflict(
+        make(&mut ts, "/global/p3.md", "c"),
+        "pinned_budget_exceeded",
+    );
+    assert_eq!(status_u64(&ts, "revision"), revision);
+    assert_eq!(status_u64(&ts, "memories"), 2);
+    assert!(!ts.link().join("global/p3.md").exists());
+    // Growing a pinned memory by one character is refused too.
+    let grown = content("p2", &body_costing(g2, 1501, "b"), &pinned());
+    let on_update = conflict(
+        ts.store.update(
+            &live,
+            &id(&p2),
+            Some(&grown),
+            None,
+            Some(str_of(&p2, "content_sha256")),
+            ACTOR,
+        ),
+        "pinned_budget_exceeded",
+    );
+    assert_eq!(sorted(on_update), [g1, g2]);
+    assert_eq!(status_u64(&ts, "revision"), revision);
+    // Trailing whitespace in the body is not counted.
+    let padded = content("p2", &(body_costing(g2, 1500, "b") + "\n \n\n"), &pinned());
+    let p2 = ts
+        .store
+        .update(
+            &live,
+            &id(&p2),
+            Some(&padded),
+            None,
+            Some(str_of(&p2, "content_sha256")),
+            ACTOR,
+        )
+        .unwrap();
+    assert_eq!(status_u64(&ts, "pinned_chars") as usize, PINNED_BUDGET);
+
+    // Unpinned memories are not counted, however large.
+    seed(&mut ts.store, "/global/big.md", &"u".repeat(20_000));
+    assert_eq!(status_u64(&ts, "pinned_chars") as usize, PINNED_BUDGET);
+    // Shrinking or unpinning frees budget.
+    let shrunk = content("p2", &body_costing(g2, 1000, "b"), &pinned());
+    ts.store
+        .update(
+            &live,
+            &id(&p2),
+            Some(&shrunk),
+            None,
+            Some(str_of(&p2, "content_sha256")),
+            ACTOR,
+        )
+        .unwrap();
+    assert_eq!(status_u64(&ts, "pinned_chars") as usize, 3500);
+    make(&mut ts, g3, &body_costing(g3, 500, "c")).unwrap();
+    assert_eq!(status_u64(&ts, "pinned_chars") as usize, PINNED_BUDGET);
+    ts.store
+        .update(
+            &live,
+            &id(&p1),
+            Some(&seeded(g1, "plain")),
+            None,
+            None,
+            ACTOR,
+        )
+        .unwrap();
+    assert_eq!(status_u64(&ts, "pinned_chars") as usize, 1500);
+}
+
+#[test]
+fn pinned_budget_counts_headings() {
+    // Many tiny pinned memories: the `### title [path]` heading is what costs, so
+    // counting bodies alone would admit about 4,000 of them.
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let path = |i: usize| format!("/global/t{i:03}.md");
+    let title =
+        |i: usize| format!("tiny pinned memory {i:03} with a deliberately long heading title");
+    let cost = block_len(&title(0), &path(0), "x");
+    let fit = PINNED_BUDGET / cost;
+    assert!(
+        (20..200).contains(&fit),
+        "fixture is meant to be tiny: {fit}"
+    );
+    for i in 0..fit {
+        ts.store
+            .create(&live, &path(i), &content(&title(i), "x", &pinned()), ACTOR)
+            .unwrap_or_else(|e| panic!("pinned memory {i} of {fit}: {e:?}"));
+    }
+    assert_eq!(status_u64(&ts, "pinned_chars") as usize, fit * cost);
+    let paths = conflict(
+        ts.store.create(
+            &live,
+            &path(fit),
+            &content(&title(fit), "x", &pinned()),
+            ACTOR,
+        ),
+        "pinned_budget_exceeded",
+    );
+    assert_eq!(paths.len(), fit + 1);
+    assert_eq!(status_u64(&ts, "memories") as usize, fit);
+}
+
+// ---- 10-11. dreams: start and isolation -----------------------------------
+
+/// Everything observable about the live store, for "left untouched" assertions:
+/// memory identities, version count, revision and the mirror's files.
+type Snapshot = (
+    Vec<(String, String, String)>,
+    usize,
+    u64,
+    Vec<(String, Vec<u8>)>,
+);
+
+fn live_snapshot(ts: &TempStore) -> Snapshot {
+    let live = ts.live();
+    let files = tree(&ts.link())
+        .into_iter()
+        .map(|(name, (_, bytes))| (name, bytes))
+        .collect();
+    (
+        listed_identity(&live_list(ts)),
+        version_count(&ts.store, &live),
+        status_u64(ts, "revision"),
+        files,
+    )
+}
+
+#[test]
+fn dream_start_freezes_and_clones() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let a = seed(&mut ts.store, "/global/a.md", "alpha");
+    let b = seed(&mut ts.store, "/topics/t/b.md", "beta");
+    seed_meta(&mut ts.store, "/global/c.md", "gamma", &pinned());
+    let o1 = ts
+        .store
+        .observe("/global/obs-1.md", &text("obs-1", "one"), ACTOR)
+        .unwrap();
+    let o2 = ts
+        .store
+        .observe("/global/obs-2.md", &text("obs-2", "two"), ACTOR)
+        .unwrap();
+    assert_eq!(status_u64(&ts, "observations_pending"), 2);
+    let before = live_snapshot(&ts);
+
+    let sessions = json!([
+        {"source": "claude", "locator": "/tmp/s1.jsonl", "sha256": sha256(b"s1")},
+        {"source": "codex", "locator": "/tmp/s2.jsonl"},
+    ]);
+    let dream = start(&mut ts, sessions.clone());
+    let did = id(&dream);
+    let out = str_of(&dream, "output_store_id").to_owned();
+    assert!(did.starts_with("drm_"));
+    assert!(out.starts_with("memstore_") && out != live);
+    assert_eq!(str_of(&dream, "status"), "running");
+    assert!(dream["ended_at"].is_null());
+    assert_eq!(dream["sessions"], sessions);
+    assert_eq!(dream["observations"].as_array().unwrap().len(), 2);
+    let observations = dream["observations"].to_string();
+    assert!(observations.contains(str_of(&o1, "id")) && observations.contains(str_of(&o2, "id")));
+    assert!(!ts.store.is_live(&out).unwrap());
+    assert_eq!(status_u64(&ts, "dreams_running"), 1);
+    assert_eq!(
+        status_u64(&ts, "observations_pending"),
+        2,
+        "pending until a dream is adopted"
+    );
+
+    // The output store is a clone: same ids, paths and hashes, `created` by the dream.
+    let cloned = ts.store.list(&out, "/").unwrap();
+    assert_eq!(listed_identity(&cloned), listed_identity(&live_list(&ts)));
+    assert_eq!(
+        str_of(&ts.store.get(&out, &id(&a)).unwrap(), "content"),
+        seeded("/global/a.md", "alpha")
+    );
+    assert_eq!(
+        str_of(&ts.store.get(&out, &id(&b)).unwrap(), "path"),
+        "/topics/t/b.md"
+    );
+    let output_versions = data(&ts.store.versions(&out, None, None).unwrap()).clone();
+    assert_eq!(output_versions.len(), 3);
+    for v in &output_versions {
+        assert_eq!(str_of(v, "operation"), "created");
+        assert_eq!(str_of(v, "created_by"), format!("dream:{did}"));
+    }
+    // The live store is untouched, mirror included.
+    assert_eq!(live_snapshot(&ts), before);
+    assert_eq!(
+        status_u64(&ts, "memories"),
+        3,
+        "status counts the live store only"
+    );
+
+    // The input is frozen: later observations are not part of this dream.
+    ts.store
+        .observe("/global/obs-3.md", &text("obs-3", "three"), ACTOR)
+        .unwrap();
+    assert_eq!(
+        ts.store.dream(&did, false).unwrap()["observations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(str_of(&ts.store.dreams().unwrap()["data"][0], "id"), did);
+
+    // Limits on sessions; a rejected start creates nothing. (Only one dream runs at a
+    // time, so end this one first.)
+    ts.store.dream_cancel(&did, "token:review").unwrap();
+    let dreams = data(&ts.store.dreams().unwrap()).len();
+    let numbered = |n: usize| -> Value {
+        (0..n)
+            .map(|i| json!({"source": "claude", "locator": format!("/tmp/{i}.jsonl")}))
+            .collect()
+    };
+    invalid(ts.store.dream_start(&numbered(101), "token:review"));
+    let duplicate = json!([
+        {"source": "claude", "locator": "/tmp/same.jsonl"},
+        {"source": "claude", "locator": "/tmp/same.jsonl"},
+    ]);
+    invalid(ts.store.dream_start(&duplicate, "token:review"));
+    invalid(
+        ts.store
+            .dream_start(&json!([{"source": "claude"}]), "token:review"),
+    );
+    assert_eq!(data(&ts.store.dreams().unwrap()).len(), dreams);
+    let hundred = start(&mut ts, numbered(100));
+    ts.store
+        .dream_cancel(&id(&hundred), "token:review")
+        .unwrap();
+    start(&mut ts, json!([]));
+    assert_eq!(data(&ts.store.dreams().unwrap()).len(), dreams + 2);
+}
+
+#[test]
+fn dream_never_modifies_input() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let a = seed(&mut ts.store, "/global/a.md", "alpha");
+    let b = seed(&mut ts.store, "/topics/t/b.md", "beta");
+    let c = seed(&mut ts.store, "/topics/t/c.md", "gamma");
+    let before = live_snapshot(&ts);
+    let dream = start(&mut ts, json!([]));
+    let out = str_of(&dream, "output_store_id").to_owned();
+    assert_eq!(live_snapshot(&ts), before);
+
+    // Every kind of edit in the output store.
+    set_content(&mut ts, &out, &a, "alpha edited", "dream:agent");
+    ts.store
+        .update(&out, &id(&b), None, Some("/topics/t2/b.md"), None, ACTOR)
+        .unwrap();
+    ts.store.delete(&out, &id(&c), None, ACTOR).unwrap();
+    ts.store
+        .create(&out, "/global/new.md", &text("new", "added"), ACTOR)
+        .unwrap();
+    // A path used in both stores is not a conflict; the stores are separate.
+    ts.store
+        .create(&out, "/global/live-twin.md", &text("live-twin", "x"), ACTOR)
+        .unwrap();
+    let created = &ts.store.versions(&out, Some(&id(&a)), None).unwrap();
+    let old_version = str_of(&data(created)[1], "id").to_owned();
+    ts.store.redact(&out, &old_version, "token:review").unwrap();
+    assert_eq!(
+        live_snapshot(&ts),
+        before,
+        "edits to the output store reach the live store"
+    );
+    assert_eq!(
+        str_of(&get(&ts, &id(&a)), "content"),
+        seeded("/global/a.md", "alpha")
+    );
+    assert!(ts.store.version(&live, &old_version).is_err());
+
+    // Cancelling is no different.
+    ts.store
+        .dream_cancel(str_of(&dream, "id"), "token:review")
+        .unwrap();
+    assert_eq!(live_snapshot(&ts), before);
+}
+
+// ---- 12-14. adopt --------------------------------------------------------
+
+#[test]
+fn adopt_merges() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let a = seed(&mut ts.store, "/global/a.md", "alpha");
+    let b = seed(&mut ts.store, "/topics/t/b.md", "beta");
+    let c = seed(&mut ts.store, "/topics/t/c.md", "gamma");
+    let d = seed(&mut ts.store, "/global/d.md", "delta");
+    let revision = status_u64(&ts, "revision");
+
+    let dream = start(&mut ts, json!([]));
+    let did = id(&dream);
+    let out = str_of(&dream, "output_store_id").to_owned();
+    let new_a = seeded("/global/a.md", "alpha edited by the dream");
+    ts.store
+        .update(
+            &out,
+            &id(&a),
+            Some(&new_a),
+            None,
+            Some(str_of(&a, "content_sha256")),
+            "token:review",
+        )
+        .unwrap();
+    ts.store
+        .update(
+            &out,
+            &id(&b),
+            None,
+            Some("/topics/t2/b.md"),
+            None,
+            "token:review",
+        )
+        .unwrap();
+    ts.store
+        .delete(&out, &id(&c), None, "token:review")
+        .unwrap();
+    let e = ts
+        .store
+        .create(&out, "/global/e.md", &text("e", "epsilon"), "token:review")
+        .unwrap();
+
+    // The diff is against the frozen base.
+    let diff = ts.store.dream(&did, true).unwrap()["diff"].clone();
+    let added = diff["added"].as_array().unwrap();
+    assert_eq!(
+        (
+            added.len(),
+            str_of(&added[0], "path"),
+            str_of(&added[0], "memory_id")
+        ),
+        (1, "/global/e.md", id(&e).as_str())
+    );
+    let removed = diff["removed"].as_array().unwrap();
+    assert_eq!(
+        (removed.len(), str_of(&removed[0], "path")),
+        (1, "/topics/t/c.md")
+    );
+    let changed = diff["changed"].as_array().unwrap();
+    assert_eq!(changed.len(), 2);
+    let a_change = changed.iter().find(|c| c["memory_id"] == a["id"]).unwrap();
+    assert_eq!(str_of(&a_change["before"], "path"), "/global/a.md");
+    assert_eq!(str_of(&a_change["after"], "content"), new_a);
+    let b_change = changed.iter().find(|c| c["memory_id"] == b["id"]).unwrap();
+    assert_eq!(str_of(&b_change["before"], "path"), "/topics/t/b.md");
+    assert_eq!(str_of(&b_change["after"], "path"), "/topics/t2/b.md");
+    assert!(ts.store.dream(&did, false).unwrap().get("diff").is_none());
+
+    let done = ts
+        .store
+        .dream_adopt(&did, &review("Merged the test dream"), "token:admin")
+        .unwrap();
+    assert_eq!(str_of(&done, "status"), "completed");
+    assert!(done["ended_at"].is_string());
+    assert_eq!(
+        str_of(&done["adoption"], "summary"),
+        "Merged the test dream"
+    );
+    assert_eq!(str_of(&done["adoption"], "coverage"), "fixtures only");
+    assert_eq!(done["adoption"]["added"], json!(["/global/e.md"]));
+    assert_eq!(done["adoption"]["removed"], json!(["/topics/t/c.md"]));
+    assert_eq!(done["adoption"]["changed"].as_array().unwrap().len(), 2);
+
+    // The live store has the merge, and untouched memories got no version.
+    assert_eq!(
+        listed_paths(&live_list(&ts)),
+        [
+            "/global/a.md",
+            "/global/d.md",
+            "/global/e.md",
+            "/topics/t2/b.md"
+        ]
+    );
+    assert_eq!(str_of(&get(&ts, &id(&a)), "content"), new_a);
+    let moved = get(&ts, &id(&b));
+    assert_eq!(str_of(&moved, "path"), "/topics/t2/b.md");
+    assert_eq!(str_of(&moved, "content"), seeded("/topics/t/b.md", "beta"));
+    not_found(ts.store.get(&live, &id(&c)));
+    assert_eq!(
+        str_of(&get(&ts, &id(&d)), "memory_version_id"),
+        str_of(&d, "memory_version_id")
+    );
+    assert_eq!(
+        str_of(&find_by_path(&live_list(&ts), "/global/e.md"), "path"),
+        "/global/e.md"
+    );
+    let by_dream = data(
+        &ts.store
+            .versions(&live, None, Some(&format!("dream:{did}")))
+            .unwrap(),
+    )
+    .clone();
+    let mut operations: Vec<&str> = by_dream.iter().map(|v| str_of(v, "operation")).collect();
+    operations.sort();
+    assert_eq!(operations, ["created", "deleted", "modified", "modified"]);
+    // The revision is max(seq) of the live versions; seq is shared with the output
+    // store, so the four applied versions raise it by at least four.
+    assert!(status_u64(&ts, "revision") >= revision + 4);
+    assert_eq!(status_u64(&ts, "dreams_running"), 0);
+    assert_mirror(&ts);
+
+    // The output store is archived: every write to it is refused.
+    assert!(
+        conflict(
+            ts.store
+                .create(&out, "/global/late.md", &text("late", "x"), ACTOR),
+            "store_archived"
+        )
+        .is_empty()
+    );
+    conflict(
+        ts.store
+            .update(&out, &id(&a), Some(&new_a), None, None, ACTOR),
+        "store_archived",
+    );
+    conflict(
+        ts.store.delete(&out, &id(&d), None, ACTOR),
+        "store_archived",
+    );
+    // Adopting with an empty diff is valid and writes nothing.
+    let empty = start(&mut ts, json!([]));
+    let revision = status_u64(&ts, "revision");
+    let done = adopt(&mut ts, &id(&empty)).unwrap();
+    assert_eq!(str_of(&done, "status"), "completed");
+    assert_eq!(status_u64(&ts, "revision"), revision);
+}
+
+#[test]
+fn adopt_conflict_per_memory() {
+    // Both change X: conflict on X, nothing applied, the dream stays running.
+    let (mut ts, live, x, y) = xy();
+    let dream = start(&mut ts, json!([]));
+    let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
+    set_content(&mut ts, &out, &x, "x by the dream", "dream:agent");
+    set_content(&mut ts, &out, &y, "y by the dream", "dream:agent");
+    set_content(&mut ts, &live, &x, "x by live", ACTOR);
+    let revision = status_u64(&ts, "revision");
+    assert_eq!(
+        conflict(adopt(&mut ts, &did), "adopt_conflict"),
+        ["/global/x.md"]
+    );
+    assert_eq!(status_u64(&ts, "revision"), revision);
+    assert_eq!(
+        str_of(&get(&ts, &id(&x)), "content"),
+        seeded("/global/x.md", "x by live")
+    );
+    assert_eq!(
+        str_of(&get(&ts, &id(&y)), "content"),
+        seeded("/global/y.md", "y original"),
+        "Y must not be half-applied"
+    );
+    assert_eq!(dream_status(&ts, &did), "running");
+    assert_mirror(&ts);
+
+    // Live changes X, the dream changes Y: merges, and live X is kept.
+    let (mut ts, live, x, y) = xy();
+    let dream = start(&mut ts, json!([]));
+    let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
+    set_content(&mut ts, &out, &y, "y by the dream", "dream:agent");
+    set_content(&mut ts, &live, &x, "x by live", ACTOR);
+    adopt(&mut ts, &did).unwrap();
+    assert_eq!(
+        str_of(&get(&ts, &id(&x)), "content"),
+        seeded("/global/x.md", "x by live")
+    );
+    assert_eq!(
+        str_of(&get(&ts, &id(&y)), "content"),
+        seeded("/global/y.md", "y by the dream")
+    );
+    assert_eq!(dream_status(&ts, &did), "completed");
+
+    // Both add the same path.
+    let (mut ts, live, _, _) = xy();
+    let dream = start(&mut ts, json!([]));
+    let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
+    ts.store
+        .create(&out, "/global/new.md", &text("new", "dream"), ACTOR)
+        .unwrap();
+    ts.store
+        .create(&live, "/global/new.md", &text("new", "live"), ACTOR)
+        .unwrap();
+    assert_eq!(
+        conflict(adopt(&mut ts, &did), "adopt_conflict"),
+        ["/global/new.md"]
+    );
+    assert_eq!(dream_status(&ts, &did), "running");
+
+    // Added slugs must be free too, whatever the directory.
+    let (mut ts, live, _, _) = xy();
+    let dream = start(&mut ts, json!([]));
+    let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
+    ts.store
+        .create(&out, "/topics/z/dup.md", &text("dup", "dream"), ACTOR)
+        .unwrap();
+    ts.store
+        .create(&live, "/global/dup.md", &text("dup", "live"), ACTOR)
+        .unwrap();
+    conflict(adopt(&mut ts, &did), "adopt_conflict");
+    assert_eq!(status_u64(&ts, "memories"), 3);
+
+    // Live deleted X, the dream changed X.
+    let (mut ts, live, x, _) = xy();
+    let dream = start(&mut ts, json!([]));
+    let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
+    set_content(&mut ts, &out, &x, "x by the dream", "dream:agent");
+    ts.store.delete(&live, &id(&x), None, ACTOR).unwrap();
+    assert_eq!(
+        conflict(adopt(&mut ts, &did), "adopt_conflict"),
+        ["/global/x.md"]
+    );
+
+    // Live changed X, the dream deleted X.
+    let (mut ts, live, x, _) = xy();
+    let dream = start(&mut ts, json!([]));
+    let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
+    ts.store.delete(&out, &id(&x), None, "dream:agent").unwrap();
+    set_content(&mut ts, &live, &x, "x by live", ACTOR);
+    assert_eq!(
+        conflict(adopt(&mut ts, &did), "adopt_conflict"),
+        ["/global/x.md"]
+    );
+    assert_eq!(
+        str_of(&get(&ts, &id(&x)), "content"),
+        seeded("/global/x.md", "x by live")
+    );
+
+    // Live renamed X (its path changed), the dream changed X's content.
+    let (mut ts, live, x, _) = xy();
+    let dream = start(&mut ts, json!([]));
+    let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
+    set_content(&mut ts, &out, &x, "x by the dream", "dream:agent");
+    ts.store
+        .update(&live, &id(&x), None, Some("/topics/q/x.md"), None, ACTOR)
+        .unwrap();
+    conflict(adopt(&mut ts, &did), "adopt_conflict");
+    assert_eq!(str_of(&get(&ts, &id(&x)), "path"), "/topics/q/x.md");
+}
+
+#[test]
+fn adopt_gates_and_observations() {
+    let (mut ts, _live, x, _y) = xy();
+    let dream = start(&mut ts, json!([]));
+    let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
+    set_content(&mut ts, &out, &x, "x by the dream", "dream:agent");
+    let revision = status_u64(&ts, "revision");
+
+    // The review gates: summary, coverage, resolved conflicts.
+    let good = review("A summary");
+    let broken = [
+        json!({"coverage": "c", "conflicts": []}),
+        json!({"summary": "  ", "coverage": "c", "conflicts": []}),
+        json!({"summary": "s", "conflicts": []}),
+        json!({"summary": "s", "coverage": "c"}),
+        json!({"summary": "s", "coverage": "c", "conflicts": "none"}),
+        json!({"summary": "s", "coverage": "c", "conflicts": [{"status": "open"}]}),
+        json!({"summary": "s", "coverage": "c", "conflicts": [{"status": "resolved"}, {"status": "open"}]}),
+    ];
+    for r in &broken {
+        invalid(ts.store.dream_adopt(&did, r, "token:admin"));
+        assert_eq!(dream_status(&ts, &did), "running", "{r}");
+        assert_eq!(status_u64(&ts, "revision"), revision, "{r}");
+    }
+    let mut resolved = good.clone();
+    resolved["conflicts"] = json!([{"status": "resolved", "note": "kept the dream's wording"}]);
+    ts.store
+        .dream_adopt(&did, &resolved, "token:admin")
+        .unwrap();
+    // The dream must be running.
+    invalid(ts.store.dream_adopt(&did, &good, "token:admin"));
+
+    // Observations stay pending until a dream that carries them is adopted.
+    let (mut ts, _live, _x, _y) = xy();
+    let o = ts
+        .store
+        .observe("/global/obs.md", &text("obs", "lesson"), ACTOR)
+        .unwrap();
+    let first = start(&mut ts, json!([]));
+    assert!(first["observations"].to_string().contains(str_of(&o, "id")));
+    assert_eq!(status_u64(&ts, "observations_pending"), 1);
+    adopt(&mut ts, &id(&first)).unwrap();
+    assert_eq!(status_u64(&ts, "observations_pending"), 0);
+    // A dream started after the adoption no longer carries it.
+    let third = start(&mut ts, json!([]));
+    assert!(third["observations"].as_array().unwrap().is_empty());
+    ts.store.dream_cancel(&id(&third), "token:review").unwrap();
+    // A cancelled dream consumes nothing.
+    let o2 = ts
+        .store
+        .observe("/global/obs2.md", &text("obs2", "lesson"), ACTOR)
+        .unwrap();
+    let doomed = start(&mut ts, json!([]));
+    ts.store.dream_cancel(&id(&doomed), "token:review").unwrap();
+    let fourth = start(&mut ts, json!([]));
+    assert!(
+        fourth["observations"]
+            .to_string()
+            .contains(str_of(&o2, "id"))
+    );
+    assert_eq!(status_u64(&ts, "observations_pending"), 1);
+    adopt(&mut ts, &id(&fourth)).unwrap();
+
+    // The pinned budget is checked again at adopt: each side fits alone, not together.
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    seed(&mut ts.store, "/global/base.md", "base");
+    let dream = start(&mut ts, json!([]));
+    let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
+    let pin = |path: &str| content(slug_of(path), &body_costing(path, 2500, "p"), &pinned());
+    ts.store
+        .create(
+            &out,
+            "/global/dream-pin.md",
+            &pin("/global/dream-pin.md"),
+            "dream:agent",
+        )
+        .unwrap();
+    ts.store
+        .create(
+            &live,
+            "/global/live-pin.md",
+            &pin("/global/live-pin.md"),
+            ACTOR,
+        )
+        .unwrap();
+    let revision = status_u64(&ts, "revision");
+    conflict(adopt(&mut ts, &did), "pinned_budget_exceeded");
+    assert_eq!(status_u64(&ts, "revision"), revision);
+    assert_eq!(status_u64(&ts, "pinned_chars"), 2500);
+    assert_eq!(dream_status(&ts, &did), "running");
+}
+
+// ---- 15. cancel ----------------------------------------------------------
+
+#[test]
+fn cancel_semantics() {
+    let (mut ts, live, x, _y) = xy();
+    ts.store
+        .observe("/global/obs.md", &text("obs", "lesson"), ACTOR)
+        .unwrap();
+    let before = live_snapshot(&ts);
+    let dream = start(&mut ts, json!([]));
+    let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
+    set_content(&mut ts, &out, &x, "x by the dream", "dream:agent");
+
+    let canceled = ts.store.dream_cancel(&did, "token:review").unwrap();
+    assert_eq!(str_of(&canceled, "status"), "canceled");
+    assert!(canceled["ended_at"].is_string());
+    assert_eq!(status_u64(&ts, "dreams_running"), 0);
+    assert_eq!(live_snapshot(&ts), before);
+    // The output store is archived.
+    assert!(
+        conflict(
+            ts.store
+                .create(&out, "/global/late.md", &text("late", "x"), ACTOR),
+            "store_archived"
+        )
+        .is_empty()
+    );
+    conflict(
+        ts.store.delete(&out, &id(&x), None, ACTOR),
+        "store_archived",
+    );
+    // Cancelling again is a no-op.
+    let again = ts.store.dream_cancel(&did, "token:review").unwrap();
+    assert_eq!(str_of(&again, "status"), "canceled");
+    assert_eq!(again["ended_at"], canceled["ended_at"]);
+    // A canceled dream cannot be adopted; its observations are still pending.
+    invalid(adopt(&mut ts, &did));
+    assert_eq!(dream_status(&ts, &did), "canceled");
+    assert_eq!(status_u64(&ts, "observations_pending"), 1);
+
+    // Cancelling a completed dream is a 400; unknown ids are 404.
+    let completed = start(&mut ts, json!([]));
+    adopt(&mut ts, &id(&completed)).unwrap();
+    invalid(ts.store.dream_cancel(&id(&completed), "token:review"));
+    assert_eq!(dream_status(&ts, &id(&completed)), "completed");
+    not_found(
+        ts.store
+            .dream_cancel("drm_00000000000000000000000000000000", "token:review"),
+    );
+    not_found(
+        ts.store
+            .dream("drm_00000000000000000000000000000000", false),
+    );
+    not_found(adopt(&mut ts, "drm_00000000000000000000000000000000"));
+    // The live store never saw the dream's edit.
+    assert_eq!(
+        str_of(&ts.store.get(&live, &id(&x)).unwrap(), "content"),
+        seeded("/global/x.md", "x original")
+    );
+}
+
+// ---- 16-18. mirror -------------------------------------------------------
+
+#[test]
+fn mirror_tracks_live() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    assert_mirror(&ts); // revision 0
+
+    let a = seed(&mut ts.store, "/global/a.md", "alpha");
+    assert_mirror(&ts);
+    let b = seed(&mut ts.store, "/topics/hardware/b.md", "မြန်မာ beta\n");
+    assert_mirror(&ts);
+    seed_meta(
+        &mut ts.store,
+        "/projects/home/sai/x/p.md",
+        "pinned",
+        &pinned(),
+    );
+    assert_mirror(&ts);
+
+    let a2 = set_content(&mut ts, &live, &a, "alpha two", ACTOR);
+    assert_mirror(&ts);
+    ts.store
+        .update(
+            &live,
+            &id(&b),
+            None,
+            Some("/topics/software/b.md"),
+            None,
+            ACTOR,
+        )
+        .unwrap();
+    assert_mirror(&ts);
+    assert!(
+        !ts.link().join("topics/hardware").exists(),
+        "empty directories are not kept"
+    );
+    ts.store
+        .delete(&live, &id(&a), Some(str_of(&a2, "content_sha256")), ACTOR)
+        .unwrap();
+    assert_mirror(&ts);
+    ts.store
+        .redact(&live, str_of(&a, "memory_version_id"), "token:admin")
+        .unwrap();
+    assert_mirror(&ts);
+    // A rejected write changes nothing.
+    conflict(
+        ts.store
+            .create(&live, "/topics/software/b.md", &text("b", "dup"), ACTOR),
+        "path_exists",
+    );
+    assert_mirror(&ts);
+
+    // Dream: starting and editing the output store never shows in the mirror; adopting does.
+    let dream = start(&mut ts, json!([]));
+    let out = str_of(&dream, "output_store_id").to_owned();
+    assert_mirror(&ts);
+    ts.store
+        .create(
+            &out,
+            "/global/from-dream.md",
+            &text("from-dream", "new"),
+            ACTOR,
+        )
+        .unwrap();
+    assert_mirror(&ts);
+    assert!(!ts.link().join("global/from-dream.md").exists());
+    adopt(&mut ts, &id(&dream)).unwrap();
+    assert_mirror(&ts);
+    assert_eq!(
+        fs::read(ts.link().join("global/from-dream.md")).unwrap(),
+        text("from-dream", "new").as_bytes()
+    );
+
+    // A reopened store sees the same mirror.
+    ts.reopen();
+    assert_mirror(&ts);
+    assert_eq!(status_u64(&ts, "memories"), 3);
+}
+
+/// The revision a generation directory stands for: its name starts with the revision
+/// (design: `.generations/<revision>`); a suffix, such as a unique build id, is allowed.
+fn generation_revision(dir: &Path) -> i64 {
+    let name = dir.file_name().unwrap().to_str().unwrap();
+    let digits: String = name.chars().take_while(char::is_ascii_digit).collect();
+    digits
+        .parse()
+        .unwrap_or_else(|_| panic!("generation directory {dir:?} does not start with a revision"))
+}
+
+/// The generation behind an open directory descriptor, from /proc.
+fn generation_of(dir: &fs::File) -> i64 {
+    let target = fs::read_link(format!("/proc/self/fd/{}", dir.as_raw_fd())).unwrap();
+    generation_revision(Path::new(
+        &target.to_str().unwrap().replace(" (deleted)", ""),
+    ))
+}
+
+/// The whole swap test must finish well inside this, even if the writer dies.
+const DEADLINE: Duration = Duration::from_secs(30);
+
+/// Sets the flag when dropped, so the reader loop ends when the writer scope unwinds.
+struct StopReader<'a>(&'a AtomicBool);
+impl Drop for StopReader<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+#[test]
+fn mirror_swap_atomic() {
+    // Linux only: the reader pins a generation with an open directory descriptor, so
+    // the marker and the memory file it reads come from the same generation.
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let k = seed(&mut ts.store, "/global/k.md", "tick-0");
+    seed(&mut ts.store, "/global/c.md", "constant");
+    let base = status_u64(&ts, "revision") as i64;
+    let link = ts.link();
+    let done = AtomicBool::new(false);
+    let started = Instant::now();
+    let expected = |tick: i64| seeded("/global/k.md", &format!("tick-{tick}"));
+
+    let reads = thread::scope(|scope| {
+        let reader = scope.spawn(|| {
+            let (mut reads, mut last) = (0u32, 0i64);
+            while !done.load(Ordering::Acquire) || reads == 0 {
+                assert!(
+                    started.elapsed() < DEADLINE,
+                    "no result within {DEADLINE:?}: did the writer die?"
+                );
+                let dir = fs::File::open(&link).expect("the symlink must always resolve");
+                let generation = generation_of(&dir);
+                let at = |name: &str| format!("/proc/self/fd/{}/{name}", dir.as_raw_fd());
+                match (
+                    fs::read(at(".agent-memory-store")),
+                    fs::read(at("global/k.md")),
+                    fs::read(at("global/c.md")),
+                    fs::read(at("INDEX.md")),
+                ) {
+                    (Ok(marker), Ok(k), Ok(_), Ok(_)) => {
+                        let marker: Value = serde_json::from_slice(&marker).unwrap();
+                        assert_eq!(
+                            marker["revision"].as_i64(),
+                            Some(generation),
+                            "marker and generation disagree"
+                        );
+                        assert!(
+                            generation >= last,
+                            "revision went backwards: {last} then {generation}"
+                        );
+                        assert_eq!(
+                            String::from_utf8(k).unwrap(),
+                            expected(generation - base),
+                            "torn generation {generation}"
+                        );
+                        last = generation;
+                        reads += 1;
+                    }
+                    // Only a generation older than the previous one may be retired.
+                    _ => {
+                        let now = generation_revision(&fs::read_link(&link).unwrap());
+                        assert!(
+                            now >= generation + 2,
+                            "generation {generation} was incomplete while still current ({now})"
+                        );
+                    }
+                }
+            }
+            reads
+        });
+        // However the writer ends, even by panicking, the reader must be told to stop.
+        let _stop = StopReader(&done);
+        let mut current = k;
+        for tick in 1..=200 {
+            current = set_content(&mut ts, &live, &current, &format!("tick-{tick}"), ACTOR);
+        }
+        drop(_stop);
+        reader.join().unwrap()
+    });
+    assert!(reads > 0, "the reader never read a complete generation");
+    assert_eq!(status_u64(&ts, "revision") as i64, base + 200);
+    assert_mirror(&ts);
+}
+
+#[test]
+fn mirror_failure_keeps_commit() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    seed(&mut ts.store, "/global/a.md", "alpha");
+    assert_eq!(ts.store.status().unwrap()["mirror_stale"], false);
+
+    // Make the mirror unwritable: a regular file where the generations directory
+    // must be (a permission bit would not stop root).
+    let generations = ts.mnt.join(".generations");
+    make_writable(&ts.mnt);
+    fs::remove_dir_all(&generations).unwrap();
+    fs::write(&generations, "in the way").unwrap();
+
+    let created = ts
+        .store
+        .create(
+            &live,
+            "/global/b.md",
+            &seeded("/global/b.md", "beta"),
+            ACTOR,
+        )
+        .expect("a mirror failure must not fail the write");
+    let status = ts.store.status().unwrap();
+    assert_eq!(status["mirror_stale"], true);
+    assert_eq!(status["memories"], 2);
+    assert_eq!(status["revision"], 2);
+    assert_eq!(str_of(&get(&ts, &id(&created)), "path"), "/global/b.md");
+    // Later writes still commit while the mirror is broken.
+    seed(&mut ts.store, "/global/c.md", "gamma");
+    assert_eq!(status_u64(&ts, "revision"), 3);
+
+    // Reopening with the obstacle gone rebuilds the mirror.
+    fs::remove_file(&generations).unwrap();
+    ts.reopen();
+    assert_eq!(ts.store.status().unwrap()["mirror_stale"], false);
+    assert_eq!(
+        listed_paths(&live_list(&ts)),
+        ["/global/a.md", "/global/b.md", "/global/c.md"]
+    );
+    assert_mirror(&ts);
+}
+
+// ---- v2 fix round (docs/coordination/v2-review-triage.md, WS-A) ----------
+
+/// `SELECT COUNT(*)` on the temporary database, read-only and out of band.
+fn count(ts: &TempStore, sql: &str, args: &[&str]) -> i64 {
+    Connection::open_with_flags(&ts.db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .unwrap()
+        .query_row(sql, rusqlite::params_from_iter(args), |r| r.get(0))
+        .unwrap()
+}
+
+// X6: one valid path that is a file and another that needs a directory of the same
+// name wedge the mirror for good (EEXIST on every later write).
+#[test]
+fn path_md_middle_segment_rejected() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    seed(&mut ts.store, "/projects/a/b.md", "a file");
+    let needs_dir = "/projects/a/b.md/c.md";
+    assert!(model::validate_path(needs_dir).is_err());
+    invalid(
+        ts.store
+            .create(&live, needs_dir, &seeded(needs_dir, "x"), ACTOR),
+    );
+    assert_eq!(ts.store.status().unwrap()["mirror_stale"], false);
+    assert_eq!(status_u64(&ts, "memories"), 1);
+    // The store keeps working, and the mirror with it.
+    seed(&mut ts.store, "/projects/a/d.md", "next");
+    assert_mirror(&ts);
+
+    // No segment but the last may end in `.md`, in any layout and any position.
+    for path in [
+        "/projects/a.md/b/c.md",
+        "/projects/a/b.md/c/d.md",
+        "/projects/x/.md/y.md",
+        "/topics/t.md/x.md",
+        "/roles/r.md/x.md",
+    ] {
+        assert!(model::validate_path(path).is_err(), "{path}");
+        invalid(ts.store.create(&live, path, &seeded(path, "x"), ACTOR));
+    }
+    // Look-alikes are fine.
+    for path in [
+        "/projects/a/b.mdx/c.md",
+        "/projects/a/md/c.md",
+        "/projects/a/b.md.d/c.md",
+        "/projects/a/amd/c.md",
+    ] {
+        model::validate_path(path).unwrap_or_else(|e| panic!("{path}: {e:?}"));
+    }
+    assert_eq!(status_u64(&ts, "memories"), 2);
+}
+
+// X7: a leaked secret must be removable. Every dream clones live into an output
+// store; once the dream ends the clone is purged.
+#[test]
+fn archived_output_store_purged() {
+    const MARKER: &str = "LEAKED-MARKER-7f3a9c";
+    for adopted in [false, true] {
+        let mut ts = TempStore::new();
+        let live = ts.live();
+        let a = seed(&mut ts.store, "/global/a.md", &format!("holds {MARKER}"));
+        let dream = start(&mut ts, json!([]));
+        let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
+        let in_store = "SELECT COUNT(*) FROM memories WHERE store_id=?1";
+        let cloned_version = id(&data(&ts.store.versions(&out, None, None).unwrap())[0]);
+        assert_eq!(
+            count(&ts, in_store, &[&out]),
+            1,
+            "the clone exists while running"
+        );
+        if adopted {
+            set_content(&mut ts, &out, &a, "changed by the dream", "dream:agent");
+            adopt(&mut ts, &did).unwrap();
+        } else {
+            ts.store.dream_cancel(&did, "token:review").unwrap();
+        }
+
+        // Nothing of the clone is left: no memories, no versions, no marker.
+        assert_eq!(count(&ts, in_store, &[&out]), 0, "adopted={adopted}");
+        assert_eq!(
+            count(
+                &ts,
+                "SELECT COUNT(*) FROM memory_versions WHERE store_id=?1",
+                &[&out]
+            ),
+            0,
+            "adopted={adopted}"
+        );
+        not_found(ts.store.get(&out, &id(&a)));
+        not_found(ts.store.version(&out, &cloned_version));
+        assert!(data(&ts.store.list(&out, "/").unwrap()).is_empty());
+        // The diff only exists while the dream runs.
+        invalid(ts.store.dream(&did, true));
+        let ended = ts.store.dream(&did, false).unwrap();
+        assert_eq!(
+            str_of(&ended, "status"),
+            if adopted { "completed" } else { "canceled" }
+        );
+        // Writes to the ended store are still refused.
+        conflict(
+            ts.store
+                .create(&out, "/global/late.md", &text("late", "x"), ACTOR),
+            "store_archived",
+        );
+        // Live history is untouched; an adoption keeps what it applied.
+        if adopted {
+            let by_dream = ts
+                .store
+                .versions(&live, None, Some(&format!("dream:{did}")))
+                .unwrap();
+            assert_eq!(data(&by_dream).len(), 1);
+            assert!(!ended["adoption"].is_null());
+        } else {
+            assert!(str_of(&get(&ts, &id(&a)), "content").contains(MARKER));
+        }
+        assert_eq!(status_u64(&ts, "memories"), 1);
+    }
+
+    // Repeated daily dreams do not grow the database by one clone each.
+    let mut ts = TempStore::new();
+    seed(&mut ts.store, "/global/a.md", "alpha");
+    seed(&mut ts.store, "/global/b.md", "beta");
+    for _ in 0..3 {
+        let dream = start(&mut ts, json!([]));
+        ts.store.dream_cancel(&id(&dream), "token:review").unwrap();
+    }
+    assert_eq!(count(&ts, "SELECT COUNT(*) FROM memories", &[]), 2);
+    assert_eq!(count(&ts, "SELECT COUNT(*) FROM memory_versions", &[]), 2);
+}
+
+// X7: observation bodies are copied into every dream's frozen input; redact removes
+// every copy.
+#[test]
+fn observation_redact_nulls_every_copy() {
+    const MARKER: &str = "OBS-SECRET-LEAK-42";
+    let mut ts = TempStore::new();
+    seed(&mut ts.store, "/global/a.md", "alpha");
+    let observed = ts
+        .store
+        .observe(
+            "/global/obs.md",
+            &text("obs", &format!("lesson with {MARKER}")),
+            ACTOR,
+        )
+        .unwrap();
+    let oid = id(&observed);
+    // Two dreams carry it: one ended, one still running.
+    let ended = start(&mut ts, json!([]));
+    assert!(ended["observations"].to_string().contains(MARKER));
+    ts.store.dream_cancel(&id(&ended), "token:review").unwrap();
+    let running = start(&mut ts, json!([]));
+    assert!(running["observations"].to_string().contains(MARKER));
+    let other = ts
+        .store
+        .observe("/global/other.md", &text("other", "harmless"), ACTOR)
+        .unwrap();
+
+    let redacted = ts.store.redact_observation(&oid, "token:admin").unwrap();
+    assert_eq!(str_of(&redacted, "id"), oid);
+    assert!(redacted["created"].is_string());
+    // The body column is NOT NULL, so the body keeps its shape with the content gone
+    // and records who redacted it; who made the observation is kept.
+    let gone = &redacted["body"];
+    assert!(
+        gone["path"].is_null() && gone["content"].is_null(),
+        "{gone}"
+    );
+    assert_eq!(str_of(gone, "created_by"), ACTOR);
+    assert!(gone["redacted_at"].is_string());
+    assert_eq!(str_of(gone, "redacted_by"), "token:admin");
+    // No copy of the body is left in either table.
+    assert_eq!(
+        count(
+            &ts,
+            "SELECT COUNT(*) FROM observations WHERE instr(coalesce(body,''), ?1)>0",
+            &[MARKER]
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            &ts,
+            "SELECT COUNT(*) FROM dream_jobs WHERE instr(input, ?1)>0",
+            &[MARKER]
+        ),
+        0
+    );
+    // The id and time survive; every copy carries the same redacted body; other
+    // observations are untouched.
+    for d in [&ended, &running] {
+        let view = ts.store.dream(str_of(d, "id"), false).unwrap();
+        let carried = view["observations"].as_array().unwrap();
+        assert_eq!(carried.len(), 1);
+        assert_eq!(str_of(&carried[0], "id"), oid);
+        assert!(carried[0]["created"].is_string());
+        assert_eq!(carried[0]["body"], *gone, "{}", carried[0]);
+    }
+    assert_eq!(
+        count(
+            &ts,
+            "SELECT COUNT(*) FROM observations WHERE id=?1 AND body IS NOT NULL",
+            &[str_of(&other, "id")]
+        ),
+        1
+    );
+    // Redacting again is a no-op: same result, nothing rewritten.
+    let again = ts.store.redact_observation(&oid, "token:other").unwrap();
+    assert_eq!(again, redacted);
+    not_found(
+        ts.store
+            .redact_observation("00000000000000000000000000000000", "token:admin"),
+    );
+}
+
+// X10: at most one running dream; a crashed run is cleared by cancelling it.
+#[test]
+fn one_running_dream() {
+    let mut ts = TempStore::new();
+    seed(&mut ts.store, "/global/a.md", "alpha");
+    let first = start(&mut ts, json!([]));
+    let dreams = data(&ts.store.dreams().unwrap()).len();
+    let stores = count(&ts, "SELECT COUNT(*) FROM stores", &[]);
+
+    let paths = conflict(
+        ts.store.dream_start(&json!([]), "token:review"),
+        "dream_running",
+    );
+    assert_eq!(paths, [id(&first)], "the 409 names the running dream");
+    assert_eq!(data(&ts.store.dreams().unwrap()).len(), dreams);
+    assert_eq!(count(&ts, "SELECT COUNT(*) FROM stores", &[]), stores);
+    assert_eq!(status_u64(&ts, "dreams_running"), 1);
+
+    // Cancel clears it; so does adopt.
+    ts.store.dream_cancel(&id(&first), "token:review").unwrap();
+    let second = start(&mut ts, json!([]));
+    conflict(
+        ts.store.dream_start(&json!([]), "token:review"),
+        "dream_running",
+    );
+    adopt(&mut ts, &id(&second)).unwrap();
+    let third = start(&mut ts, json!([]));
+    assert_eq!(status_u64(&ts, "dreams_running"), 1);
+    ts.store.dream_cancel(&id(&third), "token:review").unwrap();
+    assert_eq!(status_u64(&ts, "dreams_running"), 0);
+}
+
+// X12: an escaped JSON key is still the `pinned` key. Counting by raw bytes missed it.
+#[test]
+fn escaped_pinned_key_counts() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let path = "/global/esc.md";
+    let body = body_costing(path, PINNED_BUDGET, "e");
+    let escaped =
+        render(&frontmatter("esc", &pinned()), &body).replace("\"pinned\"", "\"\\u0070inned\"");
+    assert!(escaped.contains("\\u0070inned") && !escaped.contains("\"pinned\""));
+    ts.store.create(&live, path, &escaped, ACTOR).unwrap();
+    assert_eq!(status_u64(&ts, "pinned_chars") as usize, PINNED_BUDGET);
+    // The budget is full, so any further pinned memory is refused.
+    let more = "/global/more.md";
+    conflict(
+        ts.store
+            .create(&live, more, &content("more", "x", &pinned()), ACTOR),
+        "pinned_budget_exceeded",
+    );
+    // A memory that only mentions the word is not pinned.
+    seed(
+        &mut ts.store,
+        "/global/mention.md",
+        "the \"pinned\" flag keeps a rule in the start view",
+    );
+    assert_eq!(status_u64(&ts, "pinned_chars") as usize, PINNED_BUDGET);
+}
+
+/// Credentials that must never be stored, one per format the triage names (X8).
+fn credentials() -> Vec<(&'static str, String)> {
+    let hex64 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    vec![
+        (
+            "slack",
+            "xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx".into(),
+        ),
+        ("google", format!("AIza{}", &"SyA1b2C3".repeat(5)[..35])),
+        (
+            "github fine-grained",
+            format!("github_pat_{}_{}", "A1b2C3d4E5f6G7h8I9j0K1", &"x9Z".repeat(20)[..59]),
+        ),
+        (
+            "jwt",
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c".into(),
+        ),
+        (
+            "bearer",
+            "Authorization: Bearer 3f9a1c5e7b2d4f6a8c0e1b3d5f7a9c2e".into(),
+        ),
+        ("labelled 64-hex", format!("encryption_key: {hex64}")),
+    ]
+}
+
+// X8: one credential check on every stored string, and closed `sessions` items.
+#[test]
+fn credential_check_everywhere() {
+    let mut ts = TempStore::new();
+    let live = ts.live();
+    let found = credentials();
+    for (format, secret) in &found {
+        let note = format!("note: {secret} end");
+        // Memory content: body, and a frontmatter string.
+        invalid(
+            ts.store
+                .create(&live, "/global/leak.md", &text("leak", &note), ACTOR),
+        );
+        let in_evidence = content(
+            "leak",
+            "fine",
+            &json!({"evidence": [{"source": "s", "locator": "l", "note": note}]}),
+        );
+        invalid(
+            ts.store
+                .create(&live, "/global/leak.md", &in_evidence, ACTOR),
+        );
+        // Observations.
+        invalid(
+            ts.store
+                .observe("/global/obs.md", &text("obs", &note), ACTOR),
+        );
+        // Dream sessions.
+        for field in ["locator", "source"] {
+            let mut session = json!({"source": "claude", "locator": "/tmp/s.jsonl"});
+            session[field] = json!(note);
+            invalid(ts.store.dream_start(&json!([session]), "token:review"));
+        }
+        assert_eq!(format_count(&ts), (0, 0, 0), "{format}: nothing was stored");
+    }
+    // Sessions carry only source, locator and sha256.
+    let hex = sha256(b"s");
+    ts.store
+        .dream_start(
+            &json!([{"source": "claude", "locator": "/tmp/s.jsonl", "sha256": hex}]),
+            "token:review",
+        )
+        .map(|d| {
+            ts.store
+                .dream_cancel(str_of(&d, "id"), "token:review")
+                .unwrap()
+        })
+        .unwrap();
+    invalid(ts.store.dream_start(
+        &json!([{"source": "claude", "locator": "/tmp/s.jsonl", "note": "extra"}]),
+        "token:review",
+    ));
+    // Look-alikes are fine: a content hash with no label, and ordinary prose.
+    for harmless in [
+        format!("commit hash {}", sha256(b"x")),
+        "Bearer of bad news".to_owned(),
+        "the key is under the mat".to_owned(),
+    ] {
+        seed(
+            &mut ts.store,
+            &format!(
+                "/global/ok-{}.md",
+                sha256(harmless.as_bytes())[..8].to_owned()
+            ),
+            &harmless,
+        );
+    }
+
+    // The adopt review: summary, coverage and conflicts.
+    let dream = start(&mut ts, json!([]));
+    let did = id(&dream);
+    for (format, secret) in &found {
+        let note = format!("note: {secret} end");
+        let mut variants = Vec::new();
+        for field in ["summary", "coverage"] {
+            let mut r = review("fine");
+            r[field] = json!(note);
+            variants.push(r);
+        }
+        let mut r = review("fine");
+        r["conflicts"] = json!([{"status": "resolved", "note": note}]);
+        variants.push(r);
+        for r in variants {
+            invalid(ts.store.dream_adopt(&did, &r, "token:admin"));
+            assert_eq!(dream_status(&ts, &did), "running", "{format}");
+        }
+    }
+    adopt(&mut ts, &did).unwrap();
+}
+
+/// (memories, observations, dreams) stored so far; the harmless ones are not counted.
+fn format_count(ts: &TempStore) -> (i64, i64, i64) {
+    (
+        count(ts, "SELECT COUNT(*) FROM memories", &[]),
+        count(ts, "SELECT COUNT(*) FROM observations", &[]),
+        count(ts, "SELECT COUNT(*) FROM dream_jobs", &[]),
+    )
+}
+
+// X14: the adopt body is `{summary, coverage, conflicts}`; `reviewed` gates nothing.
+#[test]
+fn adopt_body_has_no_reviewed() {
+    let (mut ts, _live, x, _y) = xy();
+    let dream = start(&mut ts, json!([]));
+    let (did, out) = (id(&dream), str_of(&dream, "output_store_id").to_owned());
+    set_content(&mut ts, &out, &x, "x by the dream", "dream:agent");
+    let body = json!({"summary": "s", "coverage": "c", "conflicts": []});
+    // A caller that still sends the old flag is told so (400), and nothing happens.
+    let mut old_style = body.clone();
+    old_style["reviewed"] = json!(true);
+    invalid(ts.store.dream_adopt(&did, &old_style, "token:admin"));
+    assert_eq!(dream_status(&ts, &did), "running");
+    let done = ts.store.dream_adopt(&did, &body, "token:admin").unwrap();
+    assert_eq!(str_of(&done, "status"), "completed");
+    assert!(done["adoption"].get("reviewed").is_none(), "{done}");
+    assert_eq!(
+        str_of(&get(&ts, &id(&x)), "content"),
+        seeded("/global/x.md", "x by the dream")
+    );
+}
+
+// X31: the shared temp dir helper leaves nothing behind, even around a sealed mirror.
+#[test]
+fn temp_store_leaves_nothing() {
+    let (path, mnt) = {
+        let mut ts = TempStore::new();
+        seed(&mut ts.store, "/topics/t/a.md", "alpha");
+        seed(&mut ts.store, "/global/b.md", "beta");
+        assert_eq!(
+            tree(&ts.link())["topics/"].0,
+            0o555,
+            "the mirror is sealed while the store lives"
+        );
+        (ts.path().to_owned(), ts.mnt.clone())
+    };
+    assert!(!mnt.exists() && !path.exists(), "{path:?} was left behind");
+    assert_no_leftovers(&path);
+
+    let sealed = {
+        let dir = SealedTempDir::new();
+        let sealed = dir.path().join("a/b");
+        fs::create_dir_all(&sealed).unwrap();
+        fs::write(sealed.join("f"), "x").unwrap();
+        fs::set_permissions(sealed.join("f"), fs::Permissions::from_mode(0o444)).unwrap();
+        for d in [&sealed, &dir.path().join("a")] {
+            fs::set_permissions(d, fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        dir.path().to_owned()
+    };
+    assert_no_leftovers(&sealed);
+    assert!(!sealed.exists());
+}
+
+// Coordinator ruling: the store opens every connection with `PRAGMA secure_delete = ON`,
+// so redacted and purged text does not survive in the database file's free pages.
+#[test]
+fn secure_delete_leaves_no_trace() {
+    let ts = TempStore::new();
+    let live = ts.live();
+    let (n_version, n_obs, n_cancel, n_adopt) = (
+        "NEEDLE-VERSION-5521",
+        "NEEDLE-OBSERVATION-5522",
+        "NEEDLE-CANCELED-DREAM-5523",
+        "NEEDLE-ADOPTED-DREAM-5524",
+    );
+    let has = |needle: &str| {
+        let bytes = fs::read(&ts.db).unwrap();
+        bytes.windows(needle.len()).any(|w| w == needle.as_bytes())
+    };
+    // Every write goes through one extra handle that is closed before the file is read.
+    let mut store = ts.open();
+
+    // A secret in an old version, then redacted.
+    let a = store
+        .create(
+            &live,
+            "/global/a.md",
+            &seeded("/global/a.md", &format!("old text {n_version}")),
+            ACTOR,
+        )
+        .unwrap();
+    store
+        .update(
+            &live,
+            &id(&a),
+            Some(&seeded("/global/a.md", "new text")),
+            None,
+            None,
+            ACTOR,
+        )
+        .unwrap();
+    // A secret in an observation, copied into a dream's frozen input, then redacted.
+    let o = store
+        .observe(
+            "/global/obs.md",
+            &text("obs", &format!("lesson {n_obs}")),
+            ACTOR,
+        )
+        .unwrap();
+    // A secret that exists only in a dream's output store, which is then purged by a
+    // cancel, and one that is purged by an adopt after being deleted in the output.
+    let canceled = store.dream_start(&json!([]), "token:review").unwrap();
+    store
+        .create(
+            str_of(&canceled, "output_store_id"),
+            "/global/leak.md",
+            &seeded("/global/leak.md", &format!("only in the clone {n_cancel}")),
+            "dream:agent",
+        )
+        .unwrap();
+    // Before anything is removed, the file really does hold the text.
+    drop(store);
+    for needle in [n_version, n_obs, n_cancel] {
+        assert!(has(needle), "{needle} should be in the file before removal");
+    }
+    let mut store = ts.open();
+    store
+        .dream_cancel(str_of(&canceled, "id"), "token:review")
+        .unwrap();
+    let adopted = store.dream_start(&json!([]), "token:review").unwrap();
+    let out = str_of(&adopted, "output_store_id").to_owned();
+    let temp = store
+        .create(
+            &out,
+            "/global/temp.md",
+            &seeded(
+                "/global/temp.md",
+                &format!("created then deleted {n_adopt}"),
+            ),
+            "dream:agent",
+        )
+        .unwrap();
+    store.delete(&out, &id(&temp), None, "dream:agent").unwrap();
+    store
+        .dream_adopt(str_of(&adopted, "id"), &review("s"), "token:admin")
+        .unwrap();
+    let old_version = data(&store.versions(&live, Some(&id(&a)), None).unwrap())
+        .last()
+        .map(id)
+        .unwrap();
+    store.redact(&live, &old_version, "token:admin").unwrap();
+    store.redact_observation(&id(&o), "token:admin").unwrap();
+    drop(store);
+
+    for needle in [n_version, n_obs, n_cancel, n_adopt] {
+        assert!(!has(needle), "{needle} is still in the database file");
+    }
+    // The journal sidecar is gone too, and nothing else was lost.
+    assert!(!ts.db.with_extension("sqlite3-journal").exists());
+    assert_eq!(
+        get(&ts, &id(&a))["content"],
+        seeded("/global/a.md", "new text")
+    );
+}
