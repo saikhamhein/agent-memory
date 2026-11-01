@@ -45,6 +45,9 @@ fn connect(path: &Path, flags: OpenFlags) -> Result<Connection> {
     let db = Connection::open_with_flags(path, flags)?;
     db.busy_timeout(Duration::from_secs(10))?;
     db.pragma_update(None, "foreign_keys", true)?;
+    // Zero deleted content, so redact and purge leave no bytes in the file
+    // (ON, not FAST: FAST leaves traces on freelist pages).
+    db.pragma_update(None, "secure_delete", true)?;
     Ok(db)
 }
 
@@ -136,17 +139,17 @@ fn check_free(db: &Connection, store_id: &str, path: &str, id: &str) -> Result<(
 
 /// The store's pinned `block_len` total and the pinned paths.
 fn pinned(db: &Connection, store_id: &str) -> Result<(usize, Vec<String>)> {
-    let mut stmt = db.prepare(
-        "SELECT path,content FROM memories WHERE store_id=?1 AND instr(content,'\"pinned\"')>0 ORDER BY path",
-    )?;
+    let mut stmt =
+        db.prepare("SELECT path,content FROM memories WHERE store_id=?1 ORDER BY path")?;
     let mut total = 0;
     let mut paths = Vec::new();
     for row in stmt.query_map([store_id], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
     })? {
         let (path, content) = row?;
-        let memory = model::parse(&path, &content)?;
-        if memory.pinned() {
+        // Decode every frontmatter: a raw-byte prefilter misses escaped keys.
+        if model::split(&content)?.0["pinned"] == true {
+            let memory = model::parse(&path, &content)?;
             total += block_len(&memory);
             paths.push(path);
         }
@@ -277,6 +280,30 @@ fn version_json(r: &rusqlite::Row, with_content: bool) -> rusqlite::Result<Value
         v["content"] = json!(r.get::<_, Option<String>>("content")?);
     }
     Ok(v)
+}
+
+/// Archives a dream's output store and deletes its memories and versions, so
+/// a secret copied into it leaves with the dream.
+fn end_output(db: &Connection, store_id: &str, at: &str) -> Result<()> {
+    db.execute("DELETE FROM memories WHERE store_id=?1", [store_id])?;
+    db.execute("DELETE FROM memory_versions WHERE store_id=?1", [store_id])?;
+    db.execute(
+        "UPDATE stores SET archived_at=?2 WHERE id=?1",
+        [store_id, at],
+    )?;
+    Ok(())
+}
+
+/// Runs the credential check on every string inside `value`.
+fn check_strings(value: &Value) -> Result<()> {
+    match value {
+        Value::String(s) => model::check_secrets(s),
+        Value::Array(items) => items.iter().try_for_each(check_strings),
+        Value::Object(fields) => fields
+            .iter()
+            .try_for_each(|(k, v)| model::check_secrets(k).and_then(|()| check_strings(v))),
+        _ => Ok(()),
+    }
 }
 
 /// Observation ids in the input of an adopted v2 dream or a promoted legacy dream.
@@ -785,7 +812,61 @@ impl Store {
         Ok(json!({ "id": id }))
     }
 
+    /// Replaces an observation's path and content with nulls, here and in every
+    /// dream input that copied it. The id, time and `created_by` stay.
+    pub fn redact_observation(&mut self, id: &str, actor: &str) -> Result<Value> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (created, body): (String, String) = tx
+            .query_row(
+                "SELECT created,body FROM observations WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .ok_or(Error::NotFound)?;
+        let mut body = decode(&body)?;
+        if body.get("redacted_at").is_none() {
+            body = json!({
+                "path": null,
+                "content": null,
+                "created_by": body.get("created_by").cloned().unwrap_or(Value::Null),
+                "redacted_at": now(),
+                "redacted_by": actor,
+            });
+            tx.execute(
+                "UPDATE observations SET body=?2 WHERE id=?1",
+                params![id, encode(&body)?],
+            )?;
+            let jobs = {
+                let mut stmt = tx.prepare("SELECT id,input FROM dream_jobs")?;
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            for (job, input) in jobs {
+                let mut input = decode(&input)?;
+                let mut copied = false;
+                for o in input["observations"].as_array_mut().into_iter().flatten() {
+                    if o["id"] == id {
+                        o["body"] = body.clone();
+                        copied = true;
+                    }
+                }
+                if copied {
+                    tx.execute(
+                        "UPDATE dream_jobs SET input=?2 WHERE id=?1",
+                        params![job, encode(&input)?],
+                    )?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(json!({"id": id, "created": created, "body": body}))
+    }
+
     /// Clones the live store into a new output store and freezes the input.
+    /// Only one dream runs at a time.
     pub fn dream_start(&mut self, sessions: &Value, _actor: &str) -> Result<Value> {
         let list = sessions
             .as_array()
@@ -793,6 +874,17 @@ impl Store {
             .ok_or_else(|| invalid("sessions must be an array of at most 100 sessions"))?;
         let mut locators = HashSet::new();
         for s in list {
+            let fields = s
+                .as_object()
+                .ok_or_else(|| invalid("Each session must be an object"))?;
+            if let Some(key) = fields
+                .keys()
+                .find(|k| !matches!(k.as_str(), "source" | "locator" | "sha256"))
+            {
+                return Err(invalid(&format!(
+                    "Unknown session key {key:?}; use source, locator and sha256"
+                )));
+            }
             string(s, "source")?;
             if !locators.insert(string(s, "locator")?) {
                 return Err(invalid("Session locators must be unique"));
@@ -800,10 +892,25 @@ impl Store {
             if s.get("sha256").is_some_and(|v| !v.is_string()) {
                 return Err(invalid("sha256 must be a string"));
             }
+            check_strings(s)?;
         }
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let running: Option<String> = tx
+            .query_row(
+                "SELECT id FROM dream_jobs WHERE status='running'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(running) = running {
+            return Err(Error::conflict(
+                "dream_running",
+                "A dream is already running; adopt or cancel it first",
+                vec![running],
+            ));
+        }
         let id = new_id("drm");
         let actor = format!("dream:{id}");
         let output = new_id("memstore");
@@ -865,6 +972,12 @@ impl Store {
         let dream = Dream::load(&self.db, id)?;
         let mut value = dream.json();
         if diff {
+            if dream.status != "running" {
+                return Err(invalid(&format!(
+                    "The dream is {}; a diff exists only while it runs",
+                    dream.status
+                )));
+            }
             value["diff"] = dream.diff(&self.db)?;
         }
         Ok(value)
@@ -872,9 +985,18 @@ impl Store {
 
     /// Applies the dream's changes to the live store, per memory, or changes nothing.
     pub fn dream_adopt(&mut self, id: &str, review: &Value, _actor: &str) -> Result<Value> {
-        if review["reviewed"] != true {
-            return Err(invalid("Review the dream before adopting it"));
+        let fields = review
+            .as_object()
+            .ok_or_else(|| invalid("The review must be an object"))?;
+        if let Some(key) = fields
+            .keys()
+            .find(|k| !matches!(k.as_str(), "summary" | "coverage" | "conflicts"))
+        {
+            return Err(invalid(&format!(
+                "Unknown review key {key:?}; use summary, coverage and conflicts"
+            )));
         }
+        check_strings(review)?;
         let summary = string(review, "summary")?;
         let coverage = string(review, "coverage")?;
         let conflicts = review["conflicts"]
@@ -943,23 +1065,6 @@ impl Store {
                 stale,
             ));
         }
-        let consumed = consumed_observations(&tx)?;
-        let taken: Vec<String> = dream.input["observations"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|o| o["id"].as_str())
-            .filter(|id| consumed.contains(*id))
-            .map(String::from)
-            .collect();
-        if !taken.is_empty() {
-            return Err(Error::conflict(
-                "observations_consumed",
-                "Another adopted dream already consumed these observations",
-                taken,
-            ));
-        }
-
         let actor = dream.actor();
         for id in &removed {
             delete_memory(&tx, &self.live, id, &live[id].1, &actor)?;
@@ -992,10 +1097,7 @@ impl Store {
             "UPDATE dream_jobs SET status='completed',adoption=?2,ended_at=?3 WHERE id=?1",
             params![dream.id, encode(&adoption)?, at],
         )?;
-        tx.execute(
-            "UPDATE stores SET archived_at=?2 WHERE id=?1",
-            [&dream.output, &at],
-        )?;
+        end_output(&tx, &dream.output, &at)?;
         tx.commit()?;
         self.sync_mirror();
         self.dream(id, false)
@@ -1013,10 +1115,7 @@ impl Store {
                     "UPDATE dream_jobs SET status='canceled',ended_at=?2 WHERE id=?1",
                     [id, &at],
                 )?;
-                tx.execute(
-                    "UPDATE stores SET archived_at=?2 WHERE id=?1",
-                    [&dream.output, &at],
-                )?;
+                end_output(&tx, &dream.output, &at)?;
                 tx.commit()?;
             }
             "canceled" => drop(tx),

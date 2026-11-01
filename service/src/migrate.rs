@@ -70,6 +70,16 @@ fn replay(tx: &Transaction, pins: &[String], dry_run: bool) -> Result<Value> {
             )));
         }
     }
+    // v1 never leaves the active revision behind the latest; such a store was edited by hand.
+    let active: i64 = tx.query_row("SELECT value FROM state WHERE key='active'", [], |r| {
+        r.get(0)
+    })?;
+    let latest = revisions.len() as i64 - 1;
+    if active != latest {
+        return Err(invalid(&format!(
+            "The active revision {active} is not the latest revision {latest}; refusing to migrate"
+        )));
+    }
 
     tx.execute_batch(include_str!("schema_v2.sql"))?;
     let store = new_id("memstore");
