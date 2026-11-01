@@ -1,10 +1,5 @@
-use crate::model::absolute_path;
 use serde::Deserialize;
-use std::{
-    collections::{BTreeMap, HashSet},
-    net::SocketAddr,
-    path::PathBuf,
-};
+use std::{collections::HashSet, net::SocketAddr, path::PathBuf};
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -28,11 +23,6 @@ pub struct Token {
 pub struct Config {
     pub listen: SocketAddr,
     pub database: PathBuf,
-    /// Directory holding the read-only mirror; defaults to `mnt` next to the database.
-    #[serde(default)]
-    pub mount: Option<PathBuf>,
-    #[serde(default)]
-    pub projects: BTreeMap<String, String>,
     pub tokens: Vec<Token>,
 }
 
@@ -46,10 +36,6 @@ impl Config {
         anyhow::ensure!(
             self.database.is_absolute(),
             "database must be an absolute path"
-        );
-        anyhow::ensure!(
-            self.mount.as_ref().is_none_or(|m| m.is_absolute()),
-            "mount must be an absolute path"
         );
         anyhow::ensure!(
             !self.tokens.is_empty(),
@@ -73,15 +59,10 @@ impl Config {
             anyhow::ensure!(hashes.insert(&token.sha256), "Duplicate token hash");
             anyhow::ensure!(!token.capabilities.is_empty(), "Token has no capabilities");
         }
-        for (id, path) in &self.projects {
-            anyhow::ensure!(!id.is_empty(), "Project ids cannot be empty");
-            absolute_path(path)?;
-        }
         Ok(())
     }
+    /// The read-only mirror lives in `mnt` next to the database.
     pub fn mount_dir(&self) -> PathBuf {
-        self.mount
-            .clone()
-            .unwrap_or_else(|| self.database.with_file_name("mnt"))
+        self.database.with_file_name("mnt")
     }
 }
