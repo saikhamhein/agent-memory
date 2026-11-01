@@ -122,8 +122,8 @@ Merge order: A → H and R → M → C. Removed request keys are rejected with 4
 - Coordinator ruling on S2 (should pinned changes need the user's request?): no. The user's standing instruction is that dreams run fully autonomously and never leave proposals for approval. So the daily dream may change pinned memories only on evidence of the user's own words, and reports every pinned change (§3.5).
 - Architect ruling: A's fix PR carries the minimal edits to 7 api_v2 tests that send `reviewed` or start a second dream, so the integration branch stays green at A's head.
 - Sent after the user's message: test C's brief (with PR 21–23 rulings) and the test M ruling (a pre-commit failure restores the old service and re-enables the unit).
-- Coordinator ruling: `PRAGMA secure_delete = ON` on every store connection, plus a test that a redacted secret is gone from the file bytes. No VACUUM.
-- 2026-11-01: the user is concerned about size and complexity. Asked: finish the fixes then cut the coral features (dream copy-and-merge, history replay), or keep only the recall fix. Awaiting their answer.
+- Coordinator ruling: `PRAGMA secure_delete = ON` on every store connection, plus a test that a redacted secret is gone from the file bytes. No VACUUM. The architect agreed. Cutover note: secure_delete covers only the live database; the pre-v2 backup in runtime/ and the legacy v1 tables keep old text until the rollback window closes (Δ8, X44).
+- 2026-11-01: the user asked whether the extra Anthropic-style features are worth it. Coordinator verdict, as given to the user: keep history, the mirror and the migration; the dream copy-and-merge is a close call, kept because the fixes shrink it; add no further Anthropic features. The fix round continues.
 
 ## Blockers
 
