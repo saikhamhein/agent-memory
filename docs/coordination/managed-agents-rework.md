@@ -88,6 +88,7 @@ Merge order: A → H and R → M → C. Removed request keys are rejected with 4
 ## Merged
 
 - Checked: the API rejecting `limit`/`budget` is safe. The client CLI and stub accept and ignore them (design §3.3, §4.1), and `stub_forwards_recall` runs the exact loader line.
+- PR 24 (fix round, R: X18, X19) → `rework/managed-agents-v2`. Coordinator check at 220ee02: 81 Rust tests, clippy clean, TMPDIR left empty.
 - PR 21 (fix-round contract: X1–X14, the stale-dream rule in the skill (cancel a dream running over 1 h, otherwise report), installer disable plus user_version, token reconcile, §5 Δ1–Δ8) → `rework/managed-agents-v2` `fdc326a`.
 - PR 20 (triage) → `rework/managed-agents-v2` `1b7abfe`.
 - PR 17 (WS-C clients, MCP, hook, stub, skill, docs) → `rework/managed-agents-v2`. Coordinator check at head d4633e6 with a release build: 33 Python tests (28 C + 5 install), 79 Rust tests; live service untouched. All five workstreams are merged.
