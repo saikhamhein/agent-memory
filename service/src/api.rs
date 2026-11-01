@@ -167,6 +167,7 @@ pub fn router(config: Config, store: Store) -> Router {
         .route("/v1/status", get(status))
         .route("/v1/recall", post(recall))
         .route("/v1/observations", post(observe))
+        .route("/v1/observations/{id}/redact", post(redact_observation))
         .route("/v1/dreams", post(dream_start).get(dreams))
         .route("/v1/dreams/{id}", get(dream))
         .route("/v1/dreams/{id}/adopt", post(dream_adopt))
@@ -206,6 +207,7 @@ async fn required(app: &App, request: &mut Request) -> std::result::Result<Capab
             | "/v1/memory_stores/{store}/memory_versions/{id}",
         ) => Capability::Review,
         (&Method::POST, "/v1/dreams/{id}/adopt")
+        | (&Method::POST, "/v1/observations/{id}/redact")
         | (&Method::POST, "/v1/memory_stores/{store}/memory_versions/{id}/redact") => {
             Capability::Promote
         }
@@ -534,5 +536,21 @@ async fn redact(
     Path((store, id)): Path<(String, String)>,
 ) -> Reply {
     app.json(move |s| s.redact(&store, &id, &client.actor()))
+        .await
+}
+
+/// A body that must be empty or `{}`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NoBody {}
+
+async fn redact_observation(
+    State(app): State<App>,
+    Extension(client): Extension<Client>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Reply {
+    let NoBody {} = parse(&body)?;
+    app.json(move |s| s.redact_observation(&id, &client.actor()))
         .await
 }
