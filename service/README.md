@@ -22,7 +22,7 @@ ln -sfn "$PWD/hooks/agent-memory-recall.py" ~/.claude/hooks/agent-memory-recall.
 systemctl --user is-active agent-memory && agent-memory-client status
 ```
 
-`install-user.py` also links the skill into `~/.claude/skills` and `~/.agents/skills`, and stops before changing anything if a folder that is not a link is in the way. If the checkout has a `sources/latest-catalog.json` and the state directory has none, it copies it across, so the first dream after that move doesn't take every log for new. It refuses to run in a linked worktree, because removing the worktree would break the links.
+`install-user.py` also links the skill into `~/.claude/skills` and `~/.agents/skills`, and stops before changing anything if a folder that is not a link is in the way. If the checkout has a `sources/latest-catalog.json` and the state directory has none, it copies it across, so the first dream after that move doesn't take every log for new. It refuses to run in a linked worktree, because removing the worktree would break the links. It also clears a leftover MCP adapter and its registrations.
 
 `update-local.sh` runs these steps after a merge. It never migrates.
 
@@ -46,7 +46,7 @@ The client uses `client.json` by default, which allows `status`, `recall`, `ls`,
 | `recall [--query Q] [--project DIR] [--role R] [--topic T]… [--client LABEL]` | Prints the start view, or with a query, only the matches. A `DIR` in a Git worktree maps to the main checkout |
 | `ls [PREFIX] [--store S]`, `cat PATH\|memver_… [--store S]` | Lists memories; prints a memory or version as its exact bytes |
 | `versions [PATH] [--created-by ACTOR] [--store S]` | Version history, newest first |
-| `observe PATH FILE` | Records a candidate |
+| `observe PATH FILE` | Records a candidate; a FILE of `-` reads stdin |
 | `useful PATH --why TEXT` | Marks a recalled memory that helped |
 | `write PATH FILE [--expected SHA] [--to NEW] [--store S]` | Creates; with `--expected`, updates or renames |
 | `rm PATH [--expected SHA] [--store S]`, `redact ID` | Deletes a memory; erases an old version's content (`memver_…`) or an observation's body |

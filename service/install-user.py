@@ -216,6 +216,7 @@ def main():
     start(bin_dir)
     link_skill(links, checkout / 'skill/dream-memory')
     carry_catalog(checkout, home)
+    remove_mcp(checkout, home)
     print('Installed and started agent-memory.service on http://127.0.0.1:8787')
     print('Credentials are in ~/.config/agent-memory (not printed).')
 
@@ -234,6 +235,20 @@ def carry_catalog(checkout, home):
     if old.exists() and not (state / old.name).exists():
         state.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(old, state / old.name)
+
+
+def remove_mcp(checkout, home):
+    # MCP was removed on 2026-11-04. Delete this once every machine has updated.
+    adapter = home / '.local/share/agent-memory-mcp'
+    if not adapter.exists():
+        return
+    for command in (['claude', 'mcp', 'remove', '--scope', 'user', 'shared_memory'],
+                    ['codex', 'mcp', 'remove', 'shared_memory']):
+        if shutil.which(command[0]):
+            subprocess.run(command, capture_output=True)
+    shutil.rmtree(adapter)
+    shutil.rmtree(checkout / 'service/.venv-mcp', ignore_errors=True)
+    (checkout / 'runtime/codex-config.toml').unlink(missing_ok=True)
 
 
 def install(binary, source, server, files, runtime, bin_dir, unit_dir):
