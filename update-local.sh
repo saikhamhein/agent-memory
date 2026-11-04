@@ -8,8 +8,16 @@ cd "$(dirname "$0")"
 [ "$(git branch --show-current)" = master ] || { echo "Run this in the master checkout" >&2; exit 1; }
 git pull --ff-only origin master
 cargo build --release --locked --manifest-path service/Cargo.toml
-python3 service/install-user.py --database "$PWD/memory.sqlite3"
+python3 service/install-user.py
 python3 service/install-mcp.py
 mkdir -p "$HOME/.claude/hooks"
 ln -sfn "$PWD/hooks/agent-memory-recall.py" "$HOME/.claude/hooks/agent-memory-recall.py"
+for skills in "$HOME/.claude/skills" "$HOME/.agents/skills"; do
+    mkdir -p "$skills"
+    [ ! -e "$skills/dream-memory" ] || [ -L "$skills/dream-memory" ] || {
+        echo "$skills/dream-memory is not a link; move it aside and rerun" >&2
+        exit 1
+    }
+    ln -sfn "$PWD/skill/dream-memory" "$skills/dream-memory"
+done
 echo "Updated to $(git rev-parse --short HEAD). Restart agent sessions to load the new MCP adapter."

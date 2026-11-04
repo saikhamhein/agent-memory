@@ -148,12 +148,18 @@ def write_config(files, runtime):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--database', type=Path, required=True, help='Existing authoritative SQLite database')
+    parser.add_argument('--database', type=Path,
+                        help='Existing authoritative SQLite database; required on a first install, then read from server.toml')
     parser.add_argument('--migrate', action='store_true',
                         help='Back up and migrate a v1 store to v2 (stops the service while migrating)')
     parser.add_argument('--pin', action='append', default=[], metavar='SLUG',
                         help='With --migrate: pin this memory (repeatable)')
     args = parser.parse_args()
+    server = Path.home() / '.config/agent-memory/server.toml'
+    if args.database is None:
+        if not server.exists():
+            parser.error('First install: pass --database')
+        args.database = Path(tomllib.loads(server.read_text())['database'])
     database = args.database.resolve(strict=True)
     version = schema_version(database)
     if version < 2 and not args.migrate:
@@ -173,7 +179,7 @@ def main():
     for directory in (bin_dir, config_dir, unit_dir):
         directory.mkdir(parents=True, exist_ok=True)
     config_dir.chmod(0o700)
-    server, client = config_dir / 'server.toml', config_dir / 'client.json'
+    client = config_dir / 'client.json'
     files = {}
     if server.exists():
         server_text = server.read_text()

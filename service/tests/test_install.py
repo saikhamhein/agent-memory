@@ -452,6 +452,17 @@ class TokenReconcileTests(unittest.TestCase):
             self.assertEqual((self.config_dir / name).stat().st_mode & 0o777, 0o600, name)
         self.assertTrue(self.box.service_active())
 
+    def test_install_reads_the_database_from_server_toml(self):
+        ran = self.box.run(sys.executable, str(self.box.repo / 'service/install-user.py'))
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertEqual(self.box.config()['database'], str(self.box.database))
+
+    def test_first_install_needs_a_database(self):
+        (self.config_dir / 'server.toml').unlink()
+        ran = self.box.run(sys.executable, str(self.box.repo / 'service/install-user.py'))
+        self.assertNotEqual(ran.returncode, 0)
+        self.assertIn('--database', ran.stderr)
+
     def test_token_subcommand_removed(self):
         ran = subprocess.run([str(BINARY), 'token'], capture_output=True, text=True, timeout=30)
         self.assertNotEqual(ran.returncode, 0, ran.stdout)
@@ -482,6 +493,26 @@ class UpdateLocalTests(unittest.TestCase):
         self.assertFalse([e for e in self.box.events() if 'install-mcp' in e], 'nothing runs after the guard')
         self.assertEqual(self.box.database.read_bytes(), before)
         self.assertEqual(self.box.installed(), [])
+
+    def test_update_local_links_the_skill_for_both_agents(self):
+        self.box.migrated_database(REVISIONS)
+        for _ in range(2):  # a rerun replaces the links in place
+            ran = self.box.run('./update-local.sh')
+            self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        for parent in ('.claude/skills', '.agents/skills'):
+            link = self.box.home / parent / 'dream-memory'
+            self.assertTrue(link.is_symlink(), link)
+            self.assertEqual(os.readlink(link), str(self.box.repo / 'skill/dream-memory'))
+
+    def test_update_local_refuses_a_skill_folder_that_is_not_a_link(self):
+        self.box.migrated_database(REVISIONS)
+        folder = self.box.home / '.agents/skills/dream-memory'
+        folder.mkdir(parents=True)
+        (folder / 'SKILL.md').write_text('a local copy\n')
+        ran = self.box.run('./update-local.sh')
+        self.assertNotEqual(ran.returncode, 0)
+        self.assertIn('not a link', ran.stderr)
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), ['SKILL.md'], 'the copy is left alone')
 
     def test_update_local_updates_a_migrated_store(self):
         self.box.migrated_database(REVISIONS)

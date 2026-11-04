@@ -18,13 +18,17 @@ The Python suites start the release binary on a temporary store through `service
 ## Install on this machine
 
 ```sh
-python3 service/install-user.py --database "$PWD/memory.sqlite3"   # add --migrate --pin SLUG… once for a v1 database
-python3 service/install-mcp.py                                     # MCP adapter for Codex and Claude Code (user scope)
+python3 service/install-user.py --database PATH   # first install only; later runs read it from server.toml; add --migrate --pin SLUG… once for a v1 database
+python3 service/install-mcp.py                    # MCP adapter for Codex and Claude Code (user scope)
 ln -sfn "$PWD/hooks/agent-memory-recall.py" ~/.claude/hooks/agent-memory-recall.py
+ln -sfn "$PWD/skill/dream-memory" ~/.claude/skills/dream-memory
+ln -sfn "$PWD/skill/dream-memory" ~/.agents/skills/dream-memory
 systemctl --user is-active agent-memory && agent-memory-client status
 ```
 
-`update-local.sh` runs these steps after a merge. It never migrates.
+`update-local.sh` runs these steps after a merge, and stops rather than replace a skill folder that is not a link. It never migrates.
+
+The package holds code only. Each machine keeps its own facts in the locations below, and its database and logs outside the checkout are never tracked.
 
 | Item | Location |
 | --- | --- |
