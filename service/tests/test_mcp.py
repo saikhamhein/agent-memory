@@ -145,7 +145,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.server.api('GET', '/v1/status')[1]['observations_pending'], 0)
 
     async def test_recall_with_project_finds_project_memories(self):
-        root = '/home/sai/Projects/mesh'
+        root = '/srv/projects/mesh'
         self.server.seed(project_path(root), 'Mesh rule', 'Run the mesh tests first.')
         async with self.session() as session:
             tool = next(t for t in (await session.list_tools()).tools if t.name == 'memory_recall')

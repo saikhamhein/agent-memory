@@ -13,17 +13,17 @@ Ask first before sending messages, publishing, deleting or spending. A past appr
 ### Report results with evidence and remaining gaps [/global/report-with-evidence.md]
 State which commit and environment were tested, and separate passed, failed, untested and blocked. Correct earlier claims as soon as they prove wrong. Applies to every agent that reads the shared memory.
 
-### Run the storage tests before any merge [/projects/home/sai/Projects/agent-memory/run-tests-before-merge.md]
+### Run the storage tests before any merge [/projects/srv/projects/agent-memory/run-tests-before-merge.md]
 Run the Python storage tests and the cargo tests on the resulting head, not on the branch before the rebase.
 
 ## This project
-### Keep the database in DELETE journal mode [/projects/home/sai/Projects/agent-memory/sqlite-journal-delete-mode.md]
+### Keep the database in DELETE journal mode [/projects/srv/projects/agent-memory/sqlite-journal-delete-mode.md]
 The store moved off WAL so a plain file copy is a consistent backup. Do not switch the journal mode back.
 
-### The local service listens on port 8787 only on loopback [/projects/home/sai/Projects/agent-memory/service-port-8787.md]
+### The local service listens on port 8787 only on loopback [/projects/srv/projects/agent-memory/service-port-8787.md]
 Clients reach the service on 127.0.0.1. Never bind it to another interface, and keep tokens in the config file.
 
-### The mirror directory is read-only; write through the service [/projects/home/sai/Projects/agent-memory/mirror-is-read-only.md]
+### The mirror directory is read-only; write through the service [/projects/srv/projects/agent-memory/mirror-is-read-only.md]
 Files under the mirror have mode 0444. Editing them changes nothing, because the next generation replaces them. Permissions are part of the contract.
 
 ## Requested

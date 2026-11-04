@@ -24,8 +24,8 @@ use std::{
 
 const MIRROR: &str = "/srv/memory/mnt/shared-agent-memory";
 const REV: i64 = 42;
-const AM: &str = "/home/sai/Projects/agent-memory";
-const LORA: &str = "/home/sai/Projects/custom-lora-mesh";
+const AM: &str = "/srv/projects/agent-memory";
+const LORA: &str = "/srv/projects/custom-lora-mesh";
 const KEEP: &str = "/global/keep-it-simple.md";
 const START_MAX: usize = 9500;
 const START_BODY_BUDGET: usize = 3000;
@@ -157,7 +157,7 @@ impl Store {
                 0 => format!("/global/extra-{i}.md"),
                 1 => format!("/topics/topic-{}/extra-{i}.md", i % 20),
                 2 => format!("/roles/role-{}/extra-{i}.md", i % 7),
-                _ => format!("/projects/home/sai/Projects/extra-{}/extra-{i}.md", i % 40),
+                _ => format!("/projects/srv/projects/extra-{}/extra-{i}.md", i % 40),
             };
             self.add(
                 &path,
@@ -461,7 +461,7 @@ fn core_never_cut() {
     let mut over = Store::fixture();
     for i in 0..30 {
         over.add(
-            &format!("/projects/home/sai/Projects/agent-memory/big-{i:02}.md"),
+            &format!("/projects/srv/projects/agent-memory/big-{i:02}.md"),
             &format!("Large project note {i}"),
             &"x".repeat(1500),
             json!({"priority": 100 - i}),
@@ -475,9 +475,9 @@ fn core_never_cut() {
     );
     let r = over.start(AM, "", &[]);
     assert!(
-        r.text.contains(&block(over.item(
-            "/projects/home/sai/Projects/agent-memory/run-tests-before-merge.md"
-        ))),
+        r.text.contains(&block(
+            over.item("/projects/srv/projects/agent-memory/run-tests-before-merge.md")
+        )),
         "project-pinned memory cut by overflow"
     );
 }
@@ -556,7 +556,7 @@ fn index_bounded_and_named() {
             "index stops early: the view has only {} characters",
             r.text.chars().count()
         );
-        for other in ["/projects/home/sai/Projects/extra-", "/burmese-reader/"] {
+        for other in ["/projects/srv/projects/extra-", "/burmese-reader/"] {
             assert!(
                 !r.text.contains(other),
                 "another project's memory appears: {other}"
@@ -580,7 +580,7 @@ fn index_bounded_and_named() {
     let mut s = Store::fixture();
     for i in 0..8 {
         s.add(
-            &format!("/projects/home/sai/Projects/agent-memory/wide-{i}.md"),
+            &format!("/projects/srv/projects/agent-memory/wide-{i}.md"),
             &format!("Wide note {i}"),
             &"y".repeat(900),
             json!({"priority": 50 - i}),
@@ -886,7 +886,7 @@ fn budgets_count_the_heading() {
 fn project_and_requested_in_full() {
     let s = Store::fixture();
     let r = s.start(AM, "coordinator", &["hardware", "ui"]);
-    let am = "/projects/home/sai/Projects/agent-memory";
+    let am = "/projects/srv/projects/agent-memory";
     // "This project": the unpinned project memories, ordered by priority then slug
     assert_eq!(
         section(&r.text, "This project"),
@@ -1086,7 +1086,7 @@ const QUERIES: [(&str, &[&str]); 5] = [
     ),
     (
         "mirror directory permissions",
-        &["/projects/home/sai/Projects/agent-memory/mirror-is-read-only.md"],
+        &["/projects/srv/projects/agent-memory/mirror-is-read-only.md"],
     ),
     (
         "merge approved",
@@ -1441,7 +1441,7 @@ fn task_body_budget_first_fit() {
 /// terms. Without this, "mesh" would match every memory of the project as a title hit.
 #[test]
 fn project_words_do_not_match() {
-    let root = "/home/sai/Projects/radio-mesh";
+    let root = "/srv/projects/radio-mesh";
     let mut s = Store::new();
     // five project memories whose titles, tags and bodies use none of the path words
     let notes = [
@@ -1468,7 +1468,7 @@ fn project_words_do_not_match() {
     ];
     for (i, (title, body)) in notes.iter().enumerate() {
         s.add(
-            &format!("/projects/home/sai/Projects/radio-mesh/n{i}.md"),
+            &format!("/projects/srv/projects/radio-mesh/n{i}.md"),
             title,
             body,
             json!({}),
@@ -1484,7 +1484,7 @@ fn project_words_do_not_match() {
             json!({}),
         );
     }
-    for project in [root, "/home/sai/Projects/radio-mesh/firmware"] {
+    for project in [root, "/srv/projects/radio-mesh/firmware"] {
         for q in [
             "radio mesh",
             "radio",
@@ -1503,7 +1503,7 @@ fn project_words_do_not_match() {
         // its own title words still find the memory
         assert_eq!(
             s.recall(project, "", &[], "duty cycle").returned,
-            ["/projects/home/sai/Projects/radio-mesh/n0.md"]
+            ["/projects/srv/projects/radio-mesh/n0.md"]
         );
     }
 
@@ -1687,5 +1687,5 @@ fn index_md_is_the_full_index() {
     assert_eq!(start, golden("start_none.txt"));
     assert!(!start.contains("/projects/") && md.contains("/projects/"));
     // the pinned project memory is a line in the index, not in full
-    assert!(md.contains("- /projects/home/sai/Projects/agent-memory/run-tests-before-merge.md — "));
+    assert!(md.contains("- /projects/srv/projects/agent-memory/run-tests-before-merge.md — "));
 }

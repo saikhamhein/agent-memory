@@ -388,7 +388,7 @@ class InstallMigrationGuardTests(unittest.TestCase):
 
 SESSION = {'name': 'agent-session', 'capabilities': ['recall', 'observe']}
 MAINTAINER = ['recall', 'observe', 'review', 'promote']
-V1_PROJECTS = '[projects]\nagent-memory = "/home/someone/Projects/agent-memory"\n'
+V1_PROJECTS = '[projects]\nagent-memory = "/srv/projects/agent-memory"\n'
 
 
 class TokenReconcileTests(unittest.TestCase):

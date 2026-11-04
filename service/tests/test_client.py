@@ -209,12 +209,12 @@ class ClientTests(unittest.TestCase):
         self.assertIn('Remove what is not needed.', plain)
         old = self.run_client('recall', '--limit', '12', '--budget', '12000', '--json').stdout
         self.assertEqual(old, plain)
-        with_options = self.run_client('recall', '--project', '/home/sai/x', '--role', 'coordinator',
+        with_options = self.run_client('recall', '--project', '/srv/x', '--role', 'coordinator',
                                        '--topic', 'hardware', '--client', 'session-start')
         self.assertIn('Remove what is not needed.', with_options.stdout)
         entry = self.server.recall_entries()[-1]
         self.assertEqual((entry['client'], entry['view'], entry['project'], entry['role'], entry['topics']),
-                         ('session-start', 'start', '/home/sai/x', 'coordinator', ['hardware']))
+                         ('session-start', 'start', '/srv/x', 'coordinator', ['hardware']))
         nothing = self.run_client('recall', '--query', 'kubernetes ingress yaml')
         self.assertEqual(nothing.stdout, 'No memory matches "kubernetes ingress yaml".\n')
         self.assertEqual(self.server.recall_entries()[-1]['view'], 'task')

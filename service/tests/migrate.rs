@@ -17,11 +17,7 @@ const T4: &str = "2026-10-05T13:15:30+00:00";
 fn plain() -> V1 {
     let a = mem("alpha", global(), "Alpha one");
     let b = mem("beta", topic("hardware"), "Beta one");
-    let c = mem(
-        "gamma",
-        project("/home/sai/Projects/agent-memory"),
-        "Gamma one",
-    );
+    let c = mem("gamma", project("/srv/projects/agent-memory"), "Gamma one");
     v1_db(
         &[
             revision(T1, vec![a.clone(), b.clone()]),
@@ -506,7 +502,7 @@ fn pin_marks_only_the_named_memories() {
             vec![
                 keep.clone(),
                 mem("other", global(), "Other"),
-                mem("proj", project("/home/sai/Projects/x"), "P"),
+                mem("proj", project("/srv/projects/x"), "P"),
             ],
         ),
         revision(
@@ -514,7 +510,7 @@ fn pin_marks_only_the_named_memories() {
             vec![
                 with(&keep, "body", json!("Keep it simple v2. မြန်မာ")),
                 mem("other", global(), "Other"),
-                mem("proj", project("/home/sai/Projects/x"), "P"),
+                mem("proj", project("/srv/projects/x"), "P"),
             ],
         ),
     ];
@@ -525,7 +521,7 @@ fn pin_marks_only_the_named_memories() {
         BTreeMap::from([
             ("/global/keep-it-simple.md".to_string(), true),
             ("/global/other.md".to_string(), false),
-            ("/projects/home/sai/Projects/x/proj.md".to_string(), true),
+            ("/projects/srv/projects/x/proj.md".to_string(), true),
         ])
     );
     let conn = db.conn();
