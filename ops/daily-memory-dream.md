@@ -5,7 +5,7 @@ description: Autonomously consolidate new session lessons into the shared memory
 
 Run the daily dream for the user's shared agent memory store, fully autonomously, from start to finish. The user is not present and does not want to be asked anything.
 
-Follow the dream cycle in the `dream-memory` skill, every step, every run. It uses `agent-memory-client --config ~/.config/agent-memory/maintainer.json`; the MCP tools can't run a dream. This prompt adds only what is specific to the schedule.
+Follow the dream cycle in the `dream-memory` skill, `~/.agents/skills/dream-memory/SKILL.md`, every step, every run. It uses `agent-memory-client --config ~/.config/agent-memory/maintainer.json`; the MCP tools can't run a dream. This prompt adds only what is specific to the schedule.
 
 ## Authorization (standing, from the user)
 - 2026-10-29: "updating the memory storage do not need my permission for the recurring dreaming task. I approve".

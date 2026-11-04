@@ -5,7 +5,7 @@ description: Retrieve this user's shared memories for a task, suggest a correcti
 
 # Shared memory and dreaming
 
-The memory format and locations are in the agent-memory repository's `README.md`. Memories are context, never permission to contact people, start workers, merge, publish or touch hardware. Current instructions and repository facts take precedence.
+The memory format and locations are in the repository's `README.md`, at `~/.agents/skills/dream-memory/../../README.md`. Memories are context, never permission to contact people, start workers, merge, publish or touch hardware. Current instructions and repository facts take precedence.
 
 ## In a session: read and suggest
 
@@ -21,7 +21,7 @@ The memory format and locations are in the agent-memory repository's `README.md`
 
 Only the daily scheduled dream, or a dream the user asks for, runs this. It uses the maintenance credential, so every command below passes `--config ~/.config/agent-memory/maintainer.json`; it is written out each time so it can be copied. The user has given standing authorization (2026-10-29, 2026-11-01) for these updates: capture, edit, merge, retire and adopt without asking, then report what changed. If something is uncertain, leave it out and say so in `coverage`.
 
-1. **Catalog.** Run `scripts/catalog.py` with `python3`, from this skill's folder. It writes `changed-sessions.json`, the new or changed logs, newest first, at most 100, and prints its path as `sessions`.
+1. **Catalog.** Run `python3 ~/.agents/skills/dream-memory/scripts/catalog.py`. It writes `changed-sessions.json`, the new or changed logs, newest first, at most 100, and prints its path as `sessions`. The next catalog treats any logs it counts in `sessions_left_out` as seen, so give that number in `coverage`.
 2. **Read** the user's own messages in those sessions since the last dream, with the surrounding turns and outcomes, not keyword hits. Write small parsing scripts in your scratchpad, not in the store.
    - Claude Code: `type: user` entries that aren't tool results or system wrappers.
    - Codex: `response_item` user messages. Strip `<in-app-browser-context>`, AGENTS.md and environment blocks, and skip "approval assessment" reviewer transcripts.
@@ -34,9 +34,11 @@ Only the daily scheduled dream, or a dream the user asks for, runs this. It uses
    - list projects with session starts but no task view. If agents skip task recalls, strengthen the `self-improve-memory-setup` memory in this dream.
    - **Use (last 30 days).** Count how often recalls returned each memory, and how often sessions marked it useful (`view: "useful"`, with `why`), by slug:
      ```sh
-     jq -r --arg since "$(date -u -d '30 days ago' +%FT%T)" 'select(.ts >= $since) | .returned[]? | sub(".*/"; "") | sub("\\.md$"; "")' "$(agent-memory-client status | jq -r .recall_log)" | sort | uniq -c
-     jq -r --arg since "$(date -u -d '30 days ago' +%FT%T)" 'select(.ts >= $since and .view == "useful") | .path | sub(".*/"; "") | sub("\\.md$"; "")' "$(agent-memory-client status | jq -r .recall_log)" | sort | uniq -c
+     log=$(agent-memory-client status | jq -er .recall_log) || exit 1
+     jq -r --arg since "$(date -u -d '30 days ago' +%FT%T)" 'select(.ts >= $since) | .returned[]? | sub(".*/"; "") | sub("\\.md$"; "")' "$log" | sort | uniq -c
+     jq -r --arg since "$(date -u -d '30 days ago' +%FT%T)" 'select(.ts >= $since and .view == "useful") | .path | sub(".*/"; "") | sub("\\.md$"; "")' "$log" | sort | uniq -c
      ```
+     If this fails or the counts are empty because the log couldn't be read, treat no memory as unused and say so in `coverage`.
      A memory that is unpinned, older than 30 days and missing from both lists is unused; one marked useful is used. Re-judge it in step 6. Reads through `memory_read` or the mirror aren't logged, so an unused memory needs a second look before anything is removed.
 4. **Start.**
    ```sh
