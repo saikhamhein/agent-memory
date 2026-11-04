@@ -268,7 +268,13 @@ async fn authenticate(app: &App, mut request: Request) -> std::result::Result<Re
 }
 
 async fn status(State(app): State<App>) -> Reply {
-    app.json(|s| s.status()).await
+    let log = app.config.recall_log().display().to_string();
+    app.json(move |s| {
+        let mut status = s.status()?;
+        status["recall_log"] = json!(log);
+        Ok(status)
+    })
+    .await
 }
 
 #[derive(Default, Deserialize)]
@@ -297,7 +303,7 @@ async fn recall(
         query: r.query,
     };
     let client = if r.client.is_empty() { token } else { r.client };
-    let log = app.config.database.with_file_name("recall-log.jsonl");
+    let log = app.config.recall_log();
     let mirror_dir = mirror::dir(&app.config.mount_dir()).display().to_string();
     app.json(move |s| {
         let (revision, memories) = s.live_memories()?;
@@ -375,7 +381,7 @@ async fn feedback(
     if !u.project.is_empty() {
         u.project = absolute_path(&u.project)?.to_string_lossy().into_owned();
     }
-    let log = app.config.database.with_file_name("recall-log.jsonl");
+    let log = app.config.recall_log();
     app.json(move |s| {
         let (revision, memories) = s.live_memories()?;
         if !memories.iter().any(|m| m.path == u.path) {

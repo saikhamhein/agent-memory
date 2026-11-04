@@ -72,7 +72,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(set(tools['memory_recall'].inputSchema['properties']), {'query', 'project'})
             status = payload(await session.call_tool('memory_status', {}))
             for key in ('store_id', 'revision', 'memories', 'pinned_chars', 'observations_pending',
-                        'dreams_running', 'mirror_dir', 'mirror_stale'):
+                        'dreams_running', 'mirror_dir', 'mirror_stale', 'recall_log'):
                 self.assertIn(key, status)
             self.assertEqual((status['revision'], status['memories']), (1, 1))
             recall = await session.call_tool('memory_recall', {})

@@ -65,4 +65,8 @@ impl Config {
     pub fn mount_dir(&self) -> PathBuf {
         self.database.with_file_name("mnt")
     }
+    /// One line per recall, next to the database.
+    pub fn recall_log(&self) -> PathBuf {
+        self.database.with_file_name("recall-log.jsonl")
+    }
 }
