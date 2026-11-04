@@ -22,13 +22,13 @@ State which commit and environment were tested, and separate passed, failed, unt
 - /global/handoff-notes.md — Leave resumable hand-over notes for long work
 - /global/prefer-existing-libraries.md — Prefer existing libraries over new helpers
 - /global/review-date-2099.md — Revisit the retention window after the long freeze
-- /projects/home/sai/Projects/custom-lora-mesh/radio-duty-cycle-limit.md — Respect the radio duty-cycle limit in every test
-- /projects/home/sai/Projects/agent-memory/sqlite-journal-delete-mode.md — Keep the database in DELETE journal mode
-- /projects/home/sai/Projects/custom-lora-mesh/flash-via-usb-only.md — Flash nodes over USB only, never over the air
-- /projects/home/sai/Projects/agent-memory/run-tests-before-merge.md — Run the storage tests before any merge
-- /projects/home/sai/Projects/burmese-reader/glyph-cache-limits.md — Burmese glyph cache must stay under four megabytes
-- /projects/home/sai/Projects/agent-memory/service-port-8787.md — The local service listens on port 8787 only on loopback
-- /projects/home/sai/Projects/agent-memory/mirror-is-read-only.md — The mirror directory is read-only; write through the service
+- /projects/srv/projects/custom-lora-mesh/radio-duty-cycle-limit.md — Respect the radio duty-cycle limit in every test
+- /projects/srv/projects/agent-memory/sqlite-journal-delete-mode.md — Keep the database in DELETE journal mode
+- /projects/srv/projects/custom-lora-mesh/flash-via-usb-only.md — Flash nodes over USB only, never over the air
+- /projects/srv/projects/agent-memory/run-tests-before-merge.md — Run the storage tests before any merge
+- /projects/srv/projects/burmese-reader/glyph-cache-limits.md — Burmese glyph cache must stay under four megabytes
+- /projects/srv/projects/agent-memory/service-port-8787.md — The local service listens on port 8787 only on loopback
+- /projects/srv/projects/agent-memory/mirror-is-read-only.md — The mirror directory is read-only; write through the service
 - /topics/burmese/font-fallback-order.md — Burmese font fallback order for rendering mixed text
 - /topics/hardware/pi-usb-port-power.md — Check whether a Raspberry Pi 5 can switch one USB port before planning on it
 - /topics/ui/empty-states.md — Give each empty state one action

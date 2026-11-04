@@ -662,6 +662,10 @@ async fn status_shape_and_counters() {
         "{mirror_dir}"
     );
     assert!(mirror_dir.ends_with("shared-agent-memory"), "{mirror_dir}");
+    assert_eq!(
+        s["recall_log"].as_str().unwrap(),
+        fx.db.with_file_name("recall-log.jsonl").to_str().unwrap()
+    );
     let keys: HashSet<_> = s.as_object().unwrap().keys().cloned().collect();
     assert_eq!(
         keys,
@@ -674,7 +678,8 @@ async fn status_shape_and_counters() {
                 "observations_pending",
                 "dreams_running",
                 "mirror_dir",
-                "mirror_stale"
+                "mirror_stale",
+                "recall_log"
             ]
             .map(String::from)
         )

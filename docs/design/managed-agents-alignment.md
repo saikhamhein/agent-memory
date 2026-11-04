@@ -214,7 +214,7 @@ Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with m
 - `memory.py` is reduced to a stub that runs `agent-memory-client recall` with the same arguments; other commands print the client command to use. It keeps the existing loader line `python3 …/memory.py recall …` in `~/.codex/AGENTS.md` and `~/.dsh/AGENTS.md` working without editing the user's files. Old `--limit` and `--budget` flags are accepted and ignored.
 
 **Rendering details (ruled 2026-11-01, WS-R):**
-- **Scope.** `Kind` is `Global`, `Project`, `Topic` or `Role`. `Scope.value` is `""` for global, the absolute root for a project (`/projects/home/sai/x/s.md` → `/home/sai/x`), and the name for a topic or role.
+- **Scope.** `Kind` is `Global`, `Project`, `Topic` or `Role`. `Scope.value` is `""` for global, the absolute root for a project (`/projects/srv/x/s.md` → `/srv/x`), and the name for a topic or role.
 - **Project matching.**
   - `Request.project` is made absolute, `..` is resolved, and it is compared by whole path components, lexically.
   - `recall()` treats a non-absolute project as no project. The API rejects one with 400.
@@ -434,7 +434,7 @@ The v2 triage (`docs/coordination/v2-review-triage.md`, PR #20) classed every Re
 All PRs target **`rework/managed-agents-v2`**, cut from the current master. Nothing reaches master before cutover, because of the standing rule to run `update-local.sh` after every master merge.
 
 Every brief includes these steps:
-- copy `graphify-out/` from `/home/sai/Projects/agent-memory/.claude/worktrees/design-managed-agents-alignment-abf130` and use `/graphify`;
+- copy `graphify-out/` from `<checkout>/.claude/worktrees/design-managed-agents-alignment-abf130` and use `/graphify`;
 - research before relying on anything unfamiliar;
 - use temporary stores only;
 - take what's useful from d125894.

@@ -261,7 +261,7 @@ fn path_rules() {
     // All four layouts are accepted, by the validator and by create.
     for (path, slug) in [
         ("/global/a.md", "a"),
-        ("/projects/home/sai/x/b.md", "b"),
+        ("/projects/srv/x/b.md", "b"),
         ("/topics/hardware/c.md", "c"),
         ("/roles/coordinator/d.md", "d"),
     ] {
@@ -283,7 +283,7 @@ fn path_rules() {
         bytes_1024.clone(),
         format!("/global/{}.md", "a".repeat(80)),
         "/global/0-9-a.md".into(),
-        "/projects/home/sai/.hidden-dir/v1.2_x/e.md".into(),
+        "/projects/srv/.hidden-dir/v1.2_x/e.md".into(),
         format!("/topics/{}/x.md", "a".repeat(255)),
         format!("/projects/{}/x.md", "a".repeat(255)),
     ] {
@@ -293,7 +293,7 @@ fn path_rules() {
     let mut bad: Vec<(String, &str)> = vec![
         ("/global/../a.md".into(), "dot-dot segment"),
         ("/projects/home/../etc/a.md".into(), "dot-dot segment"),
-        ("/projects/./home/a.md".into(), "dot segment"),
+        ("/projects/./srv/a.md".into(), "dot segment"),
         ("/global//a.md".into(), "empty segment"),
         ("/topics//a.md".into(), "empty segment"),
         ("/global/a.md/".into(), "trailing slash"),
@@ -501,7 +501,7 @@ fn content_rules() {
     ts.store
         .create(
             &live,
-            "/projects/home/sai/x/pinned.md",
+            "/projects/srv/x/pinned.md",
             &content("Title", "body", &pinned()),
             ACTOR,
         )
@@ -581,11 +581,7 @@ fn create_conflicts() {
     );
     assert_eq!(paths, ["/global/a.md"]);
     // The slug is unique in the store, whatever the directory.
-    for other in [
-        "/topics/t/a.md",
-        "/roles/r/a.md",
-        "/projects/home/sai/x/a.md",
-    ] {
+    for other in ["/topics/t/a.md", "/roles/r/a.md", "/projects/srv/x/a.md"] {
         let paths = conflict(
             ts.store
                 .create(&live, other, &seeded(other, "other"), ACTOR),
@@ -896,11 +892,7 @@ fn pinned_budget() {
         ts.store
             .create(&live, path, &content(slug_of(path), body, &pinned()), ACTOR)
     };
-    let (g1, g2, g3) = (
-        "/global/p1.md",
-        "/global/p2.md",
-        "/projects/home/sai/x/p3.md",
-    );
+    let (g1, g2, g3) = ("/global/p1.md", "/global/p2.md", "/projects/srv/x/p3.md");
     // The budget counts rendered blocks in characters, not bytes: a block of 2,500
     // characters made of Burmese letters is more than 7,000 bytes.
     let burmese = body_costing(g1, 2500, "မ");
@@ -1624,12 +1616,7 @@ fn mirror_tracks_live() {
     assert_mirror(&ts);
     let b = seed(&mut ts.store, "/topics/hardware/b.md", "မြန်မာ beta\n");
     assert_mirror(&ts);
-    seed_meta(
-        &mut ts.store,
-        "/projects/home/sai/x/p.md",
-        "pinned",
-        &pinned(),
-    );
+    seed_meta(&mut ts.store, "/projects/srv/x/p.md", "pinned", &pinned());
     assert_mirror(&ts);
 
     let a2 = set_content(&mut ts, &live, &a, "alpha two", ACTOR);

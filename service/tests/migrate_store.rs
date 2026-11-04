@@ -64,7 +64,7 @@ fn pinned_memories_appear_in_every_start_view() {
             T1,
             vec![
                 mem("keep-it-simple", global(), "Keep it simple"),
-                mem("proj-rule", project("/home/sai/Projects/x"), "Project rule"),
+                mem("proj-rule", project("/srv/projects/x"), "Project rule"),
                 mem("plain", global(), "Not pinned"),
             ],
         )],
@@ -77,10 +77,7 @@ fn pinned_memories_appear_in_every_start_view() {
     let mirror = db.mirror().display().to_string();
     for (label, req) in [
         ("no project", request("", "", &[])),
-        (
-            "other project",
-            request("/home/sai/Projects/other", "", &[]),
-        ),
+        ("other project", request("/srv/projects/other", "", &[])),
         ("a role", request("", "coordinator", &[])),
         ("topics", request("", "", &["hardware", "ui"])),
     ] {
@@ -102,12 +99,12 @@ fn pinned_memories_appear_in_every_start_view() {
             "{label}: other project's memory"
         );
     }
-    for project in ["/home/sai/Projects/x", "/home/sai/Projects/x/sub/dir"] {
+    for project in ["/srv/projects/x", "/srv/projects/x/sub/dir"] {
         let recalled = recall::recall(&memories, revision, &mirror, &request(project, "", &[]));
         assert!(
             recalled
                 .pinned
-                .contains(&"/projects/home/sai/Projects/x/proj-rule.md".to_string()),
+                .contains(&"/projects/srv/projects/x/proj-rule.md".to_string()),
             "{project}"
         );
     }

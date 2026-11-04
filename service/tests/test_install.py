@@ -196,7 +196,7 @@ class Sandbox:
             self.write_tool(self.fakebin / name, FAKE_TOOL.format(name=name, events=self.events_file, state=self.state,
                                                                   body=body))
         self.env = dict(os.environ, HOME=str(self.home), PATH=f'{self.fakebin}:{os.environ["PATH"]}')
-        for name in ('CODEX_HOME', 'XDG_CONFIG_HOME'):
+        for name in ('CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME'):
             self.env.pop(name, None)
         for tool in ('systemctl', 'systemd-analyze', 'git', 'cargo', 'python3'):
             test.assertEqual(shutil.which(tool, path=self.env['PATH']), str(self.fakebin / tool))
@@ -388,7 +388,7 @@ class InstallMigrationGuardTests(unittest.TestCase):
 
 SESSION = {'name': 'agent-session', 'capabilities': ['recall', 'observe']}
 MAINTAINER = ['recall', 'observe', 'review', 'promote']
-V1_PROJECTS = '[projects]\nagent-memory = "/home/someone/Projects/agent-memory"\n'
+V1_PROJECTS = '[projects]\nagent-memory = "/srv/projects/agent-memory"\n'
 
 
 class TokenReconcileTests(unittest.TestCase):
@@ -452,6 +452,17 @@ class TokenReconcileTests(unittest.TestCase):
             self.assertEqual((self.config_dir / name).stat().st_mode & 0o777, 0o600, name)
         self.assertTrue(self.box.service_active())
 
+    def test_install_reads_the_database_from_server_toml(self):
+        ran = self.box.run(sys.executable, str(self.box.repo / 'service/install-user.py'))
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertEqual(self.box.config()['database'], str(self.box.database))
+
+    def test_first_install_needs_a_database(self):
+        (self.config_dir / 'server.toml').unlink()
+        ran = self.box.run(sys.executable, str(self.box.repo / 'service/install-user.py'))
+        self.assertNotEqual(ran.returncode, 0)
+        self.assertIn('First install', ran.stderr)
+
     def test_token_subcommand_removed(self):
         ran = subprocess.run([str(BINARY), 'token'], capture_output=True, text=True, timeout=30)
         self.assertNotEqual(ran.returncode, 0, ran.stdout)
@@ -469,6 +480,45 @@ class UpdateLocalTests(unittest.TestCase):
     def installer_calls(self):
         return [e for e in self.box.events() if e.startswith('python3 ') and 'install-user.py' in e]
 
+    def git(self, cwd, *args):
+        subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.com', *args], cwd=cwd, env=self.box.env,
+                       check=True, capture_output=True, timeout=30)
+
+    def repo_with_origin(self):
+        """Swap the fake git for a real repository, for what only real git shows."""
+        (self.box.fakebin / 'git').unlink()
+        repo, origin = self.box.repo, self.box.repo.parent / 'origin.git'
+        self.git(repo.parent, 'init', '--bare', '-b', 'master', str(origin))
+        self.git(repo, 'init', '-b', 'master')
+        self.git(repo, 'add', 'update-local.sh')
+        self.git(repo, 'commit', '-m', 'first')
+        self.git(repo, 'remote', 'add', 'origin', str(origin))
+        self.git(repo, 'push', 'origin', 'master')
+        return origin
+
+    def test_update_local_refuses_a_linked_worktree(self):
+        self.repo_with_origin()
+        tree = self.box.repo.parent / 'worktree'
+        self.git(self.box.repo, 'switch', '-c', 'feature')
+        self.git(self.box.repo, 'worktree', 'add', str(tree), 'master')
+        ran = subprocess.run(['./update-local.sh'], cwd=tree, env=self.box.env, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(ran.returncode, 0)
+        self.assertIn('worktree', ran.stderr)
+        self.assertFalse([e for e in self.box.events() if e.startswith('cargo')])
+
+    def test_update_local_reruns_itself_when_the_pull_replaces_it(self):
+        self.box.migrated_database(REVISIONS)
+        origin = self.repo_with_origin()
+        other = self.box.repo.parent / 'other'
+        self.git(self.box.repo.parent, 'clone', str(origin), str(other))
+        script = other / 'update-local.sh'
+        script.write_text(script.read_text().replace('set -eu\n', 'set -eu\necho the new script ran\n'))
+        self.git(other, 'commit', '-am', 'second')
+        self.git(other, 'push', 'origin', 'master')
+        ran = self.box.run('./update-local.sh')
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertIn('the new script ran', ran.stdout)
+
     def test_update_local_never_migrates(self):
         lines = (self.box.repo / 'update-local.sh').read_text().splitlines()
         self.assertFalse([line for line in lines if 'install-user.py' in line and '--migrate' in line])
@@ -482,6 +532,67 @@ class UpdateLocalTests(unittest.TestCase):
         self.assertFalse([e for e in self.box.events() if 'install-mcp' in e], 'nothing runs after the guard')
         self.assertEqual(self.box.database.read_bytes(), before)
         self.assertEqual(self.box.installed(), [])
+
+    def test_update_local_links_the_skill_for_both_agents(self):
+        self.box.migrated_database(REVISIONS)
+        for _ in range(2):  # a rerun replaces the links in place
+            ran = self.box.run('./update-local.sh')
+            self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        for parent in ('.claude/skills', '.agents/skills'):
+            link = self.box.home / parent / 'dream-memory'
+            self.assertTrue(link.is_symlink(), link)
+            self.assertEqual(os.readlink(link), str(self.box.repo / 'skill/dream-memory'))
+
+    def test_update_local_refuses_a_skill_folder_that_is_not_a_link(self):
+        self.box.migrated_database(REVISIONS)
+        folder = self.box.home / '.agents/skills/dream-memory'
+        folder.mkdir(parents=True)
+        (folder / 'SKILL.md').write_text('a local copy\n')
+        ran = self.box.run('./update-local.sh')
+        self.assertNotEqual(ran.returncode, 0)
+        self.assertIn('not a link', ran.stderr)
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), ['SKILL.md'], 'the copy is left alone')
+        self.assertEqual(self.box.installed(), [], 'it stops before changing anything')
+
+    def test_install_links_the_skill_when_given_the_database(self):
+        # The script from before the skill links moved passes --database and has no link step of its own.
+        self.box.migrated_database(REVISIONS)
+        ran = self.box.install()
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        for parent in ('.claude/skills', '.agents/skills'):
+            self.assertEqual(os.readlink(self.box.home / parent / 'dream-memory'), str(self.box.repo / 'skill/dream-memory'))
+
+    def test_install_refuses_a_linked_worktree(self):
+        self.box.migrated_database(REVISIONS)
+        (self.box.repo / '.git').write_text('gitdir: elsewhere\n')
+        ran = self.box.install()
+        self.assertNotEqual(ran.returncode, 0)
+        self.assertIn('worktree', ran.stderr)
+        self.assertFalse((self.box.home / '.claude/skills/dream-memory').is_symlink())
+
+    def test_install_carries_the_catalog_out_of_the_checkout_once(self):
+        self.box.migrated_database(REVISIONS)
+        old = self.box.repo / 'sources/latest-catalog.json'
+        old.parent.mkdir()
+        old.write_text('old catalog\n')
+        self.box.env['XDG_STATE_HOME'] = str(self.box.home / 'custom-state')
+        new = self.box.home / 'custom-state/agent-memory/sources/latest-catalog.json'
+        self.assertEqual(self.box.install().returncode, 0)
+        self.assertEqual(new.read_text(), 'old catalog\n')
+        new.write_text('newer catalog\n')
+        self.assertEqual(self.box.install().returncode, 0)
+        self.assertEqual(new.read_text(), 'newer catalog\n')
+
+    def test_update_local_finds_a_database_outside_the_checkout(self):
+        self.box.migrated_database(REVISIONS)
+        outside = self.box.repo.parent / 'data/memory.sqlite3'
+        outside.parent.mkdir()
+        self.box.database.rename(outside)
+        server = self.box.home / '.config/agent-memory/server.toml'
+        server.write_text(server.read_text().replace(str(self.box.database), str(outside)))
+        ran = self.box.run('./update-local.sh')
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertEqual(self.box.config()['database'], str(outside))
 
     def test_update_local_updates_a_migrated_store(self):
         self.box.migrated_database(REVISIONS)

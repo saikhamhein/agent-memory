@@ -73,7 +73,7 @@ def create_server(api: MemoryAPI) -> FastMCP:
 
     @tool(READ)
     async def memory_status() -> str:
-        """Return the live store's revision, memory count, pinned characters, pending observations and mirror state."""
+        """Return the live store's revision, memory count, pinned characters, pending observations, mirror state and recall-log path."""
         return text(await api.call('GET', '/v1/status'))
 
     @tool(READ)

@@ -32,7 +32,7 @@ class StubTests(unittest.TestCase):
                               timeout=30, env=self.env, cwd=self.cwd)
 
     def test_old_loader_line_prints_the_clients_output(self):
-        old_line = ['recall', '--project', '/home/sai/Projects/agent-memory', '--query', 'zebrafish husbandry',
+        old_line = ['recall', '--project', '/srv/projects/agent-memory', '--query', 'zebrafish husbandry',
                     '--limit', '12', '--budget', '12000']
         result = self.run_stub(*old_line)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -54,7 +54,7 @@ class StubTests(unittest.TestCase):
         self.assertFalse(root.exists())
 
     def test_project_memories_are_printed_once(self):
-        root = '/home/sai/Projects/zebra'
+        root = '/srv/projects/zebra'
         self.server.seed(project_path(root, 'zebra-rule'), 'Zebrafish project rule', 'Zebrafish tanks here use RO water.')
         out = self.run_stub('recall', '--project', root, '--query', 'zebrafish husbandry').stdout
         self.assertEqual(out.count('### Zebrafish project rule'), 1)  # in the start view, not repeated in the task view
@@ -62,7 +62,7 @@ class StubTests(unittest.TestCase):
         self.assertIn('Zebrafish tanks need weekly water changes.', out)  # a match the start view lacks stays
 
     def test_nothing_new_in_the_task_view_prints_only_the_start_view(self):
-        root = '/home/sai/Projects/zebra'
+        root = '/srv/projects/zebra'
         self.server.seed(project_path(root, 'axolotl-rule'), 'Axolotl care', 'Axolotls need cold water.')
         result = self.run_stub('recall', '--project', root, '--query', 'axolotl')
         start = self.run_client('recall', '--project', root).stdout
@@ -70,11 +70,11 @@ class StubTests(unittest.TestCase):
         self.assertEqual(result.stdout.count('Axolotls need cold water.'), 1)
 
     def test_start_view_and_client_label(self):
-        result = self.run_stub('recall', '--client', 'session-start', '--project', '/home/sai/x')
+        result = self.run_stub('recall', '--client', 'session-start', '--project', '/srv/x')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(result.stdout.startswith('# Shared agent memory — revision'))
         self.assertIn('Remove what is not needed.', result.stdout)
-        self.assertEqual(result.stdout, self.run_client('recall', '--client', 'session-start', '--project', '/home/sai/x').stdout)
+        self.assertEqual(result.stdout, self.run_client('recall', '--client', 'session-start', '--project', '/srv/x').stdout)
         self.assertEqual([e['client'] for e in self.server.recall_entries()], ['session-start', 'session-start'])
         unrelated = self.run_stub('recall', '--query', 'kubernetes ingress yaml').stdout
         self.assertTrue(unrelated.startswith('# Shared agent memory — revision'))  # start view, then the task view
@@ -93,7 +93,7 @@ class StubTests(unittest.TestCase):
 
     def test_service_down_is_an_error_not_an_empty_recall(self):
         self.server.stop()
-        result = self.run_stub('recall', '--project', '/home/sai/x', '--limit', '12', '--budget', '12000')
+        result = self.run_stub('recall', '--project', '/srv/x', '--limit', '12', '--budget', '12000')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, '')
         self.assertIn('Error:', result.stderr)
@@ -109,6 +109,21 @@ class StubSourceTests(unittest.TestCase):
         source = STUB.read_text()
         self.assertNotIn('sqlite3', source)
         self.assertLessEqual(len(source.splitlines()), 40)  # design §3.3 calls for a ~20-line stub
+
+
+class NoMachinePathsTests(unittest.TestCase):
+    """The package holds code only; each machine keeps its own paths outside it."""
+
+    def git(self, *args, ok=(0,)):
+        ran = subprocess.run(['git', *args], cwd=STUB.parent, capture_output=True, text=True, timeout=30)
+        self.assertIn(ran.returncode, ok, ran.stderr)
+        return ran.stdout
+
+    def test_no_tracked_file_names_a_home_directory(self):
+        self.assertEqual(self.git('grep', '-n', '-E', '/home/\.?[a-z]', ok=(0, 1)), '')  # 1 means no match
+
+    def test_no_tracked_path_is_a_home_directory(self):
+        self.assertEqual([name for name in self.git('ls-files').splitlines() if '/home/' in name], [])
 
 
 if __name__ == '__main__':

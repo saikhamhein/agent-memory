@@ -72,12 +72,20 @@ To undo a change, write an old version back with the maintenance credential: `ve
 
 | Path | What |
 | --- | --- |
-| `memory.sqlite3` | The authoritative store (ignored by Git) |
-| `mnt/shared-agent-memory/` | Read-only mirror of the live store |
-| `recall-log.jsonl` | One line per recall: client, project, view, returned paths, characters |
 | `service/` | Rust service, `client.py` (`agent-memory-client`), `mcp_server.py`, installers |
 | `hooks/agent-memory-recall.py` | Claude Code SessionStart hook |
 | `memory.py` | Stub that forwards `recall` for the existing loader lines |
-| `catalog.py` | Lists new or changed session logs into `sources/` for a dream |
+| `skill/dream-memory/` | The dream skill, with `scripts/catalog.py`, which lists new or changed session logs for a dream |
+
+The package holds code only. Each machine keeps its data and facts outside it:
+
+| Location | What |
+| --- | --- |
+| `~/.config/agent-memory/` | `server.toml`, which names the database, and the credentials |
+| The database's directory | `memory.sqlite3`, the authoritative store; `mnt/shared-agent-memory/`, its read-only mirror; `recall-log.jsonl`, one line per recall with client, project, view, returned paths and characters |
+| `$XDG_STATE_HOME/agent-memory/` (default `~/.local/state/agent-memory/`) | Catalog output for dreams |
+| `~/.cache/agent-memory/` | The hook's log |
+
+`agent-memory-client status` reports the mirror and recall-log paths.
 
 Install, API and tests: [service/README.md](service/README.md).

@@ -131,7 +131,7 @@ def task(ms, rev, q, project=""):
 
 if __name__ == "__main__":
     ms = load()
-    am = "/home/sai/Projects/agent-memory"
+    am = "/srv/projects/agent-memory"
     open(OUT + "/start_none.txt", "w").write(start(ms, 42))
     open(OUT + "/index_md.txt", "w").write(index_md(ms, 42))
     open(OUT + "/start_project.txt", "w").write(start(ms, 42, am, "coordinator", ("hardware", "burmese")))
