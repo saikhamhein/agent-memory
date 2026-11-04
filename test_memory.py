@@ -114,11 +114,13 @@ class StubSourceTests(unittest.TestCase):
 class NoMachinePathsTests(unittest.TestCase):
     """The package holds code only; each machine keeps its own paths outside it."""
 
-    def git(self, *args):
-        return subprocess.run(['git', *args], cwd=STUB.parent, capture_output=True, text=True, timeout=30).stdout
+    def git(self, *args, ok=(0,)):
+        ran = subprocess.run(['git', *args], cwd=STUB.parent, capture_output=True, text=True, timeout=30)
+        self.assertIn(ran.returncode, ok, ran.stderr)
+        return ran.stdout
 
     def test_no_tracked_file_names_a_home_directory(self):
-        self.assertEqual(self.git('grep', '-n', '-E', '/home/[a-z]'), '')
+        self.assertEqual(self.git('grep', '-n', '-E', '/home/\.?[a-z]', ok=(0, 1)), '')  # 1 means no match
 
     def test_no_tracked_path_is_a_home_directory(self):
         self.assertEqual([name for name in self.git('ls-files').splitlines() if '/home/' in name], [])
