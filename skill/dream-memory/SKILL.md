@@ -11,6 +11,7 @@ The memory format and locations are in the repository's `README.md`, at `~/.agen
 
 - The session start already loaded the core rules, this project's memories and an index. Don't recall it again.
 - During a task, run `agent-memory-client recall --project "$PWD" --query "task keywords"`. It maps a worktree to its main checkout. Read an index entry with `agent-memory-client cat PATH` when its line applies.
+- If the client fails with `Operation not permitted`, your sandbox blocks loopback. Request network access, or read the mirror named in the start view.
 - A session never changes memories. For an explicit correction or a repeatedly confirmed lesson, run `agent-memory-client observe PATH -` with one memory file in the README.md format on stdin. The next dream decides whether to keep it.
   - Evidence: provider, session id, date, file:line, and a short sanitized quote of the user. Agent interpretation and agent-to-agent relays aren't user evidence.
   - Don't record credentials, unrelated private facts, task permissions or transient status. Project state stays in the repository.
