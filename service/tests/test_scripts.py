@@ -136,17 +136,41 @@ class InstallMcpTests(unittest.TestCase):
 
 
 class CatalogTests(unittest.TestCase):
+    CATALOG = REPO / 'skill/dream-memory/scripts/catalog.py'
+
+    def home_with_log(self, tmp):
+        home = Path(tmp) / 'home'
+        log = home / '.claude/projects/p/a.jsonl'
+        log.parent.mkdir(parents=True)
+        log.write_text('{}\n')
+        return home
+
+    def catalog(self, *arguments, **options):
+        env = {key: value for key, value in os.environ.items() if key != 'XDG_STATE_HOME'}
+        ran = subprocess.run([sys.executable, str(self.CATALOG), *arguments], check=True, capture_output=True,
+                             text=True, timeout=30, env=env | options)
+        return json.loads(ran.stdout)
+
     def test_writes_no_timestamped_copy(self):
         with tempfile.TemporaryDirectory() as tmp:
-            home, root = Path(tmp) / 'home', Path(tmp) / 'root'
-            log = home / '.claude/projects/p/a.jsonl'
-            log.parent.mkdir(parents=True)
-            log.write_text('{}\n')
+            home, root = self.home_with_log(tmp), Path(tmp) / 'root'
             for _ in range(2):
-                subprocess.run([sys.executable, str(REPO / 'catalog.py'), '--home', str(home), '--root', str(root)],
-                               check=True, capture_output=True, timeout=30)
+                self.catalog('--home', str(home), '--root', str(root))
             self.assertEqual(sorted(p.name for p in (root / 'sources').iterdir()),
                              ['changed-sessions.json', 'latest-catalog.json'])
+
+    def test_writes_outside_the_checkout_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = self.home_with_log(tmp)
+            sessions = home / '.local/state/agent-memory/sources/changed-sessions.json'
+            self.assertEqual(self.catalog('--home', str(home))['sessions'], str(sessions))
+            self.assertTrue(sessions.is_file())
+
+    def test_honours_xdg_state_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home, state = self.home_with_log(tmp), Path(tmp) / 'state'
+            sessions = state / 'agent-memory/sources/changed-sessions.json'
+            self.assertEqual(self.catalog('--home', str(home), XDG_STATE_HOME=str(state))['sessions'], str(sessions))
 
 
 class DocsTests(unittest.TestCase):

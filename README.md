@@ -78,6 +78,6 @@ To undo a change, write an old version back with the maintenance credential: `ve
 | `service/` | Rust service, `client.py` (`agent-memory-client`), `mcp_server.py`, installers |
 | `hooks/agent-memory-recall.py` | Claude Code SessionStart hook |
 | `memory.py` | Stub that forwards `recall` for the existing loader lines |
-| `catalog.py` | Lists new or changed session logs into `sources/` for a dream |
+| `skill/dream-memory/` | The dream skill, with `scripts/catalog.py`, which lists new or changed session logs for a dream |
 
 Install, API and tests: [service/README.md](service/README.md).

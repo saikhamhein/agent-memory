@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Inventory local agent logs without copying their private contents into memory.
 
-Writes sources/latest-catalog.json and sources/changed-sessions.json: the new or changed logs, newest first
-and at most 100, as the {source, locator, sha256} list that `agent-memory-client dream start --sessions` takes."""
+Writes sources/latest-catalog.json and sources/changed-sessions.json under the state directory: the new or changed
+logs, newest first and at most 100, as the {source, locator, sha256} list that `agent-memory-client dream start
+--sessions` takes. It prints where it wrote them."""
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import datetime as dt
 
@@ -31,9 +33,10 @@ def scan(home):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--home', type=Path, default=Path.home())
-    parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parent)
+    parser.add_argument('--root', type=Path, help='State directory; default $XDG_STATE_HOME/agent-memory')
     args = parser.parse_args()
-    out = args.root / 'sources'
+    root = args.root or Path(os.environ.get('XDG_STATE_HOME') or args.home / '.local/state') / 'agent-memory'
+    out = root / 'sources'
     out.mkdir(parents=True, exist_ok=True)
     previous_path = out / 'latest-catalog.json'
     previous = json.loads(previous_path.read_text()) if previous_path.exists() else {'files': []}
