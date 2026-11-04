@@ -8,7 +8,7 @@ A Rust HTTP service that owns the memory database. It is the only writer and the
 cargo test --locked --manifest-path service/Cargo.toml
 cargo clippy --locked --manifest-path service/Cargo.toml --all-targets -- -D warnings
 cargo build --release --locked --manifest-path service/Cargo.toml
-python3 -m unittest -v test_memory.py service/tests/test_client.py service/tests/test_install.py
+python3 -m unittest -v test_memory.py service/tests/test_client.py service/tests/test_install.py service/tests/test_scripts.py
 uv venv service/.venv-mcp && uv pip sync --python service/.venv-mcp/bin/python service/mcp-requirements.txt
 service/.venv-mcp/bin/python -m unittest -v service.tests.test_mcp
 ```
@@ -18,6 +18,7 @@ The Python suites start the release binary on a temporary store through `service
 ## Install
 
 ```sh
+service/target/release/agent-memory-server init --database PATH   # first install only, after the build, unless the database exists
 python3 service/install-user.py --database PATH   # first install only; later runs read it from server.toml; add --migrate --pin SLUG… once for a v1 database
 python3 service/install-mcp.py                    # MCP adapter for Codex and Claude Code (user scope)
 ln -sfn "$PWD/hooks/agent-memory-recall.py" ~/.claude/hooks/agent-memory-recall.py
@@ -45,7 +46,7 @@ The client uses `client.json` by default, which allows `status`, `recall`, `ls`,
 
 | Command | Does |
 | --- | --- |
-| `status` | Revision, memory count, pinned characters, pending observations, mirror state |
+| `status` | Revision, memory count, pinned characters, pending observations, mirror state, recall-log path |
 | `recall [--query Q] [--project DIR] [--role R] [--topic T]… [--client LABEL]` | Prints the start view, or with a query, only the matches. A `DIR` in a Git worktree maps to the main checkout |
 | `ls [PREFIX] [--store S]`, `cat PATH\|memver_… [--store S]` | Lists memories; prints a memory or version as its exact bytes |
 | `versions [PATH] [--created-by ACTOR] [--store S]` | Version history, newest first |
@@ -71,7 +72,7 @@ Every `/v1` route needs `Authorization: Bearer TOKEN`. `/healthz` is unauthentic
 
 | Route | Capability | Body → result |
 | --- | --- | --- |
-| `GET /v1/status` | recall | `{store_id, revision, memories, pinned_chars, observations_pending, dreams_running, mirror_dir, mirror_stale}` |
+| `GET /v1/status` | recall | `{store_id, revision, memories, pinned_chars, observations_pending, dreams_running, mirror_dir, mirror_stale, recall_log}` |
 | `POST /v1/recall` | recall | `{project?, role?, topics?, query?, client?}` → `{revision, view, pinned, returned, text}` |
 | `GET /v1/memory_stores/{store}/memories?path_prefix=` | read | `{data: [{id, path, title, content_sha256, memory_version_id, updated_at}]}` |
 | `GET /v1/memory_stores/{store}/memories/{id}` | read | the same, plus `content` |
