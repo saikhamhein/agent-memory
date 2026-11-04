@@ -120,7 +120,7 @@ class NoMachinePathsTests(unittest.TestCase):
         return ran.stdout
 
     def test_no_tracked_file_names_a_home_directory(self):
-        self.assertEqual(self.git('grep', '-n', '-E', '/home/\.?[a-z]', ok=(0, 1)), '')  # 1 means no match
+        self.assertEqual(self.git('grep', '-n', '-E', r'/home/\.?[a-z]', ok=(0, 1)), '')  # 1 means no match
 
     def test_no_tracked_path_is_a_home_directory(self):
         self.assertEqual([name for name in self.git('ls-files').splitlines() if '/home/' in name], [])
