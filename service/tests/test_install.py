@@ -480,6 +480,45 @@ class UpdateLocalTests(unittest.TestCase):
     def installer_calls(self):
         return [e for e in self.box.events() if e.startswith('python3 ') and 'install-user.py' in e]
 
+    def git(self, cwd, *args):
+        subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.com', *args], cwd=cwd, env=self.box.env,
+                       check=True, capture_output=True, timeout=30)
+
+    def repo_with_origin(self):
+        """Swap the fake git for a real repository, for what only real git shows."""
+        (self.box.fakebin / 'git').unlink()
+        repo, origin = self.box.repo, self.box.repo.parent / 'origin.git'
+        self.git(repo.parent, 'init', '--bare', '-b', 'master', str(origin))
+        self.git(repo, 'init', '-b', 'master')
+        self.git(repo, 'add', 'update-local.sh')
+        self.git(repo, 'commit', '-m', 'first')
+        self.git(repo, 'remote', 'add', 'origin', str(origin))
+        self.git(repo, 'push', 'origin', 'master')
+        return origin
+
+    def test_update_local_refuses_a_linked_worktree(self):
+        self.repo_with_origin()
+        tree = self.box.repo.parent / 'worktree'
+        self.git(self.box.repo, 'switch', '-c', 'feature')
+        self.git(self.box.repo, 'worktree', 'add', str(tree), 'master')
+        ran = subprocess.run(['./update-local.sh'], cwd=tree, env=self.box.env, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(ran.returncode, 0)
+        self.assertIn('worktree', ran.stderr)
+        self.assertFalse([e for e in self.box.events() if e.startswith('cargo')])
+
+    def test_update_local_reruns_itself_when_the_pull_replaces_it(self):
+        self.box.migrated_database(REVISIONS)
+        origin = self.repo_with_origin()
+        other = self.box.repo.parent / 'other'
+        self.git(self.box.repo.parent, 'clone', str(origin), str(other))
+        script = other / 'update-local.sh'
+        script.write_text(script.read_text().replace('set -eu\n', 'set -eu\necho the new script ran\n'))
+        self.git(other, 'commit', '-am', 'second')
+        self.git(other, 'push', 'origin', 'master')
+        ran = self.box.run('./update-local.sh')
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertIn('the new script ran', ran.stdout)
+
     def test_update_local_never_migrates(self):
         lines = (self.box.repo / 'update-local.sh').read_text().splitlines()
         self.assertFalse([line for line in lines if 'install-user.py' in line and '--migrate' in line])
