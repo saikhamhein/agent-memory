@@ -21,12 +21,12 @@ The Python suites start the release binary on a temporary store through `service
 python3 service/install-user.py --database PATH   # first install only; later runs read it from server.toml; add --migrate --pin SLUG… once for a v1 database
 python3 service/install-mcp.py                    # MCP adapter for Codex and Claude Code (user scope)
 ln -sfn "$PWD/hooks/agent-memory-recall.py" ~/.claude/hooks/agent-memory-recall.py
-ln -sfn "$PWD/skill/dream-memory" ~/.claude/skills/dream-memory
-ln -sfn "$PWD/skill/dream-memory" ~/.agents/skills/dream-memory
 systemctl --user is-active agent-memory && agent-memory-client status
 ```
 
-`update-local.sh` runs these steps after a merge, and stops rather than replace a skill folder that is not a link. It never migrates.
+`install-user.py` also links the skill into `~/.claude/skills` and `~/.agents/skills`, and stops before changing anything if a folder that is not a link is in the way. If the checkout has a `sources/latest-catalog.json` and the state directory has none, it copies it across, so the first dream after that move doesn't take every log for new. It refuses to run in a linked worktree, because removing the worktree would break the links.
+
+`update-local.sh` runs these steps after a merge. It never migrates.
 
 | Item | Location |
 | --- | --- |

@@ -173,6 +173,13 @@ def main():
     if not binary.is_file():
         parser.error('Build first: cargo build --release --locked --manifest-path service/Cargo.toml')
     home = Path.home()
+    checkout = source.parent
+    if (checkout / '.git').is_file():
+        parser.error('Run this in the main checkout, not a linked worktree')
+    links = [home / parent / 'skills/dream-memory' for parent in ('.claude', '.agents')]
+    for link in links:
+        if link.exists() and not link.is_symlink():
+            parser.error(f'{link} is not a link; move it aside and rerun')
     bin_dir = home / '.local/bin'
     config_dir = home / '.config/agent-memory'
     unit_dir = home / '.config/systemd/user'
@@ -207,8 +214,26 @@ def main():
             print(STOPPED, file=sys.stderr)
         raise
     start(bin_dir)
+    link_skill(links, checkout / 'skill/dream-memory')
+    carry_catalog(checkout, home)
     print('Installed and started agent-memory.service on http://127.0.0.1:8787')
     print('Credentials are in ~/.config/agent-memory (not printed).')
+
+
+def link_skill(links, skill):
+    for link in links:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.unlink(missing_ok=True)
+        link.symlink_to(skill)
+
+
+def carry_catalog(checkout, home):
+    # The catalog used to live in the checkout; without it the next dream takes every log for new.
+    old = checkout / 'sources/latest-catalog.json'
+    state = Path(os.environ.get('XDG_STATE_HOME') or home / '.local/state') / 'agent-memory/sources'
+    if old.exists() and not (state / old.name).exists():
+        state.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(old, state / old.name)
 
 
 def install(binary, source, server, files, runtime, bin_dir, unit_dir):

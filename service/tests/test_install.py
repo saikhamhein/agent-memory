@@ -196,7 +196,7 @@ class Sandbox:
             self.write_tool(self.fakebin / name, FAKE_TOOL.format(name=name, events=self.events_file, state=self.state,
                                                                   body=body))
         self.env = dict(os.environ, HOME=str(self.home), PATH=f'{self.fakebin}:{os.environ["PATH"]}')
-        for name in ('CODEX_HOME', 'XDG_CONFIG_HOME'):
+        for name in ('CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME'):
             self.env.pop(name, None)
         for tool in ('systemctl', 'systemd-analyze', 'git', 'cargo', 'python3'):
             test.assertEqual(shutil.which(tool, path=self.env['PATH']), str(self.fakebin / tool))
@@ -461,7 +461,7 @@ class TokenReconcileTests(unittest.TestCase):
         (self.config_dir / 'server.toml').unlink()
         ran = self.box.run(sys.executable, str(self.box.repo / 'service/install-user.py'))
         self.assertNotEqual(ran.returncode, 0)
-        self.assertIn('--database', ran.stderr)
+        self.assertIn('First install', ran.stderr)
 
     def test_token_subcommand_removed(self):
         ran = subprocess.run([str(BINARY), 'token'], capture_output=True, text=True, timeout=30)
@@ -513,6 +513,47 @@ class UpdateLocalTests(unittest.TestCase):
         self.assertNotEqual(ran.returncode, 0)
         self.assertIn('not a link', ran.stderr)
         self.assertEqual(sorted(p.name for p in folder.iterdir()), ['SKILL.md'], 'the copy is left alone')
+        self.assertEqual(self.box.installed(), [], 'it stops before changing anything')
+
+    def test_install_links_the_skill_when_given_the_database(self):
+        # The script from before the skill links moved passes --database and has no link step of its own.
+        self.box.migrated_database(REVISIONS)
+        ran = self.box.install()
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        for parent in ('.claude/skills', '.agents/skills'):
+            self.assertEqual(os.readlink(self.box.home / parent / 'dream-memory'), str(self.box.repo / 'skill/dream-memory'))
+
+    def test_install_refuses_a_linked_worktree(self):
+        self.box.migrated_database(REVISIONS)
+        (self.box.repo / '.git').write_text('gitdir: elsewhere\n')
+        ran = self.box.install()
+        self.assertNotEqual(ran.returncode, 0)
+        self.assertIn('worktree', ran.stderr)
+        self.assertFalse((self.box.home / '.claude/skills/dream-memory').is_symlink())
+
+    def test_install_carries_the_catalog_out_of_the_checkout_once(self):
+        self.box.migrated_database(REVISIONS)
+        old = self.box.repo / 'sources/latest-catalog.json'
+        old.parent.mkdir()
+        old.write_text('old catalog\n')
+        self.box.env['XDG_STATE_HOME'] = str(self.box.home / 'custom-state')
+        new = self.box.home / 'custom-state/agent-memory/sources/latest-catalog.json'
+        self.assertEqual(self.box.install().returncode, 0)
+        self.assertEqual(new.read_text(), 'old catalog\n')
+        new.write_text('newer catalog\n')
+        self.assertEqual(self.box.install().returncode, 0)
+        self.assertEqual(new.read_text(), 'newer catalog\n')
+
+    def test_update_local_finds_a_database_outside_the_checkout(self):
+        self.box.migrated_database(REVISIONS)
+        outside = self.box.repo.parent / 'data/memory.sqlite3'
+        outside.parent.mkdir()
+        self.box.database.rename(outside)
+        server = self.box.home / '.config/agent-memory/server.toml'
+        server.write_text(server.read_text().replace(str(self.box.database), str(outside)))
+        ran = self.box.run('./update-local.sh')
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertEqual(self.box.config()['database'], str(outside))
 
     def test_update_local_updates_a_migrated_store(self):
         self.box.migrated_database(REVISIONS)
