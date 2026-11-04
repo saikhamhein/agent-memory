@@ -1,2 +1,0 @@
-# Official MCP Python SDK; pin its supported v1 API used by this adapter.
-mcp==1.30.0

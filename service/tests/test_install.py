@@ -175,8 +175,7 @@ class Sandbox:
             directory.mkdir(parents=True)
         self.events_file.touch()
         service = self.repo / 'service'
-        shutil.copytree(SERVICE, service, ignore=shutil.ignore_patterns('target', 'tests', '__pycache__', '.venv-mcp'))
-        (service / 'install-mcp.py').write_text('print("install-mcp stub")\n')  # the real one needs uv and network
+        shutil.copytree(SERVICE, service, ignore=shutil.ignore_patterns('target', 'tests', '__pycache__'))
         self.wrapper = service / 'target/release/agent-memory-server'
         self.wrapper.parent.mkdir(parents=True)
         self.write_tool(self.wrapper, FAKE_SERVER.format(events=self.events_file, runtime=self.runtime, real=BINARY,
@@ -529,7 +528,7 @@ class UpdateLocalTests(unittest.TestCase):
         self.assertTrue(self.installer_calls(), 'it must reach the installer, not fail earlier:\n' + ran.stderr)
         self.assertIn('--migrate', ran.stdout + ran.stderr, 'the installer says how to migrate')
         self.assertFalse([e for e in self.box.events() if '--migrate' in e or e.startswith('binary migrate')])
-        self.assertFalse([e for e in self.box.events() if 'install-mcp' in e], 'nothing runs after the guard')
+        self.assertFalse((self.box.home / '.claude/hooks/agent-memory-recall.py').is_symlink(), 'nothing runs after the guard')
         self.assertEqual(self.box.database.read_bytes(), before)
         self.assertEqual(self.box.installed(), [])
 

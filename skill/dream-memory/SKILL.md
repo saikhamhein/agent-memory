@@ -10,12 +10,12 @@ The memory format and locations are in the repository's `README.md`, at `~/.agen
 ## In a session: read and suggest
 
 - The session start already loaded the core rules, this project's memories and an index. Don't recall it again.
-- During a task, call `memory_recall(query="task keywords", project="<canonical project root>")`, or `agent-memory-client recall --project "$PWD" --query "task keywords"`. The root is the main checkout, not a worktree; the CLI maps a worktree itself. Read an index entry with `memory_read(path)` when its line applies.
-- A session never changes memories. For an explicit correction or a repeatedly confirmed lesson, call `memory_observe(path, content)` (or `agent-memory-client observe PATH FILE`) with one memory file in the README.md format. The next dream decides whether to keep it.
+- During a task, run `agent-memory-client recall --project "$PWD" --query "task keywords"`. It maps a worktree to its main checkout. Read an index entry with `agent-memory-client cat PATH` when its line applies.
+- A session never changes memories. For an explicit correction or a repeatedly confirmed lesson, run `agent-memory-client observe PATH -` with one memory file in the README.md format on stdin. The next dream decides whether to keep it.
   - Evidence: provider, session id, date, file:line, and a short sanitized quote of the user. Agent interpretation and agent-to-agent relays aren't user evidence.
   - Don't record credentials, unrelated private facts, task permissions or transient status. Project state stays in the repository.
-- When the user says "remember …", "from now on …" or the like, call `memory_observe` with their words as the evidence and apply it at once in this session. Don't use the tool's built-in memory.
-- When a recalled memory changed what you did and that helped, call `memory_useful(path, why)` (or `agent-memory-client useful PATH --why TEXT`) once per memory per task. `why` says how, in at most 500 characters. The mark is evidence for the dream; it changes nothing.
+- When the user says "remember …", "from now on …" or the like, record an observation with their words as the evidence and apply it at once in this session. Don't use the tool's built-in memory.
+- When a recalled memory changed what you did and that helped, run `agent-memory-client useful PATH --why TEXT` once per memory per task. `why` says how, in at most 500 characters. The mark is evidence for the dream; it changes nothing.
 
 ## Dream cycle
 
@@ -39,7 +39,7 @@ Only the daily scheduled dream, or a dream the user asks for, runs this. It uses
      jq -r --arg since "$(date -u -d '30 days ago' +%FT%T)" 'select(.ts >= $since and .view == "useful") | .path | sub(".*/"; "") | sub("\\.md$"; "")' "$log" | sort | uniq -c
      ```
      If this fails or the counts are empty because the log couldn't be read, treat no memory as unused and say so in `coverage`.
-     A memory that is unpinned, older than 30 days and missing from both lists is unused; one marked useful is used. Re-judge it in step 6. Reads through `memory_read` or the mirror aren't logged, so an unused memory needs a second look before anything is removed.
+     A memory that is unpinned, older than 30 days and missing from both lists is unused; one marked useful is used. Re-judge it in step 6. Reads through `agent-memory-client cat` or the mirror aren't logged, so an unused memory needs a second look before anything is removed.
 4. **Start.**
    ```sh
    agent-memory-client --config ~/.config/agent-memory/maintainer.json dream start --sessions SESSIONS
