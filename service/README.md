@@ -1,6 +1,6 @@
 # Shared memory service
 
-A Rust HTTP service that owns the memory database. It is the only writer and the only recall renderer, and it keeps the read-only mirror. It runs under systemd on this PC at **127.0.0.1:8787**. SQLite is bundled, so the same source builds on a 64-bit Raspberry Pi. `client.py` (`agent-memory-client`, standard library only) and `mcp_server.py` (the stdio MCP adapter) talk to it over HTTP.
+A Rust HTTP service that owns the memory database. It is the only writer and the only recall renderer, and it keeps the read-only mirror. It runs under systemd at **127.0.0.1:8787**. SQLite is bundled, so the same source builds on a 64-bit Raspberry Pi. `client.py` (`agent-memory-client`, standard library only) and `mcp_server.py` (the stdio MCP adapter) talk to it over HTTP.
 
 ## Build and test
 
@@ -15,7 +15,7 @@ service/.venv-mcp/bin/python -m unittest -v service.tests.test_mcp
 
 The Python suites start the release binary on a temporary store through `service/tests/harness.py`. They never touch the live store, `~/.config/agent-memory` or the running service.
 
-## Install on this machine
+## Install
 
 ```sh
 python3 service/install-user.py --database PATH   # first install only; later runs read it from server.toml; add --migrate --pin SLUG… once for a v1 database
@@ -27,8 +27,6 @@ systemctl --user is-active agent-memory && agent-memory-client status
 ```
 
 `update-local.sh` runs these steps after a merge, and stops rather than replace a skill folder that is not a link. It never migrates.
-
-The package holds code only. Each machine keeps its own facts in the locations below, and its database and logs outside the checkout are never tracked.
 
 | Item | Location |
 | --- | --- |

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Bring this machine's memory setup up to date with origin/master. Run it in the
-# main checkout (/home/sai/Projects/agent-memory) after every merged PR.
+# main checkout after every merged PR.
 # It never migrates: on a v1 store the installer refuses and this script stops.
 # Migration is a one-time explicit installer step (design §3.6).
 set -eu
