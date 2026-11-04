@@ -91,7 +91,7 @@ def parser():
     versions.add_argument('--created-by')
     observe = commands.add_parser('observe')
     observe.add_argument('path')
-    observe.add_argument('file', type=Path)
+    observe.add_argument('file', type=Path, help='A memory file, or - for stdin')
     useful = commands.add_parser('useful', help='Mark a recalled memory that helped; the dream weighs it')
     useful.add_argument('path')
     useful.add_argument('--why', required=True, help='How it changed what you did')
@@ -151,7 +151,8 @@ def run(args):
             query['created_by'] = args.created_by
         return api.call('GET', f'/v1/memory_stores/{store}/memory_versions?' + urllib.parse.urlencode(query))
     if args.command == 'observe':
-        return api.call('POST', '/v1/observations', dict(path=args.path, content=args.file.read_bytes().decode()))
+        data = sys.stdin.buffer.read() if str(args.file) == '-' else args.file.read_bytes()
+        return api.call('POST', '/v1/observations', dict(path=args.path, content=data.decode()))
     if args.command == 'useful':
         return api.call('POST', '/v1/feedback', dict(path=args.path, why=args.why))
     if args.command == 'write':

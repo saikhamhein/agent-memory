@@ -1,7 +1,4 @@
-"""agent-memory-client and the SessionStart hook against the real server (design §4.3 C), on a scratch store.
-
-Standard library only, so these also run without the MCP virtual environment.
-"""
+"""agent-memory-client and the SessionStart hook against the real server (design §4.3 C), on a scratch store."""
 import json
 import os
 import re
@@ -115,6 +112,11 @@ class ClientTests(unittest.TestCase):
         self.assertIn('404', self.run_client('useful', '/global/missing.md', '--why', 'w', role='agent-session', ok=False).stderr)
         self.assertIn('403', self.run_client('useful', '/global/keep.md', '--why', 'w', role='reader', ok=False).stderr)
         self.assertEqual(len(self.server.recall_entries()), 1)
+
+    def test_observe_reads_stdin(self):
+        result = self.server.client('observe', '/global/piped.md', '-', role='agent-session', stdin=content('Piped'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.json('status')['observations_pending'], 1)
 
     def test_dream_workflow(self):
         self.server.seed('/global/existing.md', 'Existing', 'Original body.')

@@ -23,7 +23,7 @@ BINARY = Path(os.environ.get('AGENT_MEMORY_BINARY') or SERVICE / 'target/release
 
 # role -> capabilities (design §4.1: reads need recall, writes to the live store need promote)
 ROLES = {
-    'agent-session': ['recall', 'observe'],  # client.json: the hook, loaders, MCP and the client's default
+    'agent-session': ['recall', 'observe'],  # client.json: the hook, loaders and the client's default
     'reader': ['recall'],
     'observer': ['observe'],
     'reviewer': ['recall', 'review'],
@@ -159,11 +159,11 @@ class Server:
         env['HOME'] = str(home)
         return home, env
 
-    def client(self, *args, role='admin', env=None, binary=False, check=None):
+    def client(self, *args, role='admin', env=None, binary=False, check=None, stdin=None):
         """Run service/client.py with this server's credential for `role`."""
         config = [] if role is None else ['--config', str(self.config(role))]  # None: the client's default config
         result = subprocess.run([sys.executable, str(SERVICE / 'client.py'), *config, *map(str, args)],
-                                capture_output=True, text=not binary, timeout=20, env=env)
+                                capture_output=True, text=not binary, timeout=20, env=env, input=stdin)
         if check is True and result.returncode != 0:
             raise AssertionError(f'client {args}: {result.returncode} {result.stderr}')
         return result
