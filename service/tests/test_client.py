@@ -121,11 +121,14 @@ class ClientTests(unittest.TestCase):
         self.assertEqual([o['body']['content'] for o in dream['observations']], [text])
 
     def test_observe_reads_a_file_named_dash(self):
-        self.file('-', content('Dashed'))
+        text = content('Dashed')
+        self.file('-', text)
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(self.files)
         result = self.server.client('observe', '/global/dashed.md', './-', role='agent-session')
         self.assertEqual(result.returncode, 0, result.stderr)
+        dream = self.json('dream', 'show', self.json('dream', 'start')['id'])
+        self.assertEqual([o['body']['content'] for o in dream['observations']], [text])
 
     def test_dream_workflow(self):
         self.server.seed('/global/existing.md', 'Existing', 'Original body.')
