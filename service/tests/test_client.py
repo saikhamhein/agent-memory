@@ -114,9 +114,18 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(len(self.server.recall_entries()), 1)
 
     def test_observe_reads_stdin(self):
-        result = self.server.client('observe', '/global/piped.md', '-', role='agent-session', stdin=content('Piped'))
+        text = content('Piped', 'မြန်မာ body.')
+        result = self.server.client('observe', '/global/piped.md', '-', role='agent-session', stdin=text)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.json('status')['observations_pending'], 1)
+        dream = self.json('dream', 'show', self.json('dream', 'start')['id'])
+        self.assertEqual([o['body']['content'] for o in dream['observations']], [text])
+
+    def test_observe_reads_a_file_named_dash(self):
+        self.file('-', content('Dashed'))
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.files)
+        result = self.server.client('observe', '/global/dashed.md', './-', role='agent-session')
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_dream_workflow(self):
         self.server.seed('/global/existing.md', 'Existing', 'Original body.')
