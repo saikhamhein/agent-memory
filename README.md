@@ -1,6 +1,6 @@
 # Shared agent memory
 
-One local store of collaboration preferences and lessons, shared by Codex, Claude Code, DeepSeek Harness and other agents. A Rust service (`service/`) owns the SQLite database and is the only writer. Sessions read through a hook or loader line, MCP tools, the `agent-memory-client` CLI, or read-only files, and suggest changes as observations. Only a dream changes memories: the agent does the thinking, and the service keeps versions and checks preconditions. Memories are context, never permission.
+One local store of collaboration preferences and lessons, shared by Codex, Claude Code, DeepSeek Harness and other agents. A Rust service (`service/`) owns the SQLite database and is the only writer. Sessions read through a hook or loader line, the `agent-memory-client` CLI, or read-only files, and suggest changes as observations. Only a dream changes memories: the agent does the thinking, and the service keeps versions and checks preconditions. Memories are context, never permission.
 
 The design is [docs/design/managed-agents-alignment.md](docs/design/managed-agents-alignment.md). It follows Anthropic's Managed Agents [memory stores](https://platform.claude.com/docs/en/managed-agents/memory) and [dreams](https://platform.claude.com/docs/en/managed-agents/dreams), run locally.
 
@@ -38,7 +38,7 @@ If it can be removed, remove it.
   - The start view fits in 9,500 characters, under Claude Code's 10,000-character cap on hook context.
   - If the service is down, the hook injects the mirror's `INDEX.md` instead, cut to the same size. It skips resumed and forked sessions, whose transcripts already hold the view, and logs every run to `~/.cache/agent-memory/recall-log.jsonl` with `via` set to `service`, `index`, `none` or `skipped`.
 - **During a task.** Recall with a query returns only the memories that match, or `No memory matches "…"`.
-- **Read-only files.** The live store is mirrored to `<database dir>/mnt/shared-agent-memory/`, with `INDEX.md`. Read a file there, or with `memory_read`, when its index line applies.
+- **Read-only files.** The live store is mirrored to `<database dir>/mnt/shared-agent-memory/`, with `INDEX.md`. Read a file there, or with `agent-memory-client cat PATH`, when its index line applies.
 
 ```sh
 agent-memory-client recall --project "$PWD"                      # start view
@@ -50,15 +50,15 @@ Pass the canonical project root, the main checkout rather than a worktree. The h
 
 ## Capturing a lesson
 
-Sessions never change memories; they record candidates, with MCP `memory_observe` or:
+Sessions never change memories; they record candidates:
 
 ```sh
-agent-memory-client observe /global/check-evidence.md lesson.md
+agent-memory-client observe /global/check-evidence.md lesson.md   # or - for stdin
 ```
 
 A candidate is never recalled. The next dream checks it against the user's own words and keeps or drops it.
 
-When a recalled memory changed what a session did and helped, the session marks it with MCP `memory_useful(path, why)` or `agent-memory-client useful PATH --why TEXT`. The mark is a line in the recall log and changes nothing; the dream counts it as use and may raise the memory's `priority`, never its content.
+When a recalled memory changed what a session did and helped, the session marks it with `agent-memory-client useful PATH --why TEXT`. The mark is a line in the recall log and changes nothing; the dream counts it as use and may raise the memory's `priority`, never its content.
 
 Record explicit corrections and well-supported lessons, with evidence: provider, session, date, file:line, and a short sanitized quote. Agent interpretation isn't user evidence. Don't record credentials, private unrelated facts, task permissions or transient status; keep project state in the repository.
 
@@ -72,7 +72,7 @@ To undo a change, write an old version back with the maintenance credential: `ve
 
 | Path | What |
 | --- | --- |
-| `service/` | Rust service, `client.py` (`agent-memory-client`), `mcp_server.py`, installers |
+| `service/` | Rust service, `client.py` (`agent-memory-client`), installer |
 | `hooks/agent-memory-recall.py` | Claude Code SessionStart hook |
 | `memory.py` | Stub that forwards `recall` for the existing loader lines |
 | `skill/dream-memory/` | The dream skill, with `scripts/catalog.py`, which lists new or changed session logs for a dream |

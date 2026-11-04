@@ -8,7 +8,6 @@ __pycache__/
 /adapter-install-plan.json
 /installation-status.json
 /service/target/
-/service/.venv-mcp/
 /runtime/
 /recall-log.jsonl
 /graphify-out/

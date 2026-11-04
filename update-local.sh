@@ -13,7 +13,6 @@ git pull --ff-only origin master
 [ "$(git rev-parse HEAD)" = "$before" ] || exec ./update-local.sh
 cargo build --release --locked --manifest-path service/Cargo.toml
 python3 service/install-user.py
-python3 service/install-mcp.py
 mkdir -p "$HOME/.claude/hooks"
 ln -sfn "$PWD/hooks/agent-memory-recall.py" "$HOME/.claude/hooks/agent-memory-recall.py"
-echo "Updated to $(git rev-parse --short HEAD). Restart agent sessions to load the new MCP adapter."
+echo "Updated to $(git rev-parse --short HEAD)."

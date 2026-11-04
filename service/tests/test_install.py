@@ -175,8 +175,7 @@ class Sandbox:
             directory.mkdir(parents=True)
         self.events_file.touch()
         service = self.repo / 'service'
-        shutil.copytree(SERVICE, service, ignore=shutil.ignore_patterns('target', 'tests', '__pycache__', '.venv-mcp'))
-        (service / 'install-mcp.py').write_text('print("install-mcp stub")\n')  # the real one needs uv and network
+        shutil.copytree(SERVICE, service, ignore=shutil.ignore_patterns('target', 'tests', '__pycache__'))
         self.wrapper = service / 'target/release/agent-memory-server'
         self.wrapper.parent.mkdir(parents=True)
         self.write_tool(self.wrapper, FAKE_SERVER.format(events=self.events_file, runtime=self.runtime, real=BINARY,
@@ -192,11 +191,13 @@ class Sandbox:
         for name, body in (('systemd-analyze', ''),
                            ('cargo', ''),
                            ('git', 'case "$1 $2" in "branch --show-current") echo master;; "rev-parse --short") echo abc1234;; esac\n'),
+                           ('claude', ''),
+                           ('codex', ''),
                            ('python3', 'exec %s "$@"\n' % python)):
             self.write_tool(self.fakebin / name, FAKE_TOOL.format(name=name, events=self.events_file, state=self.state,
                                                                   body=body))
         self.env = dict(os.environ, HOME=str(self.home), PATH=f'{self.fakebin}:{os.environ["PATH"]}')
-        for name in ('CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME'):
+        for name in ('XDG_CONFIG_HOME', 'XDG_STATE_HOME'):
             self.env.pop(name, None)
         for tool in ('systemctl', 'systemd-analyze', 'git', 'cargo', 'python3'):
             test.assertEqual(shutil.which(tool, path=self.env['PATH']), str(self.fakebin / tool))
@@ -529,7 +530,7 @@ class UpdateLocalTests(unittest.TestCase):
         self.assertTrue(self.installer_calls(), 'it must reach the installer, not fail earlier:\n' + ran.stderr)
         self.assertIn('--migrate', ran.stdout + ran.stderr, 'the installer says how to migrate')
         self.assertFalse([e for e in self.box.events() if '--migrate' in e or e.startswith('binary migrate')])
-        self.assertFalse([e for e in self.box.events() if 'install-mcp' in e], 'nothing runs after the guard')
+        self.assertFalse((self.box.home / '.claude/hooks/agent-memory-recall.py').is_symlink(), 'nothing runs after the guard')
         self.assertEqual(self.box.database.read_bytes(), before)
         self.assertEqual(self.box.installed(), [])
 
@@ -570,6 +571,31 @@ class UpdateLocalTests(unittest.TestCase):
         self.assertIn('worktree', ran.stderr)
         self.assertFalse((self.box.home / '.claude/skills/dream-memory').is_symlink())
 
+    def test_install_clears_mcp_leftovers(self):
+        self.box.migrated_database(REVISIONS)
+        leftovers = [self.box.home / '.local/share/agent-memory-mcp', self.box.repo / 'service/.venv-mcp']
+        for folder in leftovers:
+            folder.mkdir(parents=True)
+        (self.box.runtime).mkdir(exist_ok=True)
+        (self.box.runtime / 'codex-config.toml').write_text('copy\n')
+        calls = lambda: [e for e in self.box.events() if e.startswith(('claude ', 'codex '))]
+        self.assertEqual(self.box.install().returncode, 0)
+        self.assertEqual(calls(), ['claude mcp remove --scope user shared_memory', 'codex mcp remove shared_memory'])
+        self.assertFalse([p for p in leftovers + [self.box.runtime / 'codex-config.toml'] if p.exists()])
+        self.box.fail_tool('claude')
+        self.assertEqual(self.box.install().returncode, 0, 'a failed removal does not stop the update')
+        self.assertEqual(len(calls()), 4, 'every update tries again')
+
+    def test_remove_mcp_survives_a_missing_or_hanging_cli(self):
+        for error in (FileNotFoundError('claude'), subprocess.TimeoutExpired('claude', 30)):
+            adapter = self.box.home / '.local/share/agent-memory-mcp'
+            adapter.mkdir(parents=True)
+            with patch.object(installer.subprocess, 'run', side_effect=error) as run, patch('builtins.print'):
+                installer.remove_mcp(self.box.repo, self.box.home)
+            self.assertEqual(run.call_count, 2)
+            self.assertIs(run.call_args.kwargs['stdin'], subprocess.DEVNULL)
+            self.assertFalse(adapter.exists())
+
     def test_install_carries_the_catalog_out_of_the_checkout_once(self):
         self.box.migrated_database(REVISIONS)
         old = self.box.repo / 'sources/latest-catalog.json'
@@ -602,6 +628,8 @@ class UpdateLocalTests(unittest.TestCase):
         self.assertFalse([e for e in self.box.events() if '--migrate' in e or e.startswith('binary migrate')])
         self.assertEqual(user_version(self.box.database), 2)
         self.assertTrue(self.box.service_active())
+        self.assertEqual(os.readlink(self.box.home / '.claude/hooks/agent-memory-recall.py'),
+                         str(self.box.repo / 'hooks/agent-memory-recall.py'))
 
 
 if __name__ == '__main__':

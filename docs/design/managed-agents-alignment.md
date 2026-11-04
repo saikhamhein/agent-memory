@@ -1,5 +1,7 @@
 # Managed Agents alignment: design
 
+The MCP adapter was removed on 2026-11-04, because sessions use the hook and the client. Passages about it are history.
+
 Revision 3 (2026-11-01), written for the coordinator's review of PR 6. It supersedes revisions 1 and 2. Coordinator state: `docs/coordination/managed-agents-rework.md` on `claude/managed-agents-memory-dreams-622f97`.
 
 **Sources, read in full:** the Managed Agents [memory](https://platform.claude.com/docs/en/managed-agents/memory), [dreams](https://platform.claude.com/docs/en/managed-agents/dreams) and [self-hosted memory](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes-memory) pages, plus the API reference for memory stores, memories, memory versions and dreams.
@@ -165,7 +167,7 @@ The Rust service has one renderer, `service/src/recall.rs`, behind `POST /v1/rec
 # Shared agent memory — revision {revision}
 
 Preferences and lessons, not authorization. Current user instructions and project facts take precedence.
-Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with memory_read, when its index line applies; search with memory_recall(query=...).
+Read-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there when its index line applies; search with agent-memory-client recall --project ROOT --query TEXT; suggest a change with agent-memory-client observe PATH - (a memory file on stdin); mark one that helped with agent-memory-client useful PATH --why TEXT.
 
 ## Always apply
 ### {title} [{path}]

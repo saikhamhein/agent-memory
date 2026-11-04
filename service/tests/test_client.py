@@ -1,7 +1,4 @@
-"""agent-memory-client and the SessionStart hook against the real server (design §4.3 C), on a scratch store.
-
-Standard library only, so these also run without the MCP virtual environment.
-"""
+"""agent-memory-client and the SessionStart hook against the real server (design §4.3 C), on a scratch store."""
 import json
 import os
 import re
@@ -115,6 +112,23 @@ class ClientTests(unittest.TestCase):
         self.assertIn('404', self.run_client('useful', '/global/missing.md', '--why', 'w', role='agent-session', ok=False).stderr)
         self.assertIn('403', self.run_client('useful', '/global/keep.md', '--why', 'w', role='reader', ok=False).stderr)
         self.assertEqual(len(self.server.recall_entries()), 1)
+
+    def test_observe_reads_stdin(self):
+        text = content('Piped', 'မြန်မာ body.')
+        result = self.server.client('observe', '/global/piped.md', '-', role='agent-session', stdin=text)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        dream = self.json('dream', 'show', self.json('dream', 'start')['id'])
+        self.assertEqual([o['body']['content'] for o in dream['observations']], [text])
+
+    def test_observe_reads_a_file_named_dash(self):
+        text = content('Dashed')
+        self.file('-', text)
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.files)
+        result = self.server.client('observe', '/global/dashed.md', './-', role='agent-session')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        dream = self.json('dream', 'show', self.json('dream', 'start')['id'])
+        self.assertEqual([o['body']['content'] for o in dream['observations']], [text])
 
     def test_dream_workflow(self):
         self.server.seed('/global/existing.md', 'Existing', 'Original body.')

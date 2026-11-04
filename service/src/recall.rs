@@ -294,7 +294,7 @@ fn task(memories: &[&Memory], revision: i64, query: &str) -> Recalled {
 
 fn header(revision: i64, mirror_dir: &str) -> String {
     format!(
-        "# Shared agent memory — revision {revision}\n\n{HEADER}\nRead-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there, or with memory_read, when its index line applies; search with memory_recall(query=...); mark one that helped with memory_useful(path, why).\n\n"
+        "# Shared agent memory — revision {revision}\n\n{HEADER}\nRead-only files: {mirror_dir}/ (index: INDEX.md). Read a memory there when its index line applies; search with agent-memory-client recall --project ROOT --query TEXT; suggest a change with agent-memory-client observe PATH - (a memory file on stdin); mark one that helped with agent-memory-client useful PATH --why TEXT.\n\n"
     )
 }
 

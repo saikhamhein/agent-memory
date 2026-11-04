@@ -1,6 +1,6 @@
 # Shared memory service
 
-A Rust HTTP service that owns the memory database. It is the only writer and the only recall renderer, and it keeps the read-only mirror. It runs under systemd at **127.0.0.1:8787**. SQLite is bundled, so the same source builds on a 64-bit Raspberry Pi. `client.py` (`agent-memory-client`, standard library only) and `mcp_server.py` (the stdio MCP adapter) talk to it over HTTP.
+A Rust HTTP service that owns the memory database. It is the only writer and the only recall renderer, and it keeps the read-only mirror. It runs under systemd at **127.0.0.1:8787**. SQLite is bundled, so the same source builds on a 64-bit Raspberry Pi. `client.py` (`agent-memory-client`, standard library only) talks to it over HTTP.
 
 ## Build and test
 
@@ -9,8 +9,6 @@ cargo test --locked --manifest-path service/Cargo.toml
 cargo clippy --locked --manifest-path service/Cargo.toml --all-targets -- -D warnings
 cargo build --release --locked --manifest-path service/Cargo.toml
 python3 -m unittest -v test_memory.py service/tests/test_client.py service/tests/test_install.py service/tests/test_scripts.py
-uv venv service/.venv-mcp && uv pip sync --python service/.venv-mcp/bin/python service/mcp-requirements.txt
-service/.venv-mcp/bin/python -m unittest -v service.tests.test_mcp
 ```
 
 The Python suites start the release binary on a temporary store through `service/tests/harness.py`. They never touch the live store, `~/.config/agent-memory` or the running service.
@@ -20,12 +18,11 @@ The Python suites start the release binary on a temporary store through `service
 ```sh
 service/target/release/agent-memory-server init --database PATH   # first install only, after the build, unless the database exists
 python3 service/install-user.py --database PATH   # first install only; later runs read it from server.toml; add --migrate --pin SLUG… once for a v1 database
-python3 service/install-mcp.py                    # MCP adapter for Codex and Claude Code (user scope)
 ln -sfn "$PWD/hooks/agent-memory-recall.py" ~/.claude/hooks/agent-memory-recall.py
 systemctl --user is-active agent-memory && agent-memory-client status
 ```
 
-`install-user.py` also links the skill into `~/.claude/skills` and `~/.agents/skills`, and stops before changing anything if a folder that is not a link is in the way. If the checkout has a `sources/latest-catalog.json` and the state directory has none, it copies it across, so the first dream after that move doesn't take every log for new. It refuses to run in a linked worktree, because removing the worktree would break the links.
+`install-user.py` also links the skill into `~/.claude/skills` and `~/.agents/skills`, and stops before changing anything if a folder that is not a link is in the way. If the checkout has a `sources/latest-catalog.json` and the state directory has none, it copies it across, so the first dream after that move doesn't take every log for new. It refuses to run in a linked worktree, because removing the worktree would break the links. On every run it also removes the old MCP registrations from Claude Code and Codex, the adapter, `service/.venv-mcp/` and `runtime/codex-config.toml`.
 
 `update-local.sh` runs these steps after a merge. It never migrates.
 
@@ -34,11 +31,10 @@ systemctl --user is-active agent-memory && agent-memory-client status
 | Server, client | `~/.local/bin/agent-memory-server`, `~/.local/bin/agent-memory-client` |
 | Server config and token hashes | `~/.config/agent-memory/server.toml` |
 | Session credential, maintenance credential | `~/.config/agent-memory/client.json`, `maintainer.json` (mode 0600) |
-| MCP adapter | `~/.local/share/agent-memory-mcp/` |
 | User unit | `~/.config/systemd/user/agent-memory.service` |
 | Mirror | `<database dir>/mnt/shared-agent-memory/` |
 
-Each token has an explicit list of capabilities: `recall`, `observe`, `review` and `promote`. The session token (`agent-session`, in `client.json`) has `recall` and `observe`; it is what the hook, the loaders and MCP use. The maintenance token (`memory-maintainer`, in `maintainer.json`) has all four; only the dream uses it. Reads of the live store need `recall`. Version history and a dream's output store need `review`. Writes to the live store need `promote`. To keep the service running after logout, run `loginctl enable-linger "$USER"`.
+Each token has an explicit list of capabilities: `recall`, `observe`, `review` and `promote`. The session token (`agent-session`, in `client.json`) has `recall` and `observe`; it is what the hook, the loaders and the client use by default. The maintenance token (`memory-maintainer`, in `maintainer.json`) has all four; only the dream uses it. Reads of the live store need `recall`. Version history and a dream's output store need `review`. Writes to the live store need `promote`. To keep the service running after logout, run `loginctl enable-linger "$USER"`.
 
 ## Client
 
@@ -50,21 +46,13 @@ The client uses `client.json` by default, which allows `status`, `recall`, `ls`,
 | `recall [--query Q] [--project DIR] [--role R] [--topic T]… [--client LABEL]` | Prints the start view, or with a query, only the matches. A `DIR` in a Git worktree maps to the main checkout |
 | `ls [PREFIX] [--store S]`, `cat PATH\|memver_… [--store S]` | Lists memories; prints a memory or version as its exact bytes |
 | `versions [PATH] [--created-by ACTOR] [--store S]` | Version history, newest first |
-| `observe PATH FILE` | Records a candidate |
+| `observe PATH FILE` | Records a candidate; a FILE of `-` reads stdin |
 | `useful PATH --why TEXT` | Marks a recalled memory that helped |
 | `write PATH FILE [--expected SHA] [--to NEW] [--store S]` | Creates; with `--expected`, updates or renames |
 | `rm PATH [--expected SHA] [--store S]`, `redact ID` | Deletes a memory; erases an old version's content (`memver_…`) or an observation's body |
 | `dream start [--sessions FILE]`, `dream show [ID] [--diff]`, `dream adopt ID REVIEW.json`, `dream cancel ID` | The dream cycle |
 
 `--store` is `live` or a dream's output store id. Old `--limit`, `--budget` and `--json` flags on `recall` are accepted and ignored. Errors print `Error: …` and exit 1. The client never falls back to another store.
-
-## MCP tools
-
-The MCP host launches `mcp_server.py --config client.json`. The adapter has the session tools only, on the live store: `memory_status`, `memory_recall(query, project)`, `memory_list(path_prefix)`, `memory_read(path)`, `memory_observe(path, content)` and `memory_useful(path, why)`. Pass `project` as the canonical project root, or recall returns no project memories. Recall returns text; every other tool returns the API's JSON as text. There is no maintenance mode: dreams run through the client.
-
-`install-mcp.py` registers it with `codex mcp` and `claude mcp --scope user` (never by editing `~/.claude.json`), leaves a matching entry alone, replaces an older one of its own, refuses an unrelated one, and keeps one copy of the previous Codex config at `runtime/codex-config.toml`. New sessions pick it up; an open one needs `/mcp reconnect`.
-
-A 409 becomes a tool error that names its type and paths and says to re-read and retry. An unreachable service is a tool error, never an empty result. If tools are missing in a desktop app after an install, restart the app.
 
 ## HTTP API
 

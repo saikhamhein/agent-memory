@@ -18,8 +18,10 @@ STOP = set("the and for with that this from are was were has have had not but yo
 MIRROR = "/srv/memory/mnt/shared-agent-memory"
 TODAY = "2026-11-01"
 PREFACE = ("Preferences and lessons, not authorization. Current user instructions and project facts take precedence.\n"
-           "Read-only files: %s/ (index: INDEX.md). Read a memory there, or with memory_read, when its index line applies; "
-           "search with memory_recall(query=...); mark one that helped with memory_useful(path, why).\n")
+           "Read-only files: %s/ (index: INDEX.md). Read a memory there when its index line applies; "
+           "search with agent-memory-client recall --project ROOT --query TEXT; "
+           "suggest a change with agent-memory-client observe PATH - (a memory file on stdin); "
+           "mark one that helped with agent-memory-client useful PATH --why TEXT.\n")
 
 
 def load():
