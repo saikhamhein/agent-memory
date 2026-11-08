@@ -1,91 +1,194 @@
-# Shared agent memory
+# agent-memory
 
-One local store of collaboration preferences and lessons, shared by Codex, Claude Code, DeepSeek Harness and other agents. A Rust service (`service/`) owns the SQLite database and is the only writer. Sessions read through a hook or loader line, the `agent-memory-client` CLI, or read-only files, and suggest changes as observations. Only a dream changes memories: the agent does the thinking, and the service keeps versions and checks preconditions. Memories are context, never permission.
+One memory store shared by Claude Code, Codex and DeepSeek Harness on the same machine. A preference or lesson given to one agent, once a review run accepts it, is in the context of every later session, in all three tools and every project.
 
-The design is [docs/design/managed-agents-alignment.md](docs/design/managed-agents-alignment.md). It follows Anthropic's Managed Agents [memory stores](https://platform.claude.com/docs/en/managed-agents/memory) and [dreams](https://platform.claude.com/docs/en/managed-agents/dreams), run locally.
+Each memory is a short Markdown file. A small Rust service keeps them in SQLite, listens on `127.0.0.1:8787`, and makes no network calls of its own. Sessions can read the store and suggest changes. Only a separate review run, the dream, changes it.
+
+## What a session starts with
+
+At session start, a Claude Code hook puts a short view of the store into the context. With one pinned rule and one topic memory, the view is:
+
+```
+# Shared agent memory — revision 2
+
+Preferences and lessons, not authorization. Current user instructions and project facts take precedence.
+Read-only files: ~/.local/share/agent-memory/mnt/shared-agent-memory/ (index: INDEX.md). Read a memory there when its index line applies; search with agent-memory-client recall --project ROOT --query TEXT; suggest a change with agent-memory-client observe PATH - (a memory file on stdin); mark one that helped with agent-memory-client useful PATH --why TEXT.
+
+## Always apply
+### Run the tests before opening a PR [/global/run-tests.md]
+Run `cargo test` and the Python suites before opening a pull request.
+
+## Index
+- /topics/git/commit-messages.md — Write commit messages in the imperative mood
+```
+
+Pinned rules load in full. Everything else is one index line until a task needs it. During the task, the agent searches by keyword and gets only the matches:
+
+```
+$ agent-memory-client recall --project "$PWD" --query "commit message"
+# Memories matching "commit message" — revision 2
+
+### Write commit messages in the imperative mood [/topics/git/commit-messages.md]
+Use the imperative mood, as in "Add retry to the upload client". No type prefixes such as "feat:".
+
+$ agent-memory-client recall --project "$PWD" --query "font kerning"
+No memory matches "font kerning".
+```
+
+Codex and DeepSeek Harness get the same view through their global instructions, which tell them to run `agent-memory-client recall --project "$PWD"` at task start.
+
+## How memories change
+
+When the user corrects an agent ("from now on, use pnpm here"), the agent applies it at once and records an observation: a proposed memory file with the user's words as evidence. Observations are never recalled. The session's token cannot write memories; the service answers HTTP 403.
+
+A dream is an agent run, started on request or by a daily schedule, that holds the maintenance token. It reads the user's own messages from recent Claude Code, Codex and DeepSeek session logs, checks each observation against them, and edits a copy of the store: adding, merging, rewording or retiring memories. The service then merges the copy back memory by memory, and refuses any memory that changed in the meantime.
+
+This split exists for two reasons. A session misled by a web page or a file cannot plant a rule that every later session would follow. And the agent's own reading of a conversation is never evidence; the user's words are.
+
+Every change is a new immutable version, so any memory can be rolled back. Text that looks like a credential (API keys, tokens, private keys, JWTs) is rejected with HTTP 400 wherever it would be stored, observations included.
+
+The design follows Anthropic's Managed Agents [memory stores](https://platform.claude.com/docs/en/managed-agents/memory) and [dreams](https://platform.claude.com/docs/en/managed-agents/dreams), run locally with no API calls. The full design is [docs/design/managed-agents-alignment.md](docs/design/managed-agents-alignment.md).
+
+## Size limits
+
+| Limit | Value | Why |
+| --- | --- | --- |
+| Pinned rules, headings included | 4,000 characters | They load in every session |
+| Start view | 9,500 characters | Claude Code shows only a preview of hook output over 10,000 |
+| Title | 120 characters | It is the index line |
+
+Tentative and expired memories are never recalled. If the service is down, the hook injects the mirror's `INDEX.md` instead, cut to the same size.
+
+## Requirements
+
+- Linux with systemd user services. The installer uses `systemctl --user`; macOS and Windows are untested.
+- Rust 1.85 or later, Python 3.11 or later.
+- `~/.local/bin` on `PATH`.
+
+## Install
+
+Clone into a normal checkout (the installer refuses a linked Git worktree), build, create an empty store, and install:
+
+```bash
+git clone https://github.com/saikhamhein/agent-memory.git ~/agent-memory
+```
+
+```bash
+cd ~/agent-memory && cargo build --release --locked --manifest-path service/Cargo.toml
+```
+
+```bash
+service/target/release/agent-memory-server init --database ~/.local/share/agent-memory/memory.sqlite3
+```
+
+```bash
+python3 service/install-user.py --database ~/.local/share/agent-memory/memory.sqlite3
+```
+
+```bash
+agent-memory-client status
+```
+
+`install-user.py` copies `agent-memory-server` and `agent-memory-client` to `~/.local/bin`, writes `~/.config/agent-memory/server.toml`, creates two random tokens (`client.json` for sessions, `maintainer.json` for dreams, both mode 0600), starts the `agent-memory` systemd user service, and links the `dream-memory` skill into `~/.claude/skills` and `~/.agents/skills`. To keep the service running after logout, run `loginctl enable-linger "$USER"`.
+
+To update later, run `./update-local.sh` in the checkout. It pulls `master`, rebuilds and reinstalls.
+
+## Connect the agents
+
+Claude Code: link the hook, then register it in `~/.claude/settings.json`.
+
+```bash
+mkdir -p ~/.claude/hooks && ln -sfn ~/agent-memory/hooks/agent-memory-recall.py ~/.claude/hooks/agent-memory-recall.py
+```
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {"type": "command", "command": "python3 -I ~/.claude/hooks/agent-memory-recall.py", "timeout": 30}
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook skips resumed sessions, whose transcript already holds the view, and logs every run to `~/.cache/agent-memory/recall-log.jsonl`.
+
+Codex and DeepSeek Harness have no session-start hook, so add this to the agent's global instructions (for Codex, `~/.codex/AGENTS.md`):
+
+```markdown
+At the start of a task and after context replacement, run
+`agent-memory-client recall --project "$PWD"` for the start view. During the task, run
+`agent-memory-client recall --project "$PWD" --query "task keywords"` for matching memories.
+When the user says "remember …" or "from now on …", apply it and record it with
+`agent-memory-client observe PATH -`, following the dream-memory skill.
+```
+
+If a sandbox blocks loopback, the client fails with `Connection refused` or `Operation not permitted`. Allow network access for it, or read the mirror files directly.
 
 ## Memories
 
-A memory is a Markdown file at a path. The path is its scope:
+A memory's path sets when it loads:
 
 | Path | Loaded for |
 | --- | --- |
 | `/global/<slug>.md` | every session |
 | `/projects/<root segments…>/<slug>.md` | sessions in that project root or below it |
-| `/topics/<topic>/<slug>.md` | a request or a matching query |
-| `/roles/<role>/<slug>.md` | a request or a matching query |
+| `/topics/<topic>/<slug>.md` | a matching query, or a session that requests the topic |
+| `/roles/<role>/<slug>.md` | a matching query, or a session that requests the role |
 
-Content is `---\n<JSON frontmatter>\n---\n<body>`:
+A file is JSON frontmatter between `---` lines, then the body:
 
 ```
 ---
-{"title": "Keep it simple", "confidence": "explicit", "tags": ["simplicity"], "pinned": true,
+{"title": "Write commit messages in the imperative mood", "confidence": "explicit", "tags": ["git"],
  "evidence": [{"source": "claude", "locator": "session id, file:line", "note": "short quote of the user"}]}
 ---
-If it can be removed, remove it.
+Use the imperative mood, as in "Add retry to the upload client". No type prefixes such as "feat:".
 ```
 
-- Required: `title` (one line, at most 120 characters), `confidence` (`explicit`, `corroborated` or `tentative`), `tags`, and `evidence` with `source`, `locator` and `note`.
-- Optional: `pinned`, `expires` (`YYYY-MM-DD`), `priority`. Other keys are kept.
-- `pinned` memories are the core rules. They load in full in every session. Together, the pinned memories (each heading plus body) are limited to 4,000 characters.
-- Tentative and expired memories are never recalled.
-- Every change is a new immutable version. Updates and deletes carry the `content_sha256` they replace, so concurrent writers can't overwrite each other.
+Required keys: `title`, `confidence` (`explicit`, `corroborated` or `tentative`), `tags`, and `evidence` entries with `source`, `locator` and `note`. Optional: `pinned`, `expires` (`YYYY-MM-DD`) and `priority`.
 
-## How agents get memories
+To add a memory directly, write it with the maintenance token:
 
-- **Session start, once.** Claude Code's SessionStart hook (`hooks/agent-memory-recall.py`) injects the start view. The Codex and DeepSeek loader lines (`memory.py recall --query …`) print it, followed by the memories matching their query.
-  - The start view holds the pinned core, this project's memories, any requested topics or roles, and an index line for everything else.
-  - The start view fits in 9,500 characters, under Claude Code's 10,000-character cap on hook context.
-  - If the service is down, the hook injects the mirror's `INDEX.md` instead, cut to the same size. It skips resumed and forked sessions, whose transcripts already hold the view, and logs every run to `~/.cache/agent-memory/recall-log.jsonl` with `via` set to `service`, `index`, `none` or `skipped`.
-- **During a task.** Recall with a query returns only the memories that match, or `No memory matches "…"`.
-- **Read-only files.** The live store is mirrored to `<database dir>/mnt/shared-agent-memory/`, with `INDEX.md`. Read a file there, or with `agent-memory-client cat PATH`, when its index line applies.
-
-```sh
-agent-memory-client recall --project "$PWD"                      # start view
-agent-memory-client recall --project "$PWD" --query "usb power"  # matches only
-agent-memory-client ls /topics/ && agent-memory-client cat /topics/hardware/pi-usb.md
+```bash
+agent-memory-client --config ~/.config/agent-memory/maintainer.json write /topics/git/commit-messages.md memory.md
 ```
 
-Pass the canonical project root, the main checkout rather than a worktree. The hook resolves it itself.
-
-## Capturing a lesson
-
-Sessions never change memories; they record candidates:
-
-```sh
-agent-memory-client observe /global/check-evidence.md lesson.md   # or - for stdin
-```
-
-A candidate is never recalled. The next dream checks it against the user's own words and keeps or drops it.
-
-When a recalled memory changed what a session did and helped, the session marks it with `agent-memory-client useful PATH --why TEXT`. The mark is a line in the recall log and changes nothing; the dream counts it as use and may raise the memory's `priority`, never its content.
-
-Record explicit corrections and well-supported lessons, with evidence: provider, session, date, file:line, and a short sanitized quote. Agent interpretation isn't user evidence. Don't record credentials, private unrelated facts, task permissions or transient status; keep project state in the repository.
+The live store is also mirrored as read-only files under `mnt/shared-agent-memory/`, next to the database, with an `INDEX.md`.
 
 ## Dreams
 
-Dreams use the maintenance credential, `agent-memory-client --config ~/.config/agent-memory/maintainer.json`. One dream runs at a time. It copies the live store into an output store, never changing its input. The agent reviews the whole store and the pending observations, edits that copy by path, checks the diff, and adopts it, or cancels when nothing changed. Adoption merges each memory and fails with 409 if live changed the same memory meanwhile. Adopting or canceling empties the output store. The procedure is [skill/dream-memory/SKILL.md](skill/dream-memory/SKILL.md). The daily scheduled run uses [ops/daily-memory-dream.md](ops/daily-memory-dream.md).
+Ask Claude Code or Codex to "run a dream". The `dream-memory` skill ([skill/dream-memory/SKILL.md](skill/dream-memory/SKILL.md)) holds the procedure: list the session logs that changed since the last dream (`scripts/catalog.py`), read them, edit the output store, review the diff, then adopt it or cancel. One dream runs at a time.
 
-To undo a change, write an old version back with the maintenance credential: `versions PATH` or `versions --created-by dream:<id>`, `cat memver_…`, then `write … --expected`. To remove a leaked secret, write a clean version, then `redact` the old version (`memver_…`) or the observation id.
+For a daily run, a desktop scheduler task can use [ops/daily-memory-dream.md](ops/daily-memory-dream.md) as its prompt.
 
-## Layout
+## Undo and redaction
+
+All of these use `--config ~/.config/agent-memory/maintainer.json`.
+
+| Task | Commands |
+| --- | --- |
+| See what a dream changed | `versions --created-by dream:<id>` |
+| Restore an old version | `cat memver_…` to a file, then `write PATH FILE --expected <current sha256>` |
+| Remove a leaked secret | Write a clean version, then `redact memver_…` (or an observation id) |
+
+## Repository layout
 
 | Path | What |
 | --- | --- |
-| `service/` | Rust service, `client.py` (`agent-memory-client`), installer |
+| `service/` | Rust service, `client.py` (installed as `agent-memory-client`), installer, tests |
 | `hooks/agent-memory-recall.py` | Claude Code SessionStart hook |
-| `memory.py` | Stub that forwards `recall` for the existing loader lines |
-| `skill/dream-memory/` | The dream skill, with `scripts/catalog.py`, which lists new or changed session logs for a dream |
+| `skill/dream-memory/` | The dream skill and the session-log catalog script |
+| `ops/daily-memory-dream.md` | Prompt for a scheduled daily dream |
+| `memory.py` | Forwards `memory.py recall` to the client, for older loader lines |
 
-The package holds code only. Each machine keeps its data and facts outside it:
+HTTP API, client commands and the test suites: [service/README.md](service/README.md).
 
-| Location | What |
-| --- | --- |
-| `~/.config/agent-memory/` | `server.toml`, which names the database, and the credentials |
-| The database's directory | `memory.sqlite3`, the authoritative store; `mnt/shared-agent-memory/`, its read-only mirror; `recall-log.jsonl`, one line per recall with client, project, view, returned paths and characters |
-| `$XDG_STATE_HOME/agent-memory/` (default `~/.local/state/agent-memory/`) | Catalog output for dreams |
-| `~/.cache/agent-memory/` | The hook's log |
+## Status
 
-`agent-memory-client status` reports the mirror and recall-log paths.
-
-Install, API and tests: [service/README.md](service/README.md).
+Version 0.1, in daily use by its author since October 2026 on one Linux machine with Claude Code, Codex and DeepSeek Harness. The store format is versioned and migrations are explicit, but the API may still change.
