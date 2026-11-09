@@ -41,7 +41,7 @@ Codex and DeepSeek Harness get the same view through their global instructions, 
 
 When the user corrects an agent ("from now on, use pnpm here"), the agent applies it at once and records an observation: a proposed memory file with the user's words as evidence. Observations are never recalled. The session's token cannot write memories; the service answers HTTP 403.
 
-A dream is an agent run, started on request or by a daily schedule, that holds the maintenance token. It reads the user's own messages from recent Claude Code, Codex and DeepSeek session logs, checks each observation against them, and edits a copy of the store: adding, merging, rewording or retiring memories. The service then merges the copy back memory by memory, and refuses any memory that changed in the meantime.
+A dream is an agent run, started on request or by a daily schedule, that holds the maintenance token and needs no approval. It reads the user's own messages from recent Claude Code, Codex and DeepSeek session logs, checks each observation against them, and edits a copy of the store: adding, merging, rewording or retiring memories. The service then merges the copy back memory by memory, and refuses any memory that changed in the meantime.
 
 This split exists for two reasons. A session misled by a web page or a file cannot plant a rule that every later session would follow. And the agent's own reading of a conversation is never evidence; the user's words are.
 
@@ -162,6 +162,8 @@ agent-memory-client --config ~/.config/agent-memory/maintainer.json write /topic
 The live store is also mirrored as read-only files under `mnt/shared-agent-memory/`, next to the database, with an `INDEX.md`.
 
 ## Dreams
+
+Dreams run without asking. A dream adds, rewrites, merges and deletes memories, pinned ones included when the user's own words support them, then reports what it changed. It never ends with proposals waiting for approval: anything uncertain stays out of the store and is listed in the report. The scheduled run changes nothing outside the memory store. Installing the skill opts into this behaviour, and the version history undoes any change (see below).
 
 Ask Claude Code or Codex to "run a dream". The `dream-memory` skill ([skill/dream-memory/SKILL.md](skill/dream-memory/SKILL.md)) holds the procedure: list the session logs that changed since the last dream (`scripts/catalog.py`), read them, edit the output store, review the diff, then adopt it or cancel. One dream runs at a time.
 

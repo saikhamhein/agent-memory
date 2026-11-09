@@ -22,7 +22,7 @@ ln -sfn "$PWD/hooks/agent-memory-recall.py" ~/.claude/hooks/agent-memory-recall.
 systemctl --user is-active agent-memory && agent-memory-client status
 ```
 
-`install-user.py` also links the skill into `~/.claude/skills` and `~/.agents/skills`, and stops before changing anything if a folder that is not a link is in the way. If the checkout has a `sources/latest-catalog.json` and the state directory has none, it copies it across, so the first dream after that move doesn't take every log for new. It refuses to run in a linked worktree, because removing the worktree would break the links. On every run it also removes the old MCP registrations from Claude Code and Codex, the adapter, `service/.venv-mcp/` and `runtime/codex-config.toml`.
+`install-user.py` also links the skill into `~/.claude/skills` and `~/.agents/skills`, and stops before changing anything if a folder that is not a link is in the way. If the checkout has a `sources/latest-catalog.json` and the state directory has none, it copies it across, so the first dream after that move doesn't take every log for new. It refuses to run in a linked worktree, because removing the worktree would break the links.
 
 `update-local.sh` runs these steps after a merge. It never migrates.
 

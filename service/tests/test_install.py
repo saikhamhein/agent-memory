@@ -12,7 +12,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 
 from service.tests.test_client import BINARY, SERVICE
 
@@ -570,31 +569,6 @@ class UpdateLocalTests(unittest.TestCase):
         self.assertNotEqual(ran.returncode, 0)
         self.assertIn('worktree', ran.stderr)
         self.assertFalse((self.box.home / '.claude/skills/dream-memory').is_symlink())
-
-    def test_install_clears_mcp_leftovers(self):
-        self.box.migrated_database(REVISIONS)
-        leftovers = [self.box.home / '.local/share/agent-memory-mcp', self.box.repo / 'service/.venv-mcp']
-        for folder in leftovers:
-            folder.mkdir(parents=True)
-        (self.box.runtime).mkdir(exist_ok=True)
-        (self.box.runtime / 'codex-config.toml').write_text('copy\n')
-        calls = lambda: [e for e in self.box.events() if e.startswith(('claude ', 'codex '))]
-        self.assertEqual(self.box.install().returncode, 0)
-        self.assertEqual(calls(), ['claude mcp remove --scope user shared_memory', 'codex mcp remove shared_memory'])
-        self.assertFalse([p for p in leftovers + [self.box.runtime / 'codex-config.toml'] if p.exists()])
-        self.box.fail_tool('claude')
-        self.assertEqual(self.box.install().returncode, 0, 'a failed removal does not stop the update')
-        self.assertEqual(len(calls()), 4, 'every update tries again')
-
-    def test_remove_mcp_survives_a_missing_or_hanging_cli(self):
-        for error in (FileNotFoundError('claude'), subprocess.TimeoutExpired('claude', 30)):
-            adapter = self.box.home / '.local/share/agent-memory-mcp'
-            adapter.mkdir(parents=True)
-            with patch.object(installer.subprocess, 'run', side_effect=error) as run, patch('builtins.print'):
-                installer.remove_mcp(self.box.repo, self.box.home)
-            self.assertEqual(run.call_count, 2)
-            self.assertIs(run.call_args.kwargs['stdin'], subprocess.DEVNULL)
-            self.assertFalse(adapter.exists())
 
     def test_install_carries_the_catalog_out_of_the_checkout_once(self):
         self.box.migrated_database(REVISIONS)
