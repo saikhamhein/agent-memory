@@ -194,3 +194,7 @@ HTTP API, client commands and the test suites: [service/README.md](service/READM
 ## Status
 
 Version 0.1, in daily use by its author since October 2026 on one Linux machine with Claude Code, Codex and DeepSeek Harness. The store format is versioned and migrations are explicit, but the API may still change.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
