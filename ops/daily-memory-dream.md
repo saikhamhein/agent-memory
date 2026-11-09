@@ -7,7 +7,8 @@ Run the daily dream for the user's shared agent memory store, fully autonomously
 
 Follow the dream cycle in the `dream-memory` skill, `~/.agents/skills/dream-memory/SKILL.md`, every step, every run. It uses `agent-memory-client --config ~/.config/agent-memory/maintainer.json`. This prompt adds only what is specific to the schedule.
 
-## Authorization (standing, from the user)
+## Authorization
+Dreams are autonomous by design. Scheduling this prompt is the user's standing authorization for every change inside the memory store. The author of this store gave it in these words:
 - 2026-10-29: "updating the memory storage do not need my permission for the recurring dreaming task. I approve".
 - 2026-11-01: "No need to propose me, work autonomously, You are fully authorise to update the memories in the memory store ... I want this whole process to be fully autonomously".
 
