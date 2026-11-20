@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 
 from service.tests.test_client import BINARY, SERVICE
@@ -641,8 +642,11 @@ class MachineTokenTests(unittest.TestCase):
 
     def test_machine_token_cannot_dream(self):
         self.machine('add', 'laptop', '--url', self.url)
-        ran = self.client(self.config_dir / 'machine-laptop.json', 'dream', 'show')
-        self.assertNotEqual(ran.returncode, 0)
+        file = self.config_dir / 'machine-laptop.json'
+        for command in (('dream', 'show'), ('versions',), ('write', 'global/x.md', str(file))):
+            ran = self.client(file, *command)
+            self.assertNotEqual(ran.returncode, 0, command)
+            self.assertIn('HTTP 403', ran.stdout + ran.stderr, command)
 
     def test_rm_revokes_the_token_and_deletes_its_credentials(self):
         self.machine('add', 'laptop', '--url', self.url)
@@ -653,7 +657,9 @@ class MachineTokenTests(unittest.TestCase):
         self.assertFalse(file.exists())
         self.assertEqual(sorted(t['name'] for t in self.box.config()['tokens']), ['agent-session', 'memory-maintainer'])
         file.write_text(saved)
-        self.assertNotEqual(self.client(file, 'status').returncode, 0, 'the revoked token is refused')
+        refused = self.client(file, 'status')
+        self.assertIn('HTTP 401', refused.stdout + refused.stderr, 'the revoked token is refused')
+        self.assertEqual(self.client(self.config_dir / 'client.json', 'status').returncode, 0, 'other tokens still work')
 
     def test_refuses_bad_input_and_changes_nothing(self):
         before = (self.config_dir / 'server.toml').read_bytes()
@@ -666,7 +672,30 @@ class MachineTokenTests(unittest.TestCase):
         self.assertEqual(self.machine('add', 'laptop', '--url', self.url).returncode, 0)
         self.assertNotEqual(self.machine('add', 'laptop', '--url', self.url).returncode, 0, 'no duplicate name')
         self.assertEqual((self.config_dir / 'server.toml').read_text().count('name = "laptop"'), 1)
-        self.assertNotEqual(before, (self.config_dir / 'server.toml').read_bytes())
+        kept = self.box.config()
+        self.assertEqual(kept['listen'], tomllib.loads(before.decode())['listen'])
+        self.assertEqual(kept['database'], tomllib.loads(before.decode())['database'])
+        self.assertEqual(json.loads((self.config_dir / 'machine-laptop.json').read_text())['url'], self.url)
+        self.assertTrue(any(path.read_bytes() == before for path in self.box.runtime.iterdir()), 'server.toml was backed up')
+
+    def test_a_stale_credentials_file_is_reported_without_a_traceback(self):
+        (self.config_dir / 'machine-laptop.json').write_text('old')
+        before = (self.config_dir / 'server.toml').read_bytes()
+        ran = self.machine('add', 'laptop', '--url', self.url)
+        self.assertNotEqual(ran.returncode, 0)
+        self.assertNotIn('Traceback', ran.stderr)
+        self.assertIn('already exists', ran.stderr)
+        self.assertEqual((self.config_dir / 'server.toml').read_bytes(), before)
+        self.assertEqual((self.config_dir / 'machine-laptop.json').read_text(), 'old')
+
+    def test_a_failed_restart_restores_the_config_and_removes_the_credentials(self):
+        before = (self.config_dir / 'server.toml').read_bytes()
+        self.box.fail_tool('systemctl', 'restart')
+        ran = self.machine('add', 'laptop', '--url', self.url)
+        self.assertNotEqual(ran.returncode, 0)
+        self.assertNotIn('Traceback', ran.stderr)
+        self.assertEqual((self.config_dir / 'server.toml').read_bytes(), before)
+        self.assertFalse((self.config_dir / 'machine-laptop.json').exists())
 
 
 if __name__ == '__main__':

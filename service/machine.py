@@ -15,7 +15,9 @@ import subprocess
 import sys
 import time
 import tomllib
+import tempfile
 import urllib.parse
+import urllib.request
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('install_user', HERE / 'install-user.py')
@@ -35,19 +37,28 @@ def load(server):
     return config
 
 
-def save(server, config, tokens):
-    installer.write_config({server: installer.render_server(config['listen'], config['database'], tokens)},
-                           Path(config['database']).parent / 'runtime')
-    subprocess.run([str(Path.home() / '.local/bin/agent-memory-server'), 'check', '--config', str(server)], check=True)
+def render(config, tokens):
+    return installer.render_server(config['listen'], config['database'], tokens)
 
 
-def restart(client):
+def save(server, config, text):
+    """Check the new config first and replace server.toml only if the server accepts it."""
+    with tempfile.TemporaryDirectory(dir=server.parent) as directory:  # created 0700
+        candidate = Path(directory) / 'server.toml'
+        installer.private_file(candidate, text)
+        subprocess.run([str(Path.home() / '.local/bin/agent-memory-server'), 'check', '--config', str(candidate)], check=True)
+    installer.write_config({server: text}, Path(config['database']).parent / 'runtime')
+
+
+def restart(listen):
     subprocess.run(['systemctl', '--user', 'restart', 'agent-memory'], check=True)
-    for _ in range(50):
-        if subprocess.run([client, 'status'], capture_output=True).returncode == 0:
-            return
-        time.sleep(0.1)
-    raise RuntimeError('The service did not come back after the restart; run `systemctl --user status agent-memory`')
+    for _ in range(300):  # up to 30 s, for a slow machine
+        try:
+            with urllib.request.urlopen(f'http://{listen}/healthz', timeout=2):
+                return
+        except OSError:
+            time.sleep(0.1)
+    raise RuntimeError('The service did not answer after the restart; run `systemctl --user status agent-memory`')
 
 
 def main():
@@ -62,7 +73,6 @@ def main():
     args = parser.parse_args()
     config_dir = Path.home() / '.config/agent-memory'
     server = config_dir / 'server.toml'
-    client = str(Path.home() / '.local/bin/agent-memory-client')
     try:
         config = load(server)
     except (OSError, ValueError) as error:
@@ -76,8 +86,12 @@ def main():
     if args.command == 'rm':
         if args.name in RESERVED or args.name not in {t['name'] for t in machines}:
             parser.error(f'No machine token named {args.name}')
-        save(server, config, [t for t in tokens if t['name'] != args.name])
-        restart(client)
+        save(server, config, render(config, [t for t in tokens if t['name'] != args.name]))
+        try:
+            restart(config['listen'])
+        except (subprocess.CalledProcessError, RuntimeError) as error:
+            sys.exit(f'Error: server.toml no longer lists {args.name}, but the service did not restart, so a running '
+                     f'process may still accept its token until it does ({error})')
         (config_dir / f'machine-{args.name}.json').unlink(missing_ok=True)
         print(f'Revoked {args.name}. Its credentials stop working now.')
         return
@@ -91,19 +105,31 @@ def main():
     secret = secrets.token_hex(32)
     token = {'name': args.name, 'sha256': installer.digest(secret), 'capabilities': CAPABILITIES}
     target = config_dir / f'machine-{args.name}.json'
+    if target.exists():
+        parser.error(f'{target} already exists without a token; delete it and rerun')
+    previous = server.read_text()
     installer.private_file(target, installer.credentials(args.url, secret))
     try:
-        save(server, config, [*tokens, token])
-        restart(client)
+        save(server, config, render(config, [*tokens, token]))
+    except BaseException:
+        target.unlink(missing_ok=True)  # server.toml was not replaced
+        raise
+    try:
+        restart(config['listen'])
     except BaseException:
         target.unlink(missing_ok=True)
+        installer.write_config({server: previous}, Path(config['database']).parent / 'runtime')
+        try:
+            restart(config['listen'])
+        except (subprocess.CalledProcessError, RuntimeError):
+            pass
         raise
     print(f'Added {args.name} (recall, observe). Copy {target} to that machine as ~/.config/agent-memory/client.json,')
-    print('mode 0600, then delete the copy here.')
+    print('mode 0600, then delete the copy here (rm also deletes it).')
 
 
 if __name__ == '__main__':
     try:
         main()
-    except (subprocess.CalledProcessError, RuntimeError) as error:
+    except (subprocess.CalledProcessError, RuntimeError, OSError) as error:
         sys.exit(f'Error: {error}')
