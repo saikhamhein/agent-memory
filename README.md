@@ -167,6 +167,8 @@ Dreams run without asking. A dream adds, rewrites, merges and deletes memories, 
 
 Ask Claude Code or Codex to "run a dream". The `dream-memory` skill ([skill/dream-memory/SKILL.md](skill/dream-memory/SKILL.md)) holds the procedure: list the session logs that changed since the last dream (`scripts/catalog.py`), read them, edit the output store, review the diff, then adopt it or cancel. One dream runs at a time.
 
+A machine that only has a `client.json` for another machine's service runs a client dream instead: ask Claude Code or Codex there to "run a client dream". It reads that machine's own session logs and submits the lessons as observations, with the user's quoted words as evidence, and the server's dream consolidates them. It never starts a dream or changes a memory.
+
 For a daily run, a desktop scheduler task can use [ops/daily-memory-dream.md](ops/daily-memory-dream.md) as its prompt.
 
 ## Undo and redaction
