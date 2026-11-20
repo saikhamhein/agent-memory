@@ -1,6 +1,6 @@
 # agent-memory
 
-One memory store shared by Claude Code, Codex and DeepSeek Harness on the same machine. A preference or lesson given to one agent, once a review run accepts it, is in the context of every later session, in all three tools and every project.
+One memory store shared by Claude Code, Codex and DeepSeek Harness on one machine, and by the same user's other machines over Tailscale (see service/README.md). A preference or lesson given to one agent, once a review run accepts it, is in the context of every later session, in all three tools and every project.
 
 Each memory is a short Markdown file. A small Rust service keeps them in SQLite, listens on `127.0.0.1:8787`, and makes no network calls of its own. Sessions can read the store and suggest changes. Only a separate review run, the dream, changes it.
 

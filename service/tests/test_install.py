@@ -606,5 +606,68 @@ class UpdateLocalTests(unittest.TestCase):
                          str(self.box.repo / 'hooks/agent-memory-recall.py'))
 
 
+class MachineTokenTests(unittest.TestCase):
+    """service/machine.py gives another machine its own recall + observe token, and revokes it."""
+
+    def setUp(self):
+        self.box = Sandbox(self)
+        self.box.migrated_database(REVISIONS)
+        ran = self.box.install()
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.config_dir = self.box.home / '.config/agent-memory'
+        self.url = json.loads((self.config_dir / 'client.json').read_text())['url']
+
+    def machine(self, *args):
+        return self.box.run(sys.executable, str(self.box.repo / 'service/machine.py'), *args)
+
+    def client(self, file, *args):
+        return self.box.run(str(self.box.home / '.local/bin/agent-memory-client'), '--config', str(file), *args)
+
+    def test_add_gives_a_working_recall_observe_token_and_never_prints_it(self):
+        ran = self.machine('add', 'laptop', '--url', self.url)
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        file = self.config_dir / 'machine-laptop.json'
+        self.assertEqual(file.stat().st_mode & 0o777, 0o600)
+        credentials = json.loads(file.read_text())
+        self.assertNotIn(credentials['token'], ran.stdout + ran.stderr)
+        token = next(t for t in self.box.config()['tokens'] if t['name'] == 'laptop')
+        self.assertEqual(token['capabilities'], ['recall', 'observe'])
+        self.assertEqual(token['sha256'], hashlib.sha256(credentials['token'].encode()).hexdigest())
+        self.assertEqual(sorted(t['name'] for t in self.box.config()['tokens']),
+                         ['agent-session', 'laptop', 'memory-maintainer'])
+        self.assertEqual(self.client(file, 'status').returncode, 0)
+        listed = self.machine('ls')
+        self.assertEqual(listed.stdout.split(), ['laptop', 'recall', 'observe'])
+
+    def test_machine_token_cannot_dream(self):
+        self.machine('add', 'laptop', '--url', self.url)
+        ran = self.client(self.config_dir / 'machine-laptop.json', 'dream', 'show')
+        self.assertNotEqual(ran.returncode, 0)
+
+    def test_rm_revokes_the_token_and_deletes_its_credentials(self):
+        self.machine('add', 'laptop', '--url', self.url)
+        file = self.config_dir / 'machine-laptop.json'
+        saved = file.read_text()
+        ran = self.machine('rm', 'laptop')
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertFalse(file.exists())
+        self.assertEqual(sorted(t['name'] for t in self.box.config()['tokens']), ['agent-session', 'memory-maintainer'])
+        file.write_text(saved)
+        self.assertNotEqual(self.client(file, 'status').returncode, 0, 'the revoked token is refused')
+
+    def test_refuses_bad_input_and_changes_nothing(self):
+        before = (self.config_dir / 'server.toml').read_bytes()
+        for args in (('add', 'agent-session', '--url', self.url), ('add', 'memory-maintainer', '--url', self.url),
+                     ('add', 'Bad Name', '--url', self.url), ('add', 'laptop', '--url', 'ftp://x'),
+                     ('add', 'laptop', '--url', 'https://user:pw@host:8787'), ('rm', 'agent-session'),
+                     ('rm', 'nobody')):
+            ran = self.machine(*args)
+            self.assertNotEqual(ran.returncode, 0, args)
+        self.assertEqual(self.machine('add', 'laptop', '--url', self.url).returncode, 0)
+        self.assertNotEqual(self.machine('add', 'laptop', '--url', self.url).returncode, 0, 'no duplicate name')
+        self.assertEqual((self.config_dir / 'server.toml').read_text().count('name = "laptop"'), 1)
+        self.assertNotEqual(before, (self.config_dir / 'server.toml').read_bytes())
+
+
 if __name__ == '__main__':
     unittest.main()
