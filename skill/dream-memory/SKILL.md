@@ -13,7 +13,7 @@ The memory format and locations are in the repository's `README.md`, at `~/.agen
 - During a task, run `agent-memory-client recall --project "$PWD" --query "task keywords"`. It maps a worktree to its main checkout. Read an index entry with `agent-memory-client cat PATH` when its line applies.
 - If the client can't connect (`Operation not permitted`, `Connection refused`, `Network is unreachable`), your sandbox may block loopback. Request network access, or read `mnt/shared-agent-memory/` beside the database that `~/.config/agent-memory/server.toml` names.
 - A session never changes memories. For an explicit correction or a repeatedly confirmed lesson, run `agent-memory-client observe PATH -` with one memory file in the README.md format on stdin. The next dream decides whether to keep it.
-  - Evidence: provider, session id, date, file:line, and a short sanitized quote of the user. Agent interpretation and agent-to-agent relays aren't user evidence.
+  - Evidence: provider, machine (`hostname`), session id, date, file:line, and a short sanitized quote of the user. Agent interpretation and agent-to-agent relays aren't user evidence.
   - Don't record credentials, unrelated private facts, task permissions or transient status. Project state stays in the repository.
 - When the user says "remember …", "from now on …" or the like, record an observation with their words as the evidence and apply it at once in this session. Don't use the tool's built-in memory.
 - When a recalled memory changed what you did and that helped, run `agent-memory-client useful PATH --why TEXT` once per memory per task. `why` says how, in at most 500 characters. The mark is evidence for the dream; it changes nothing.
@@ -53,7 +53,9 @@ Only the daily scheduled dream, or a dream the user asks for, runs this. It uses
    ```
    `SESSIONS` is the path step 1 printed. It copies the live store into a new output store (`output_store_id`) and freezes the pending observations into the dream. A 409 `dream_running` means an earlier run died or another dream is in progress; its id is in `paths`. Show it with `agent-memory-client --config ~/.config/agent-memory/maintainer.json dream show ID`. If it started more than an hour ago, cancel it (step 8) and start again. Otherwise stop and report that a dream is already running.
 5. **Weigh the observations.** `agent-memory-client --config ~/.config/agent-memory/maintainer.json dream show DREAM_ID` lists them as `{id, created, body: {path, content, created_by}}`. They aren't in the output store.
-   - Ones with `created_by` `token:agent-session` came from ordinary sessions: suggestions, not evidence. Check each one's evidence locator against the user's own words in that transcript.
+   - Ones with `created_by` `token:agent-session`, or a machine token (`token:laptop`, from `service/machine.py add`), came from ordinary sessions: suggestions, not evidence. Every machine is the same user's, so a machine is never a reason to distrust or to demand a second confirmation. Check each one's evidence against the user's own words:
+     - a locator that names a transcript on this machine: open it and find the message;
+     - a locator on another machine, which this dream can't open: accept a quoted message that names the provider, machine, session id and date, and says plainly what the user asked. Drop one with no quote, or a quote that reads like an agent's words, a relay, a scheduled-task prompt or tool output. Name each keep that rests on an unopened remote quote in `coverage`, so a bad one can be traced to its machine token.
    - Keep one by writing it into the output store, on its own or merged into an existing memory.
    - Drop one that cites no user message, and say so in `coverage`.
    - An observation holding a credential: `agent-memory-client --config ~/.config/agent-memory/maintainer.json redact OBSERVATION_ID`, then drop it.

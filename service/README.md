@@ -88,6 +88,19 @@ Errors:
 
 Each recall appends a line to `recall-log.jsonl` next to the database: `ts`, `client` (the request label, else the token name), `project`, `query`, `role`, `topics`, `revision`, `view`, `pinned`, `returned`, `chars`. Each `/v1/feedback` call appends `ts`, `client` (the token name), `project`, `path`, `why`, `revision` and `view: "useful"`; unlike a recall, it fails if the line can't be written. Neither changes memories or recall.
 
+## Other machines (Tailscale)
+
+Other machines of the same user can recall memories and suggest lessons. The service stays on loopback; `tailscale serve` publishes it to the tailnet over HTTPS (never `funnel`, which is public, and never `listen = "0.0.0.0:…"`).
+
+```sh
+tailscale serve --bg --https=8787 http://127.0.0.1:8787
+python3 service/machine.py add laptop --url https://THIS-MACHINE.TAILNET.ts.net:8787
+```
+
+`machine.py add` makes a token with `recall` and `observe` only, adds it to `server.toml` (backing the old file up to `runtime/`), restarts the service and writes `~/.config/agent-memory/machine-laptop.json` (mode 0600; the secret is never printed). Copy that file to the other machine as `~/.config/agent-memory/client.json` and install the client there (`client.py` is standard library only). `machine.py ls` lists the machine tokens and `machine.py rm laptop` revokes one. Limit port 8787 to your own devices in the tailnet ACLs (an `acls` rule whose `src` is your devices, or tagged ones, and whose `dst` is this machine on port 8787); otherwise every device on the tailnet, shared-in ones included, can reach `/healthz` and try tokens. `rm` also deletes the credentials file here, but not the copy on the other machine.
+
+The dream and the maintenance token stay on this machine, because the dream reads this machine's session logs and the recall log. A remote agent's observation must carry the user's own quoted words with provider, machine, session id and date, since the dream can't open a log on another machine. Remote session logs are not uploaded; only recalls, observations and `useful` marks come from other machines. The other machine also needs the client, and the hook or skill if its agents should recall and observe by themselves.
+
 ## Backup and moving to the Pi
 
 ```sh
