@@ -18,6 +18,17 @@ The memory format and locations are in the repository's `README.md`, at `~/.agen
 - When the user says "remember …", "from now on …" or the like, record an observation with their words as the evidence and apply it at once in this session. Don't use the tool's built-in memory.
 - When a recalled memory changed what you did and that helped, run `agent-memory-client useful PATH --why TEXT` once per memory per task. `why` says how, in at most 500 characters. The mark is evidence for the dream; it changes nothing.
 
+## On another machine: reflect here, send lessons
+
+For a machine that isn't the dream machine: it has `client.json` (`recall` and `observe` only) and no `maintainer.json`. Its session logs never leave it, and no dream runs there. Once a day, or when the user asks:
+
+1. Run `python3 ~/.agents/skills/dream-memory/scripts/catalog.py`. It lists this machine's logs changed since its last run.
+2. Read them as in dream-cycle steps 2 and 2a: the user's own messages, what went wrong and what went right.
+3. For each lesson the user's own words support, a correction (a rule) or a confirmation (a "keep doing"), run `agent-memory-client observe PATH -` with one memory file. The evidence is the quoted message with provider, machine (`hostname`), session id and date. Send only the distilled rule and that short quote, never a log, transcript or tool output.
+4. Show the user the day review for this machine: went wrong, went right, keep doing, stop doing. It stays on this machine.
+
+The dream machine weighs these observations in step 5 of the dream cycle.
+
 ## Dream cycle
 
 Only the daily scheduled dream, or a dream the user asks for, runs this. It uses the maintenance credential, so every command below passes `--config ~/.config/agent-memory/maintainer.json`; it is written out each time so it can be copied. Dreams are autonomous by design: installing this skill is the user's standing authorization for these updates. Capture, edit, merge, retire and adopt without asking, then report what changed. The store's author gave this authorization on 2026-10-29 and 2026-11-01; the repository's `ops/daily-memory-dream.md` quotes it. If something is uncertain, leave it out and say so in `coverage`.
