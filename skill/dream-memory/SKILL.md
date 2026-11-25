@@ -46,8 +46,9 @@ Only the daily scheduled dream, or a dream the user asks for, runs this. It uses
    - Write each lesson as a short rule with its trigger and the right action. Its evidence is the user's correcting words, with a locator to the agent action. A mistake an agent noticed itself, with no user correction, does not become a memory: list it in `coverage` as a candidate for the user, who can confirm it in their own words.
    - If an existing memory already covered the behaviour and an agent broke it anyway, don't add a second rule: fix the existing one's wording or trigger in step 6. If that memory is pinned, a correction is not leave to change it: propose the new wording in `coverage` and leave the pinned memory as it is.
    - In `coverage`, list each lesson found, the sessions it came from, and the moments judged not to be agent mistakes.
-   - **What went right.** Do the same read for the good moments: the user approves, thanks or accepts a result with no correction after a choice that wasn't obvious, or a task finishes smoothly and the user moves on. Trace each back to the agent action and name the behaviour behind it. Group them like the mistakes. A behaviour the user confirmed in their own words may become a "keep doing" memory, or strengthen an existing one. A success only an agent noted stays out of the store; mention it in the day review.
-   - **Day review.** Across all sessions in this window, sum up the day as four short lists: went wrong, went right, **keep doing**, **stop doing**. Each item names a behaviour and, in a few words, the session it came from. Items the user confirmed become memories as above; the rest are only in the report.
+   - **What went right.** Do the same read for the good moments: the user approves, thanks or accepts a result with no correction after a choice that wasn't obvious, or a task finishes smoothly and the user moves on. Trace each back to the agent action and name the behaviour behind it. Group them like the mistakes.
+   - **Day review.** Across all sessions in this window, sum up the day as four short lists: went wrong, went right, **keep doing**, **stop doing**. Each item names a behaviour and, in a few words, the session it came from.
+   - **The review goes into memory, not only into the report.** Every item with the user's own words behind it (a correction, or an approval such as "ok good") is written into the store in step 6: a stop-doing as a rule, a keep-doing as a short memory, or as a confirmed line added to the existing memory that already holds the behaviour, with the date and the user's quote as evidence. Only an item with no user words behind it (an agent's own note) stays out; list it in `coverage`. Write nothing in the store as "keep doing" that the user hasn't confirmed.
 3. **Recall use (last 24 h).** Read the service's recall log, whose path is `recall_log` in `agent-memory-client status`, and the hook's log, `~/.cache/agent-memory/recall-log.jsonl`:
    - count recalls by `client` and `view`. `session-start` is the hook's start view, and a `task` view is a task-specific recall;
    - count hook runs by `via` (`service`, `index`, `none` or `skipped`; `skipped` is a healthy resume or fork) and compare them with the new Claude Code sessions. Flag the hook if a session has no entry, or if runs fell back to `index` or `none`;
@@ -73,7 +74,7 @@ Only the daily scheduled dream, or a dream the user asks for, runs this. It uses
    - Drop one that cites no user message, and say so in `coverage`.
    - An observation holding a credential: `agent-memory-client --config ~/.config/agent-memory/maintainer.json redact OBSERVATION_ID`, then drop it.
 6. **Review the whole store, every run,** not only today's changes. List and read it with `ls --store OUT` and `cat PATH --store OUT`; change it with `write PATH FILE --store OUT` (new), `write PATH FILE --expected SHA [--to NEW] --store OUT` (update or move) and `rm PATH --expected SHA --store OUT`, each after `agent-memory-client --config ~/.config/agent-memory/maintainer.json`.
-   - Turn kept observations and new lessons into short, actionable memories. Merge near-duplicates, and put each under the narrowest path that fits (global, project, topic or role).
+   - Turn kept observations, new lessons and the day review's keep-doing and stop-doing items into short, actionable memories. Merge near-duplicates, and put each under the narrowest path that fits (global, project, topic or role).
    - Slugs are unique across the store, because memories and prompts refer to each other by slug (`self-improve-memory-setup`). Give project memories a project prefix. A 409 `slug_exists` names the memory that holds it: merge into it or pick another slug.
    - Expire or delete stale facts. Keep evidence for every retained rule.
    - A credential in a live memory: write a clean version, adopt, then `redact` the old `memver_…` version (the current one can't be redacted).
@@ -101,7 +102,7 @@ Only the daily scheduled dream, or a dream the user asks for, runs this. It uses
    - Each memory added, changed or removed, one line each with its evidence date.
    - Every change to a pinned memory or to the pinned set, each on a line of its own.
    - Observations kept and dropped.
-   - **Day review (step 2a):** went wrong, went right, keep doing, stop doing, each item one line with its behaviour. Mark each one that became a memory, and say which.
+   - **Day review (step 2a):** went wrong, went right, keep doing, stop doing, each item one line with its behaviour. After each, `→ memory PATH` or `→ report only` with the reason. A user-confirmed item can't be report only.
    - Pinned characters out of 4,000.
    - Recall-use numbers, useful marks per memory, and any flag.
    - Unused memories, and what was done with each.
