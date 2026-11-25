@@ -29,8 +29,7 @@ Short, past tense, for a phone; no questions, no "proposed" or "suggested" items
 - each memory added, changed or removed, one line each, with its evidence date;
 - every pinned change on its own line;
 - observations kept and dropped;
-- lessons learnt: each lesson from the retrospective, one line (behaviour, rule, memory it went into);
-- self-reflection: which of the last dream's changes helped or didn't, and what went wrong in this run;
+- day review across the sessions since the last dream: went wrong, went right, keep doing, stop doing, one line each with its behaviour; mark the ones that became a memory;
 - pinned characters out of 4,000;
 - coverage gaps;
 - recall-use numbers, useful marks per memory, and any flag;
