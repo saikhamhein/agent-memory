@@ -281,6 +281,7 @@ async fn status(State(app): State<App>) -> Reply {
 #[serde(default, deny_unknown_fields)]
 struct RecallRequest {
     project: String,
+    remote: String,
     role: String,
     topics: Vec<String>,
     query: String,
@@ -296,8 +297,12 @@ async fn recall(
     if !r.project.is_empty() {
         r.project = absolute_path(&r.project)?.to_string_lossy().into_owned();
     }
+    if !r.remote.is_empty() {
+        r.remote = absolute_path(&r.remote)?.to_string_lossy().into_owned();
+    }
     let request = recall::Request {
         project: r.project,
+        remote: r.remote,
         role: r.role,
         topics: r.topics,
         query: r.query,

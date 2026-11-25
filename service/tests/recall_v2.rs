@@ -206,6 +206,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 fn req(project: &str, role: &str, topics: &[&str], query: &str) -> Request {
     Request {
         project: project.into(),
+        remote: String::new(),
         role: role.into(),
         topics: topics.iter().map(|t| t.to_string()).collect(),
         query: query.into(),

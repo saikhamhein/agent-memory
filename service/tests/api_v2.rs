@@ -1934,6 +1934,7 @@ fn oracle_recall(
         .to_owned();
     let request = recall::Request {
         project: project.into(),
+        remote: String::new(),
         role: role.into(),
         topics: topics.iter().map(|t| (*t).to_owned()).collect(),
         query: query.into(),
