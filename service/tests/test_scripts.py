@@ -81,6 +81,15 @@ class DocsTests(unittest.TestCase):
                     found.append((positional, flags))
         return found
 
+    def test_client_dream_uses_only_the_session_credential(self):
+        text = (REPO / 'skill/dream-memory/SKILL.md').read_text()
+        section = text.split('## Client dream', 1)[1].split('\n## ', 1)[0]
+        for forbidden in ('maintainer.json', '--config', 'agent-memory-client dream', 'agent-memory-client write',
+                          'agent-memory-client rm', 'agent-memory-client redact'):
+            self.assertNotIn(forbidden, section)
+        self.assertIn('observe PATH -', section)
+        self.assertIn('client dream', text.split('---', 2)[1], 'the description lets an agent find it')
+
     def test_only_real_client_commands_are_named(self):
         top = self.help_text()
         self.assertIn('dream', top)
