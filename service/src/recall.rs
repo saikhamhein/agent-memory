@@ -38,6 +38,9 @@ static WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\w+").unwrap());
 
 pub struct Request {
     pub project: String,
+    /// The project as `/<host>/<owner>/<repo>[/<subdir>]` from its git remote, or empty. A checkout on another
+    /// machine has another `project` path but the same `remote`.
+    pub remote: String,
     pub role: String,
     pub topics: Vec<String>,
     pub query: String,
@@ -51,7 +54,7 @@ pub struct Recalled {
 }
 
 pub fn recall(memories: &[Memory], revision: i64, mirror_dir: &str, request: &Request) -> Recalled {
-    let memories = in_scope(memories, &request.project);
+    let memories = in_scope(memories, &request.project, &request.remote);
     if request.query.trim().is_empty() {
         start(&memories, revision, mirror_dir, request)
     } else {
@@ -83,14 +86,17 @@ pub fn index_md(memories: &[Memory], revision: i64, mirror_dir: &str) -> String 
 }
 
 /// Neither excluded nor another project's.
-fn in_scope<'a>(memories: &'a [Memory], project: &str) -> Vec<&'a Memory> {
+fn in_scope<'a>(memories: &'a [Memory], project: &str, remote: &str) -> Vec<&'a Memory> {
     let today = Utc::now().date_naive().to_string();
     let project = absolute_path(project).ok();
+    let remote = absolute_path(remote).ok().filter(|_| !remote.is_empty());
     memories
         .iter()
         .filter(|m| {
             !excluded(m, &today)
-                && (m.scope.kind != Kind::Project || applies(m, project.as_deref()))
+                && (m.scope.kind != Kind::Project
+                    || applies(m, project.as_deref())
+                    || applies(m, remote.as_deref()))
         })
         .collect()
 }
@@ -347,7 +353,8 @@ fn terms(text: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// A project memory applies at its root or below it, by whole components.
+/// A project memory applies at its root or below it, by whole components, whether the root is a checkout path or a
+/// git remote's `/<host>/<owner>/<repo>`.
 fn applies(m: &Memory, project: Option<&Path>) -> bool {
     project.is_some_and(|p| p.starts_with(&m.scope.value))
 }

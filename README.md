@@ -138,6 +138,8 @@ A memory's path sets when it loads:
 | --- | --- |
 | `/global/<slug>.md` | every session |
 | `/projects/<root segments…>/<slug>.md` | sessions in that project root or below it |
+
+A project root is the checkout's path (`/projects/home/me/code/app/…`) or, for a repository with an `origin` remote, the remote (`/projects/github.com/owner/repo/…`). A remote root is found from any checkout of the repository on any machine, whatever the path or URL form; prefer it. `agent-memory-client project [DIR]` prints the directory a project's memories belong in.
 | `/topics/<topic>/<slug>.md` | a matching query, or a session that requests the topic |
 | `/roles/<role>/<slug>.md` | a matching query, or a session that requests the role |
 

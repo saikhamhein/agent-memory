@@ -189,6 +189,53 @@ class ClientTests(unittest.TestCase):
         self.assertNotEqual(fresh['id'], stale['id'])
         self.assertEqual(self.json('status')['dreams_running'], 1)
 
+    def checkout(self, name, remote, env):
+        """A git checkout with a commit and, when `remote` is given, that origin URL."""
+        git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@t']
+        repo = (self.server.root / name).resolve()
+        subprocess.run([*git, 'init', '-q', str(repo)], check=True, env=env)
+        subprocess.run([*git, '-C', str(repo), 'commit', '-q', '--allow-empty', '-m', 'x'], check=True, env=env)
+        if remote:
+            subprocess.run([*git, '-C', str(repo), 'remote', 'add', 'origin', remote], check=True, env=env)
+        (repo / 'sub').mkdir()
+        return repo
+
+    def test_a_project_is_found_by_its_git_remote_on_any_machine(self):
+        _, env = self.server.home()
+        here = self.checkout('here', 'https://github.com/acme/widget.git', env)
+        there = self.checkout('there/deeper', 'git@GitHub.com:Acme/Widget.git', env)  # another machine's path and URL form
+        other = self.checkout('other', 'https://github.com/acme/gadget', env)
+        plain = self.server.root / 'plain'
+        plain.mkdir()
+        self.server.seed('/projects/github.com/acme/widget/widget-rule.md', 'Widget', 'Widget rule text.')
+        self.server.seed(project_path(here, 'path-rule'), 'Path', 'Path rule text.')
+        self.server.seed(project_path(plain, 'plain-rule'), 'Plain', 'Plain rule text.')
+
+        def recall(project):
+            result = self.server.client('recall', '--project', project, role=None, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout
+        for checkout in (here, there, here / 'sub', there / 'sub'):
+            self.assertIn('Widget rule text.', recall(str(checkout)), checkout)
+        self.assertIn('Path rule text.', recall(str(here)))  # a path-keyed memory still applies on its own machine
+        self.assertNotIn('Path rule text.', recall(str(there)))
+        self.assertNotIn('Widget rule text.', recall(str(other)))
+        self.assertIn('Plain rule text.', recall(str(plain)))  # no git, no remote: the path is the key
+
+    def test_project_prints_the_directory_a_projects_memories_live_in(self):
+        _, env = self.server.home()
+        repo = self.checkout('repo', 'ssh://git@git.example.com:2222/team/sub/app.git', env)
+        plain = self.server.root / 'plain'
+        plain.mkdir()
+        local = self.checkout('local-only', None, env)
+
+        def project(path):
+            return self.server.client('project', path, role=None, env=env, check=True).stdout.strip()
+        self.assertEqual(project(str(repo)), '/projects/git.example.com/team/sub/app')
+        self.assertEqual(project(str(repo / 'sub')), '/projects/git.example.com/team/sub/app/sub')
+        self.assertEqual(project(str(plain)), project_path(plain, '')[:-len('/.md')])
+        self.assertEqual(project(str(local)), project_path(local, '')[:-len('/.md')])
+
     def test_recall_canonicalizes_worktrees_and_has_no_project_id(self):
         _, env = self.server.home()
         repo, worktree = repo_with_worktree(self.server.root, env)

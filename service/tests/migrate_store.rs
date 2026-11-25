@@ -16,6 +16,7 @@ const T2: &str = "2026-10-03T11:30:00+00:00";
 fn request(project: &str, role: &str, topics: &[&str]) -> Request {
     Request {
         project: project.into(),
+        remote: String::new(),
         role: role.into(),
         topics: topics.iter().map(|t| t.to_string()).collect(),
         query: String::new(),

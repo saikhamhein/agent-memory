@@ -3,6 +3,7 @@
 import argparse
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import urllib.error
@@ -68,11 +69,41 @@ def canonical_root(path):
     return str(Path(found[1][:-len('/.git')]) / inside)
 
 
+def remote_key(path):
+    """The project as `/<host>/<owner>/<repo>[/<subdir>]` from the origin remote, or '' without one.
+
+    Any checkout of the repository, on any machine and whichever URL form it cloned with, gets the same key."""
+    try:
+        url, prefix = [subprocess.run(['git', '-C', path, *command], capture_output=True, text=True, timeout=5).stdout.strip()
+                       for command in (['remote', 'get-url', 'origin'], ['rev-parse', '--show-prefix'])]
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    found = re.match(r'^[a-z][a-z0-9+.-]*://(?:[^@/]*@)?([^/:@]+)(?::\d+)?/(.+)$', url, re.I)
+    if not found and '://' not in url:
+        found = re.match(r'^(?:[^@/:]+@)?([^:/@]+):(?!//)(.+)$', url)  # git@host:owner/repo
+    if not found:
+        return ''
+    repo = found.group(2).strip('/')
+    key = '/'.join([found.group(1), repo.removesuffix('.git') if repo.endswith('.git') else repo, *prefix.strip('/').split('/')]).lower()
+    segments = [s for s in key.split('/') if s]
+    if not all(re.fullmatch(r'[a-z0-9._-]+', s) and s not in ('.', '..') for s in segments):
+        return ''
+    return '/' + '/'.join(segments)
+
+
+def project_directory(path):
+    """The directory under /projects/ that holds a project's memories: its git remote's key, else its path."""
+    key = remote_key(path)
+    return '/projects' + (key or canonical_root(path))
+
+
 def parser():
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument('--config', type=Path, default=CONFIG)
     commands = root.add_subparsers(dest='command', required=True)
     commands.add_parser('status')
+    project = commands.add_parser('project', help='print the /projects/... directory that holds a directory\'s memories')
+    project.add_argument('directory', nargs='?', default='.', type=Path)
     recall = commands.add_parser('recall', help='Start view without --query; matching memories with it')
     recall.add_argument('--project', default='', help='Project directory; a worktree maps to its main checkout')
     recall.add_argument('--query', default='')
@@ -121,11 +152,15 @@ def parser():
 
 def recall(api, args, query):
     project = canonical_root(args.project) if args.project else ''
-    return api.call('POST', '/v1/recall', dict(project=project, role=args.role, topics=args.topic,
+    remote = remote_key(args.project) if args.project else ''
+    return api.call('POST', '/v1/recall', dict(project=project, remote=remote, role=args.role, topics=args.topic,
         query=query, client=args.client))
 
 
 def run(args):
+    if args.command == 'project':
+        sys.stdout.write(project_directory(str(args.directory.resolve())) + '\n')
+        return None
     api = API(args.config)
     store = q(getattr(args, 'store', 'live'))
     memories = f'/v1/memory_stores/{store}/memories'
