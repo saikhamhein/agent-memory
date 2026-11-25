@@ -49,6 +49,68 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(self.catalog('--home', str(home), XDG_STATE_HOME=str(state))['sessions'], str(sessions))
 
 
+class RemoteCatalogTests(CatalogTests):
+    """A client machine's logs are pulled over ssh+rsync, then catalogued like local ones."""
+
+    FAKE_SSH = """#!/bin/sh
+# Stands in for ssh: drops the options and the host, then runs the command in the fake remote's home.
+while [ $# -gt 0 ]; do
+  case "$1" in -o|-l|-p|-i) shift 2;; -*) shift;; *) break;; esac
+done
+host="$1"; shift
+[ "$host" = down ] && { echo "ssh: connect to host down: refused" >&2; exit 255; }
+cd "$FAKE_REMOTE_HOME" && exec sh -c "$*"
+"""
+    # The inherited test methods would run twice; only the remote ones belong here.
+    test_writes_no_timestamped_copy = test_writes_outside_the_checkout_by_default = test_honours_xdg_state_home = None
+
+    def fake(self, tmp):
+        ssh = Path(tmp) / 'bin/ssh'
+        ssh.parent.mkdir(exist_ok=True)
+        ssh.write_text(self.FAKE_SSH)
+        ssh.chmod(0o755)
+        remote = Path(tmp) / 'remote/home'
+        if not remote.exists():
+            self.home_with_log(Path(tmp) / 'remote')
+        return dict(RSYNC_RSH=str(ssh), FAKE_REMOTE_HOME=str(remote))
+
+    def test_pulls_a_clients_logs_and_catalogs_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home, root = Path(tmp) / 'local', Path(tmp) / 'root'
+            home.mkdir()
+            first = self.catalog('--home', str(home), '--root', str(root), '--pull', 'laptop', **self.fake(tmp))
+            sessions = json.loads((root / 'sources/changed-sessions.json').read_text())
+            self.assertEqual([s['source'] for s in sessions], ['claude'])
+            self.assertEqual(sessions[0]['locator'], str(root / 'remote/laptop/.claude/projects/p/a.jsonl'))
+            self.assertTrue(Path(sessions[0]['locator']).is_file())
+            self.assertEqual((first['files'], first['errors']), (1, 0))
+            again = self.catalog('--home', str(home), '--root', str(root), '--pull', 'laptop', **self.fake(tmp))
+            self.assertEqual(again['changed'], 0)
+
+    def test_an_unreachable_client_is_reported_and_local_logs_still_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home, root = self.home_with_log(Path(tmp) / 'local'), Path(tmp) / 'root'
+            done = self.catalog('--home', str(home), '--root', str(root), '--pull', 'down', **self.fake(tmp))
+            self.assertEqual((done['files'], done['changed']), (1, 1))
+            self.assertGreaterEqual(done['errors'], 1)
+
+    def test_hosts_come_from_the_hosts_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home, root = Path(tmp) / 'local', Path(tmp) / 'root'
+            (home / '.config/agent-memory').mkdir(parents=True)
+            (home / '.config/agent-memory/dream-hosts').write_text('# clients\nuser@laptop\n\n')
+            done = self.catalog('--home', str(home), '--root', str(root), **self.fake(tmp))
+            self.assertEqual(done['files'], 1)
+            self.assertTrue((root / 'remote/user_laptop/.claude/projects/p/a.jsonl').is_file())
+
+    def test_a_host_that_looks_like_an_option_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ran = subprocess.run([sys.executable, str(self.CATALOG), '--home', tmp, '--root', tmp, '--pull=-oProxyCommand=x'],
+                                 capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(ran.returncode, 0)
+            self.assertIn('not an ssh host', ran.stderr)
+
+
 class DocsTests(unittest.TestCase):
     """The skill and the daily prompt may only name commands that exist (X3, X23)."""
     DOCS = [REPO / 'skill/dream-memory/SKILL.md', REPO / 'ops/daily-memory-dream.md']

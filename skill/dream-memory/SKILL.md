@@ -22,7 +22,7 @@ The memory format and locations are in the repository's `README.md`, at `~/.agen
 
 Only the daily scheduled dream, or a dream the user asks for, runs this. It uses the maintenance credential, so every command below passes `--config ~/.config/agent-memory/maintainer.json`; it is written out each time so it can be copied. Dreams are autonomous by design: installing this skill is the user's standing authorization for these updates. Capture, edit, merge, retire and adopt without asking, then report what changed. The store's author gave this authorization on 2026-10-29 and 2026-11-01; the repository's `ops/daily-memory-dream.md` quotes it. If something is uncertain, leave it out and say so in `coverage`.
 
-1. **Catalog.** Run `python3 ~/.agents/skills/dream-memory/scripts/catalog.py`. It writes `changed-sessions.json`, the new or changed logs, newest first, at most 100, and prints its path as `sessions`. The next catalog treats any logs it counts in `sessions_left_out` as seen, so give that number in `coverage`.
+1. **Catalog.** Run `python3 ~/.agents/skills/dream-memory/scripts/catalog.py`. First it copies the logs of the user's other machines listed in `~/.config/agent-memory/dream-hosts` (one ssh target per line) into `remote/HOST/` under the state directory, so their sessions are dreamed like local ones; a host it can't reach shows up in `errors`: say so in `coverage`. It writes `changed-sessions.json`, the new or changed logs, newest first, at most 100, and prints its path as `sessions`. The next catalog treats any logs it counts in `sessions_left_out` as seen, so give that number in `coverage`.
 2. **Read** the user's own messages in those sessions since the last dream, with the surrounding turns and outcomes, not keyword hits. Write small parsing scripts in your scratchpad, not in the store.
    - Claude Code: `type: user` entries that aren't tool results or system wrappers.
    - Codex: `response_item` user messages. Strip `<in-app-browser-context>`, AGENTS.md and environment blocks, and skip "approval assessment" reviewer transcripts.
@@ -41,6 +41,7 @@ Only the daily scheduled dream, or a dream the user asks for, runs this. It uses
    - count recalls by `client` and `view`. `session-start` is the hook's start view, and a `task` view is a task-specific recall;
    - count hook runs by `via` (`service`, `index`, `none` or `skipped`; `skipped` is a healthy resume or fork) and compare them with the new Claude Code sessions. Flag the hook if a session has no entry, or if runs fell back to `index` or `none`;
    - list projects with session starts but no task view. If agents skip task recalls, strengthen the `self-improve-memory-setup` memory in this dream.
+   - the hook log is this machine's only; sessions pulled from another machine (locator under `remote/`) have no entry there, so judge their recalls by the service log, where `client` carries the machine's token name.
    - **Use (last 30 days).** Count how often recalls returned each memory, and how often sessions marked it useful (`view: "useful"`, with `why`), by slug:
      ```sh
      log=$(agent-memory-client status | jq -er .recall_log) || exit 1
@@ -57,7 +58,8 @@ Only the daily scheduled dream, or a dream the user asks for, runs this. It uses
 5. **Weigh the observations.** `agent-memory-client --config ~/.config/agent-memory/maintainer.json dream show DREAM_ID` lists them as `{id, created, body: {path, content, created_by}}`. They aren't in the output store.
    - Ones with `created_by` `token:agent-session`, or a machine token (`token:laptop`, from `service/machine.py add`), came from ordinary sessions: suggestions, not evidence. Every machine is the same user's, so a machine is never a reason to distrust or to demand a second confirmation. Check each one's evidence against the user's own words:
      - a locator that names a transcript on this machine: open it and find the message;
-     - a locator on another machine, which this dream can't open: accept a quoted message that names the provider, machine, session id and date, and says plainly what the user asked. Drop one with no quote, or a quote that reads like an agent's words, a relay, a scheduled-task prompt or tool output. Name each keep that rests on an unopened remote quote in `coverage`, so a bad one can be traced to its machine token.
+     - a locator on another machine that the catalog pulled (under `remote/HOST/`): open it like a local one;
+     - a locator on another machine that wasn't pulled, which this dream can't open: accept a quoted message that names the provider, machine, session id and date, and says plainly what the user asked. Drop one with no quote, or a quote that reads like an agent's words, a relay, a scheduled-task prompt or tool output. Name each keep that rests on an unopened remote quote in `coverage`, so a bad one can be traced to its machine token.
    - Keep one by writing it into the output store, on its own or merged into an existing memory.
    - Drop one that cites no user message, and say so in `coverage`.
    - An observation holding a credential: `agent-memory-client --config ~/.config/agent-memory/maintainer.json redact OBSERVATION_ID`, then drop it.

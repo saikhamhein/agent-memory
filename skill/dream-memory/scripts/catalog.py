@@ -3,15 +3,50 @@
 
 Writes sources/latest-catalog.json and sources/changed-sessions.json under the state directory: the new or changed
 logs, newest first and at most 100, as the {source, locator, sha256} list that `agent-memory-client dream start
---sessions` takes. It prints where it wrote them."""
+--sessions` takes. It prints where it wrote them.
+
+Logs of the user's other machines are copied here first with rsync over ssh (`--pull HOST`, repeatable, or one ssh target
+per line in ~/.config/agent-memory/dream-hosts) into <state>/remote/HOST, laid out like a home directory, and then
+catalogued like local logs. A host that can't be reached is listed in `errors`; it doesn't stop the catalog."""
 import argparse
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import subprocess
 import datetime as dt
 
 MAX_SESSIONS = 100  # a dream takes at most 100 session locators
+LOG_DIRECTORIES = ['.codex/sessions', '.codex/archived_sessions', '.claude/projects', '.dsh/sessions']
+
+
+def pull(host, destination):
+    """Copy a client's agent logs into destination, laid out like its home. Returns a list of errors."""
+    rsh = os.environ.get('RSYNC_RSH') or 'ssh'
+    errors = []
+    for directory in LOG_DIRECTORIES:
+        target = destination / directory
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            ran = subprocess.run(['rsync', '-a', '-e', f'{rsh} -o BatchMode=yes -o ConnectTimeout=10',
+                                  f'{host}:{directory}/', f'{target}/'], capture_output=True, text=True, timeout=900)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            errors.append({'path': f'{host}:{directory}', 'error': str(error)})
+            break
+        # Exit 23 with "No such file" is a client that has no logs of that agent, which is normal.
+        if ran.returncode and not (ran.returncode == 23 and 'No such file' in ran.stderr):
+            errors.append({'path': f'{host}:{directory}', 'error': ran.stderr.strip()[-300:]})
+            if ran.returncode in (255, 12, 30, 35):  # ssh or connection failure: the other directories would fail too
+                break
+        if not any(target.iterdir()):
+            target.rmdir()
+    return errors
+
+
+def read_hosts(path):
+    return [line.strip() for line in path.read_text().splitlines() if line.strip() and not line.startswith('#')] \
+        if path.exists() else []
 
 
 def scan(home):
@@ -34,7 +69,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--home', type=Path, default=Path.home())
     parser.add_argument('--root', type=Path, help='State directory; default $XDG_STATE_HOME/agent-memory')
+    parser.add_argument('--pull', action='append', default=[], metavar='HOST',
+                        help='ssh target of another machine whose logs to copy here first (repeatable)')
     args = parser.parse_args()
+    hosts = args.pull or read_hosts(args.home / '.config/agent-memory/dream-hosts')
+    for host in hosts:
+        if host.startswith('-') or not re.fullmatch(r'[A-Za-z0-9._@:\[\]-]+', host):
+            parser.error(f'not an ssh host: {host!r}')
     root = args.root or Path(os.environ.get('XDG_STATE_HOME') or args.home / '.local/state') / 'agent-memory'
     out = root / 'sources'
     out.mkdir(parents=True, exist_ok=True)
@@ -43,7 +84,12 @@ def main():
     old = {f['path']: f for f in previous['files']}
     result = {'created': dt.datetime.now(dt.timezone.utc).isoformat(), 'files': [], 'errors': [],
               'meaning': 'Inventory and change detection only; discovered is not semantically reviewed.'}
-    for provider, path in scan(args.home):
+    homes = [args.home]
+    for host in hosts:
+        mirror = root / 'remote' / re.sub(r'[^A-Za-z0-9._-]', '_', host)
+        result['errors'].extend(pull(host, mirror))
+        homes.append(mirror)
+    for provider, path in (found for home in homes for found in scan(home)):
         try:
             before = path.stat()
             sha = hashlib.sha256()
