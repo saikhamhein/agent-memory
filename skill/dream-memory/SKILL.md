@@ -72,6 +72,9 @@ Only the daily scheduled dream, or a dream the user asks for, runs this. It uses
      - keep it if it guards something rare but costly, such as hardware safety, and say why in `coverage`.
    - A memory marked useful repeatedly, in different sessions, may get a higher `priority`. A mark is agent opinion, not user evidence: it never creates a memory or changes a rule's content.
    - `pinned` marks the core rules. Change a pinned memory, or the pinned set, only on the user's own words. Together, pinned memories (heading plus body) stay within 4,000 characters.
+6a. **Reflect on this run.** Before the diff, look back at the dream itself, not only at the sessions.
+   - **Did the last dream's changes work?** For each memory the newest ended dream added or changed (`versions --created-by dream:ID`), check step 3's counts: was it recalled or marked useful since? Did step 2a find the same behaviour corrected again? If a rule existed and the behaviour came back, the rule's wording or trigger is at fault: fix it now, as in step 6.
+   - **What went wrong in this run?** Note each log that wouldn't parse, step that couldn't run, number you had to guess and place you were unsure. If a memory can fix it, fix it. Otherwise say it in `coverage` as a plain finding, not a question.
 7. **Diff.** `agent-memory-client --config ~/.config/agent-memory/maintainer.json dream show DREAM_ID --diff`. Check every added, removed and changed memory against its evidence.
 8. **Adopt or cancel.**
    - Adopt when the diff isn't empty or the dream held observations. An empty adopt is how dropped observations stop being pending. Write `review.json` as `{"summary": …, "coverage": …, "conflicts": […]}`, with an honest `coverage`: what was read, partial or unavailable, and what was left out.
@@ -88,6 +91,8 @@ Only the daily scheduled dream, or a dream the user asks for, runs this. It uses
    - Each memory added, changed or removed, one line each with its evidence date.
    - Every change to a pinned memory or to the pinned set, each on a line of its own.
    - Observations kept and dropped.
+   - **Lessons learnt:** each lesson from step 2a, one line: the behaviour, the rule, the memory it went into (or "coverage candidate").
+   - **Self-reflection:** step 6a: which of the last dream's changes helped or didn't, and what went wrong in this run.
    - Pinned characters out of 4,000.
    - Recall-use numbers, useful marks per memory, and any flag.
    - Unused memories, and what was done with each.
